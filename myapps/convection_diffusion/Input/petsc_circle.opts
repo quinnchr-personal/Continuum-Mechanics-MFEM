@@ -1,0 +1,8 @@
+# PETSc options for steady 2D circle convection-diffusion-reaction solve.
+-ksp_type gmres
+-ksp_rtol 1.0e-10
+-ksp_atol 1.0e-12
+-ksp_max_it 2000
+-pc_type bjacobi
+-sub_ksp_type preonly
+-sub_pc_type ilu

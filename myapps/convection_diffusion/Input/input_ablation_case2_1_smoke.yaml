@@ -1,0 +1,84 @@
+mesh_file: Mesh/ablation_strip.msh
+material_file: Input/material_tacot_case2_1.yaml
+
+order: 1
+serial_ref_levels: 0
+par_ref_levels: 0
+
+dt: 0.1
+t_final: 2.0
+
+newton_abs_tol: 1.0e-8
+newton_rel_tol: 1.0e-6
+newton_max_iter: 20
+newton_jacobian_rebuild_freq: 1
+newton_print_level: 1
+jacobian_check: false
+jacobian_check_abs_tol: 1.0e-6
+jacobian_check_rel_tol: 1.0e-4
+
+petsc_options_file: Input/petsc_ablation_case2_1.opts
+ksp_prefix: ablation21_ls_
+petsc_ksp_print_level: 0
+
+output_every: 2
+output_path: ParaView/ablation_case2_1_smoke
+collection_name: ablation_test_case2_1_2D_smoke
+probes_csv: temperature_probes.csv
+mass_csv: mass_metrics.csv
+boundary_csv: boundary_diagnostics.csv
+newton_csv: newton_history_ablation_case2_1_2D.csv
+timing_step_csv: driver_timing_per_step.csv
+timing_summary_csv: driver_timing_summary.csv
+save_paraview: true
+
+bdr_attr_top: 1
+bdr_attr_bottom: 2
+bdr_attr_sides: 3
+
+bprime_table_file: /home/quinnchr/Downloads/pato-3.1/data/Environments/Tables/TACOT-Earth-1atm
+boundary_conditions_file: Input/boundary_conditions_ablation_case2_1.dat
+top_thermal_bc: surface_energy_balance
+top_temperature_value: 300.0
+top_temperature_file: Input/top_temperature_ablation_case2_1.dat
+
+lambda: 0.5
+q_rad: 0.0
+T_background: 300.0
+T_edge: 300.0
+hconv: 0.0
+stefan_boltzmann: 5.670374419e-8
+strict_case2_1: true
+pato_compat_mode: off
+
+gravity_x: 0.0
+gravity_y: 0.0
+
+probe_x: 0.005
+probe_y:
+  - 0.05
+  - 0.049
+  - 0.048
+  - 0.046
+  - 0.042
+  - 0.038
+  - 0.034
+  - 0.026
+  - 0.01
+
+amaryllis_energy_file: /home/quinnchr/Downloads/pato-3.1/tutorials/1D/AblationTestCase_2.x/data/ref/Amaryllis/Amaryllis_Energy_TestCase_2.1.txt
+amaryllis_mass_file: /home/quinnchr/Downloads/pato-3.1/tutorials/1D/AblationTestCase_2.x/data/ref/Amaryllis/Amaryllis_Mass_TestCase_2.1.txt
+
+acceptance:
+  temperature_rmse_max: 250.0
+  temperature_max_abs_max: 500.0
+  m_dot_g_rmse_max: 0.02
+  m_dot_g_max_abs_max: 0.06
+  m_dot_g_peak_rel_error_max: 0.5
+  m_dot_g_peak_time_error_max: 10.0
+  front98_max_abs_max: 0.01
+  front98_rmse_max: 0.01
+  front2_max_abs_max: 0.01
+  front2_rmse_max: 0.01
+  m_dot_c_max_abs_max: 1.0e-8
+  recession_max_abs_max: 1.0e-8

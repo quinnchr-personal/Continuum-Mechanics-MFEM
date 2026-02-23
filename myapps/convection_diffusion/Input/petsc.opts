@@ -1,0 +1,6 @@
+# PETSc options for the monolithic 3-block convection-diffusion solve.
+-ksp_type gmres
+-ksp_rtol 1.0e-10
+-ksp_atol 1.0e-12
+-ksp_max_it 500
+-pc_type jacobi

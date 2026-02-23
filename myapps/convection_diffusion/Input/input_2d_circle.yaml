@@ -1,0 +1,17 @@
+mesh_file: Mesh/unit_circle.msh
+order: 3
+serial_ref_levels: 0
+par_ref_levels: 0
+
+# Eq. (7) / Table 3 parameters for circular domain
+kappa: 1.0
+s: 1.0
+cx: 1.0
+cy: 1.0
+
+petsc_options_file: Input/petsc_circle.opts
+
+output_path: ParaView
+collection_name: convection_diffusion_2D_circle
+error_csv: error_history_2D_circle.csv
+save_paraview: true

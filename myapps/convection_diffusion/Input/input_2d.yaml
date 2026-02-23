@@ -1,0 +1,21 @@
+mesh_file: Mesh/unit_square.msh
+order: 3
+serial_ref_levels: 0
+par_ref_levels: 0
+
+# Eq. (7) / Table 1 parameters
+kappa: 0.1
+s: 1.0
+cx: 1.0
+cy: -2.0
+
+# Eq. (9) manufactured solution modes
+mode_n: 3
+mode_m: 3
+
+petsc_options_file: Input/petsc.opts
+
+output_path: ParaView
+collection_name: convection_diffusion_2D
+error_csv: error_history_2D.csv
+save_paraview: true

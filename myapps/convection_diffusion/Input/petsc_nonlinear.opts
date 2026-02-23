@@ -1,0 +1,8 @@
+# PETSc options for Newton linear solves in nonlinear_convection_diffusion_1D.
+-newton_ls_ksp_type gmres
+-newton_ls_ksp_rtol 1.0e-10
+-newton_ls_ksp_atol 1.0e-12
+-newton_ls_ksp_max_it 2000
+-newton_ls_pc_type bjacobi
+-newton_ls_sub_ksp_type preonly
+-newton_ls_sub_pc_type ilu

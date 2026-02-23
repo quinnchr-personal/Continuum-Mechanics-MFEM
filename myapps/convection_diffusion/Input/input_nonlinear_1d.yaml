@@ -1,0 +1,43 @@
+mesh_file: Mesh/square_0p01.msh
+order: 3
+serial_ref_levels: 0
+par_ref_levels: 0
+
+dt: 1.0e-1
+t_final: 1.0
+
+# Nonlinear coefficients:
+# a(u) = a0 + a1*(u-u_ref)
+# m(u) = m0 + m1*(u-u_ref)
+a0: 10.0
+a1: 0.09
+m0: 4000000.0
+m1: 36000.0
+u_ref: 300.0
+
+# nonlinear_heat.m analytical-solution constants
+alpha: 2.5e-6
+kappa1: 10.0
+kappa2: 100.0
+T0: 300.0
+T1: 300.0
+T2: 1300.0
+qbar: 7.5e5
+L: 0.01
+series_terms: 1000
+
+# Newton solver settings
+newton_abs_tol: 1.0e-10
+newton_rel_tol: 1.0e-8
+newton_max_iter: 20
+newton_print_level: 1
+
+petsc_options_file: Input/petsc_nonlinear.opts
+ksp_prefix: newton_ls_
+petsc_ksp_print_level: 0
+
+output_path: ParaView
+collection_name: nonlinear_convection_diffusion_1D
+error_csv: error_history_nonlinear_1D.csv
+newton_csv: newton_history_nonlinear_1D.csv
+save_paraview: true
