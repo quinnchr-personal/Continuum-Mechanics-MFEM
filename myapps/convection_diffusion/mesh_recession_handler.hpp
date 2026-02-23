@@ -38,6 +38,15 @@ public:
 
    RecessionStepOutput Advance(const RecessionStepInput &input);
 
+   // Two-phase API: PrepareAdvance computes and stores the mesh velocity via
+   // Laplacian smoothing but does NOT move the mesh.  CommitAdvance then moves
+   // the mesh and finalises recession bookkeeping.  Call PrepareAdvance first,
+   // optionally do work that needs the velocity (e.g. ALE remapping of internal
+   // state), then call CommitAdvance.  Advance() is equivalent to calling both
+   // in sequence.
+   void PrepareAdvance(const RecessionStepInput &input);
+   RecessionStepOutput CommitAdvance();
+
    const mfem::ParFiniteElementSpace &ScalarSpace() const { return *scalar_fes_; }
    const mfem::ParGridFunction &MeshVelocity() const;
    const mfem::ParGridFunction &RecessionField() const;
@@ -79,4 +88,8 @@ private:
 
    double initial_min_quality_ = 1.0;
    double total_recession_ = 0.0;
+
+   // State carried between PrepareAdvance and CommitAdvance.
+   double pending_dt_ = 0.0;
+   double pending_top_mean_velocity_ = 0.0;
 };

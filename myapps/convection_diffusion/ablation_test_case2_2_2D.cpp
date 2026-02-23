@@ -1247,6 +1247,29 @@ public:
    {
       return static_cast<int>(extent_elem_.size());
    }
+   // Recompute extent_elem_[r][elem] as the average of the per-QP extents.
+   // Called after ALE remapping to keep the diagnostic/output arrays consistent
+   // with the authoritative per-QP states_.
+   void UpdateExtentAverageFromQPs(const int elem)
+   {
+      const int nq = static_cast<int>(states_.at(elem).size());
+      if (nq == 0) { return; }
+      const int nr = static_cast<int>(extent_elem_.size());
+      const double inv_nq = 1.0 / static_cast<double>(nq);
+      for (int r = 0; r < nr; ++r)
+      {
+         double sum = 0.0;
+         for (int q = 0; q < nq; ++q)
+         {
+            if (r < static_cast<int>(states_[elem][q].extent.size()))
+            {
+               sum += states_[elem][q].extent[r];
+            }
+         }
+         extent_elem_[r].at(elem) = sum * inv_nq;
+      }
+   }
+
    void SetElementInternalAverages(const int elem,
                                    const vector<double> &extent_avg,
                                    const double degree_char,
@@ -1629,7 +1652,7 @@ private:
                J10(i, j) += w * (shape_p_[i] * A_T * shape_T_[j]
                                  + B_T * shape_T_[j] * Bpi_gradp
                                  - C_T * shape_T_[j] * g_Bpi
-                                 - H_T * shape_T_[j] * wmesh_Bpi);
+                                 + H_T * shape_T_[j] * wmesh_Bpi);
             }
 
             for (int j = 0; j < dof_p; ++j)
@@ -1643,7 +1666,7 @@ private:
                                  + B_p * shape_p_[j] * Bpi_gradp
                                  + base.B * Bpi_Bpj
                                  - C_p * shape_p_[j] * g_Bpi
-                                 - H_p * shape_p_[j] * wmesh_Bpi);
+                                 + H_p * shape_p_[j] * wmesh_Bpi);
             }
          }
 
@@ -1673,7 +1696,7 @@ private:
                                  + base.E * BTi_BTj
                                  + F_T * shape_T_[j] * BTi_gradp
                                  - G_T * shape_T_[j] * g_BTi
-                                 - I_T * shape_T_[j] * wmesh_BTi);
+                                 + I_T * shape_T_[j] * wmesh_BTi);
             }
 
             for (int j = 0; j < dof_p; ++j)
@@ -1688,7 +1711,7 @@ private:
                                  + F_p * shape_p_[j] * BTi_gradp
                                  + base.F * BTi_Bpj
                                  - G_p * shape_p_[j] * g_BTi
-                                 - I_p * shape_p_[j] * wmesh_BTi);
+                                 + I_p * shape_p_[j] * wmesh_BTi);
             }
          }
       }
@@ -1879,7 +1902,7 @@ private:
             rp[i] += w * (shape_p_[i] * (storage_p - source_p)
                           + rho_darcy * grad_dot
                           - rho2_darcy * g_dot
-                          - ale_mass_storage * wmesh_dot);
+                          + ale_mass_storage * wmesh_dot);
          }
 
          for (int i = 0; i < dof_T; ++i)
@@ -1900,7 +1923,7 @@ private:
                           + solid.k * gradT_dot
                           + h_rho_darcy * gradp_dot
                           - h_rho2_darcy * g_dot
-                          - ale_energy_storage * wmesh_dot);
+                          + ale_energy_storage * wmesh_dot);
          }
       }
    }
@@ -3104,6 +3127,148 @@ void AdvanceInternalStates(const TACOTMaterial &material,
    }
 }
 
+// Remap per-QP pyrolysis extents to account for ALE mesh motion.
+//
+// After AdvanceInternalStates commits extents at the current (pre-move) mesh
+// QP positions, but before the mesh actually moves, this function corrects the
+// stored extents so that each QP holds the extent of the material that will be
+// at its post-move physical location.
+//
+// For each QP at physical position x_q with mesh velocity w_q, the target
+// position after the mesh moves is x_target = x_q + w_q * dt.  The material
+// at x_target is stationary, so its extent is already recorded (on the current
+// mesh) at whichever QP happens to be nearest to x_target.  We retrieve that
+// value via FindPoints and nearest-QP lookup, write it back, and update the
+// element-averaged extent arrays for consistent ParaView output.
+//
+// Must be called AFTER AdvanceInternalStates and BEFORE recession_handler->CommitAdvance.
+static void RemapExtentsALE(ReactionStateManager &state_manager,
+                             mfem::ParMesh &pmesh,
+                             const mfem::ParFiniteElementSpace &fes_T,
+                             const mfem::ParGridFunction &mesh_velocity,
+                             const int quad_order,
+                             const double dt)
+{
+   if (dt <= 0.0) { return; }
+
+   const int ne = fes_T.GetNE();
+   const int dim = pmesh.Dimension();
+   if (ne == 0) { return; }
+
+   // --- Step 1: build target-point matrix (x_q + w_q * dt for every QP) ---
+
+   int total_qps = 0;
+   for (int e = 0; e < ne; ++e)
+   {
+      const FiniteElement *fe = fes_T.GetFE(e);
+      total_qps += IntRules.Get(fe->GetGeomType(), quad_order).GetNPoints();
+   }
+
+   DenseMatrix target_pts(dim, total_qps);
+   vector<pair<int,int>> qp_map(total_qps);  // [col] -> {elem, local_qp}
+
+   int col = 0;
+   for (int e = 0; e < ne; ++e)
+   {
+      const FiniteElement *fe = fes_T.GetFE(e);
+      ElementTransformation *Tr = fes_T.GetElementTransformation(e);
+      const IntegrationRule &ir = IntRules.Get(fe->GetGeomType(), quad_order);
+      for (int q = 0; q < ir.GetNPoints(); ++q, ++col)
+      {
+         const IntegrationPoint &ip = ir.IntPoint(q);
+         Tr->SetIntPoint(&ip);
+
+         // Physical coordinate of this QP on the current (pre-move) mesh.
+         Vector x_phys(dim);
+         Tr->Transform(ip, x_phys);
+
+         // Mesh velocity at this QP.
+         Vector w_q(dim);
+         mesh_velocity.GetVectorValue(e, ip, w_q);
+
+         // Target: where this QP will sit after the mesh moves.
+         for (int d = 0; d < dim; ++d)
+         {
+            target_pts(d, col) = x_phys(d) + w_q(d) * dt;
+         }
+         qp_map[col] = {e, q};
+      }
+   }
+
+   // --- Step 2: locate each target point in the current (pre-move) mesh ---
+
+   Array<int> elem_ids(total_qps);
+   Array<IntegrationPoint> ref_pts(total_qps);
+   pmesh.FindPoints(target_pts, elem_ids, ref_pts, /*warn=*/false);
+
+   // --- Step 3: read remapped extents into a temp buffer ---
+   // We must complete all reads from the original state before writing any
+   // updated state back, otherwise an already-remapped QP could be used as
+   // the source for another QP in the same element.
+
+   vector<vector<double>> temp_extents(total_qps);
+   for (int k = 0; k < total_qps; ++k)
+   {
+      const auto [e_orig, q_orig] = qp_map[k];
+      // Default: keep the current value (fallback for not-found points).
+      temp_extents[k] = state_manager.GetState(e_orig, q_orig).extent;
+   }
+
+   for (int k = 0; k < total_qps; ++k)
+   {
+      const int e_found = elem_ids[k];
+      if (e_found < 0) { continue; }  // not found on this rank; keep old extent
+
+      // Find the QP in e_found whose reference coordinate is nearest to
+      // ip_found.  This is the source QP whose extent we adopt.
+      const FiniteElement *fe_found = fes_T.GetFE(e_found);
+      const IntegrationRule &ir_found =
+         IntRules.Get(fe_found->GetGeomType(), quad_order);
+      const IntegrationPoint &ip_found = ref_pts[k];
+
+      int nearest_q = 0;
+      double min_dist2 = std::numeric_limits<double>::max();
+      for (int qf = 0; qf < ir_found.GetNPoints(); ++qf)
+      {
+         const IntegrationPoint &ip_qf = ir_found.IntPoint(qf);
+         const double dx = ip_found.x - ip_qf.x;
+         const double dy = ip_found.y - ip_qf.y;
+         const double dz = ip_found.z - ip_qf.z;
+         const double d2 = dx*dx + dy*dy + dz*dz;
+         if (d2 < min_dist2) { min_dist2 = d2; nearest_q = qf; }
+      }
+
+      const TACOTMaterial::InternalState &src =
+         state_manager.GetState(e_found, nearest_q);
+      const int nr = static_cast<int>(temp_extents[k].size());
+      for (int r = 0; r < nr; ++r)
+      {
+         const double xi = (r < static_cast<int>(src.extent.size()))
+                              ? src.extent[r]
+                              : temp_extents[k][r];  // size mismatch guard
+         temp_extents[k][r] = std::max(0.0, std::min(1.0, xi));
+      }
+   }
+
+   // --- Step 4: write remapped extents back and update element averages ---
+
+   col = 0;
+   for (int e = 0; e < ne; ++e)
+   {
+      const FiniteElement *fe = fes_T.GetFE(e);
+      const IntegrationRule &ir = IntRules.Get(fe->GetGeomType(), quad_order);
+      for (int q = 0; q < ir.GetNPoints(); ++q, ++col)
+      {
+         TACOTMaterial::InternalState st = state_manager.GetState(e, q);
+         st.extent     = temp_extents[col];
+         st.extent_old = temp_extents[col];
+         state_manager.SetState(e, q, st);
+      }
+      // Keep the diagnostic/output element-average array consistent.
+      state_manager.UpdateExtentAverageFromQPs(e);
+   }
+}
+
 void InitializeDiagnostics(const TACOTMaterial &material,
                            ReactionStateManager &state_manager)
 {
@@ -4020,8 +4185,27 @@ int main(int argc, char *argv[])
             RecessionStepInput rec_input;
             rec_input.dt = dt_step;
             rec_input.top_recession_velocity_true = &top_recession_velocity_true;
-            const RecessionStepOutput rec_output =
-               recession_handler->Advance(rec_input);
+
+            // Compute mesh velocity via Laplacian smoothing but do NOT move
+            // the mesh yet.  The velocity is needed to remap the pyrolysis
+            // extents to the post-move QP positions before committing motion.
+            recession_handler->PrepareAdvance(rec_input);
+
+            // Remap per-QP pyrolysis extents: for each QP that will move from
+            // x_q to x_q + w*dt, fetch the extent of the material currently at
+            // x_q + w*dt (stationary material) from the nearest QP in the
+            // current mesh.  This is the ALE correction missing from
+            // AdvanceInternalStates (equivalent to PATO's
+            // -fvm::div(mesh_.phi(), Xsi) term).
+            RemapExtentsALE(state_manager,
+                            *pmesh,
+                            fes_T,
+                            recession_handler->MeshVelocity(),
+                            quad_order,
+                            dt_step);
+
+            // Now move the mesh and finalise recession bookkeeping.
+            const RecessionStepOutput rec_output = recession_handler->CommitAdvance();
             recession_total = rec_output.total_recession;
          }
 

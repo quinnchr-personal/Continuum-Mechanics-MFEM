@@ -3,7 +3,7 @@ SetFactory("OpenCASCADE");
 Lx = 0.005;
 Ly = 0.05;
 h1 = 0.0001;
-h2 = 0.01;
+h2 = 0.0025;
 
 Point(1) = {0.0, 0.0, 0.0, h2};
 Point(2) = {Lx, 0.0, 0.0, h2};

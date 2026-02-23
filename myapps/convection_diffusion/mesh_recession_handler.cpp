@@ -319,38 +319,42 @@ double MeshRecessionHandler::ComputeMinElementQuality_() const
    return global_min;
 }
 
-RecessionStepOutput MeshRecessionHandler::Advance(const RecessionStepInput &input)
+void MeshRecessionHandler::PrepareAdvance(const RecessionStepInput &input)
 {
-   RecessionStepOutput out;
-   out.total_recession = total_recession_;
+   pending_dt_ = input.dt;
+   pending_top_mean_velocity_ = 0.0;
+   *mesh_velocity_ = 0.0;
 
    if (input.dt <= 0.0 || input.top_recession_velocity_true == nullptr)
    {
-      *mesh_velocity_ = 0.0;
-      *recession_field_ = total_recession_;
-      out.min_quality = ComputeMinElementQuality_() / initial_min_quality_;
-      return out;
+      return;
    }
 
    Vector top_velocity_true;
    ClampTopVelocity_(*input.top_recession_velocity_true, input.dt, top_velocity_true);
+   pending_top_mean_velocity_ = ComputeTopMeanVelocity_(top_velocity_true);
 
-   const double top_mean_velocity = ComputeTopMeanVelocity_(top_velocity_true);
-
-   double delta = 0.0;
-   if (top_mean_velocity > 0.0)
+   if (pending_top_mean_velocity_ > 0.0)
    {
       SolveVelocityLaplacian_(top_velocity_true);
-      MoveMesh_(input.dt, out.max_node_disp);
-      delta = top_mean_velocity * input.dt;
-      total_recession_ += delta;
    }
-   else
+}
+
+RecessionStepOutput MeshRecessionHandler::CommitAdvance()
+{
+   RecessionStepOutput out;
+   out.total_recession = total_recession_;
+
+   if (pending_top_mean_velocity_ > 0.0 && pending_dt_ > 0.0)
    {
-      *mesh_velocity_ = 0.0;
+      MoveMesh_(pending_dt_, out.max_node_disp);
+      const double delta = pending_top_mean_velocity_ * pending_dt_;
+      total_recession_ += delta;
+      out.delta_recession = delta;
    }
 
    *recession_field_ = total_recession_;
+   out.total_recession = total_recession_;
 
    const double min_quality_raw = ComputeMinElementQuality_();
    if (min_quality_raw <= 0.0)
@@ -358,9 +362,6 @@ RecessionStepOutput MeshRecessionHandler::Advance(const RecessionStepInput &inpu
       throw std::runtime_error(
          "Mesh quality failure: non-positive element Jacobian detected.");
    }
-
-   out.delta_recession = delta;
-   out.total_recession = total_recession_;
    out.min_quality = min_quality_raw / initial_min_quality_;
    if (out.min_quality < config_.min_quality_ratio)
    {
@@ -368,7 +369,15 @@ RecessionStepOutput MeshRecessionHandler::Advance(const RecessionStepInput &inpu
          "Mesh quality ratio below configured minimum threshold.");
    }
 
+   pending_dt_ = 0.0;
+   pending_top_mean_velocity_ = 0.0;
    return out;
+}
+
+RecessionStepOutput MeshRecessionHandler::Advance(const RecessionStepInput &input)
+{
+   PrepareAdvance(input);
+   return CommitAdvance();
 }
 
 const ParGridFunction &MeshRecessionHandler::MeshVelocity() const
