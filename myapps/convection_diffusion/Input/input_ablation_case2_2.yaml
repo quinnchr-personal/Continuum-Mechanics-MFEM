@@ -35,8 +35,11 @@ save_paraview: true
 bdr_attr_top: 1
 bdr_attr_bottom: 2
 bdr_attr_sides: 3
-moving_mesh: true
 ale_enabled: true
+ale_mass_enabled: true
+ale_energy_enabled: true
+ale_energy_solid_enabled: true
+ale_energy_gas_enabled: false
 mesh_smoothing_model: laplacian
 recession_density_mode: char_surface
 recession_density_constant: 1200.0

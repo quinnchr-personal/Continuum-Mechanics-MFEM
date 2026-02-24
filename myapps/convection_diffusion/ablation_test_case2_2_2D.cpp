@@ -3141,7 +3141,10 @@ void AdvanceInternalStates(const TACOTMaterial &material,
 // value via FindPoints and nearest-QP lookup, write it back, and update the
 // element-averaged extent arrays for consistent ParaView output.
 //
-// Must be called AFTER AdvanceInternalStates and BEFORE recession_handler->CommitAdvance.
+// Must be called AFTER recession_handler->PrepareAdvance (so mesh velocity is
+// available) and BEFORE recession_handler->CommitAdvance (before the mesh is
+// actually moved).  In the current PATO-compat workflow this is invoked before
+// the PDE solve so the step starts from ALE-remapped internal extents.
 static void RemapExtentsALE(ReactionStateManager &state_manager,
                              mfem::ParMesh &pmesh,
                              const mfem::ParFiniteElementSpace &fes_T,
@@ -4064,6 +4067,53 @@ int main(int argc, char *argv[])
          const double dt_step = t_next - time;
          time = t_next;
 
+         if (recession_handler)
+         {
+            // PATO-like ordering: compute and apply mesh motion before the PDE
+            // solve, using the previous-step state/solution to define the
+            // current-step mesh velocity.
+            AssembleTopBoundaryRecessionVelocity(*pmesh,
+                                                 fes_T,
+                                                 fes_p,
+                                                 recession_handler->ScalarSpace(),
+                                                 T,
+                                                 p,
+                                                 material,
+                                                 state_manager,
+                                                 bprime_table,
+                                                 bc_schedule,
+                                                 surface_model,
+                                                 gravity,
+                                                 params.bdr_attr_top,
+                                                 time,
+                                                 params.recession_density_mode,
+                                                 params.recession_density_constant,
+                                                 top_recession_velocity_true);
+
+            RecessionStepInput rec_input;
+            rec_input.dt = dt_step;
+            rec_input.top_recession_velocity_true = &top_recession_velocity_true;
+
+            // Compute mesh velocity via Laplacian smoothing but do NOT move
+            // the mesh yet. The velocity is also used by the ALE remap below.
+            recession_handler->PrepareAdvance(rec_input);
+
+            // ALE-remap the stored pyrolysis extents onto the post-move QP
+            // locations before committing the mesh motion.
+            RemapExtentsALE(state_manager,
+                            *pmesh,
+                            fes_T,
+                            recession_handler->MeshVelocity(),
+                            quad_order,
+                            dt_step);
+
+            // Now move the mesh and finalise recession bookkeeping. The mesh
+            // velocity remains available to the PDE residual through the
+            // wrapped coefficient for this time step.
+            const RecessionStepOutput rec_output = recession_handler->CommitAdvance();
+            recession_total = rec_output.total_recession;
+         }
+
          T_old = T;
          p_old = p;
          tp_integrator->SetTimeStep(dt_step);
@@ -4161,53 +4211,6 @@ int main(int argc, char *argv[])
                                quad_order,
                                dt_step);
          const double step_state_sec = ElapsedSec(state_t0, steady_clock_t::now());
-
-         if (recession_handler)
-         {
-            AssembleTopBoundaryRecessionVelocity(*pmesh,
-                                                 fes_T,
-                                                 fes_p,
-                                                 recession_handler->ScalarSpace(),
-                                                 T,
-                                                 p,
-                                                 material,
-                                                 state_manager,
-                                                 bprime_table,
-                                                 bc_schedule,
-                                                 surface_model,
-                                                 gravity,
-                                                 params.bdr_attr_top,
-                                                 time,
-                                                 params.recession_density_mode,
-                                                 params.recession_density_constant,
-                                                 top_recession_velocity_true);
-
-            RecessionStepInput rec_input;
-            rec_input.dt = dt_step;
-            rec_input.top_recession_velocity_true = &top_recession_velocity_true;
-
-            // Compute mesh velocity via Laplacian smoothing but do NOT move
-            // the mesh yet.  The velocity is needed to remap the pyrolysis
-            // extents to the post-move QP positions before committing motion.
-            recession_handler->PrepareAdvance(rec_input);
-
-            // Remap per-QP pyrolysis extents: for each QP that will move from
-            // x_q to x_q + w*dt, fetch the extent of the material currently at
-            // x_q + w*dt (stationary material) from the nearest QP in the
-            // current mesh.  This is the ALE correction missing from
-            // AdvanceInternalStates (equivalent to PATO's
-            // -fvm::div(mesh_.phi(), Xsi) term).
-            RemapExtentsALE(state_manager,
-                            *pmesh,
-                            fes_T,
-                            recession_handler->MeshVelocity(),
-                            quad_order,
-                            dt_step);
-
-            // Now move the mesh and finalise recession bookkeeping.
-            const RecessionStepOutput rec_output = recession_handler->CommitAdvance();
-            recession_total = rec_output.total_recession;
-         }
 
          const auto output_t0 = steady_clock_t::now();
          const SurfaceBoundaryDiagnostics bdiag_now = write_outputs(step, time);
