@@ -44,7 +44,7 @@ MFEM_LIBS ?=
 YAML_CXXFLAGS ?= $(shell pkg-config --cflags yaml-cpp 2>/dev/null)
 YAML_LIBS ?= $(shell pkg-config --libs yaml-cpp 2>/dev/null)
 
-TARGETS = linear_convection_diffusion_1D linear_convection_diffusion_2D linear_convection_diffusion_2D_circle nonlinear_convection_diffusion_1D ablation_test_case1_2D ablation_test_case2_1_2D ablation_test_case2_2_2D ablation_test_case2_2_2D_test ablation_qstar_blowing_1D
+TARGETS = linear_convection_diffusion_1D linear_convection_diffusion_2D linear_convection_diffusion_2D_circle nonlinear_convection_diffusion_1D ablation_test_case1_2D ablation_test_case2_1_2D ablation_test_case2_2_2D ablation_test_case2_2_2D_test ablation_qstar_blowing_1D ale_validation_be ale_validation_be_stability ale_validation_be_convergence ale_validation_be_accuracy
 
 .PHONY: all clean
 
@@ -76,6 +76,18 @@ ablation_test_case2_2_2D_test: ablation_test_case2_2_2D_test.cpp tacot_material.
 
 ablation_qstar_blowing_1D: ablation_qstar_blowing_1D.cpp $(CONFIG_MK)
 	$(MFEM_CXX) $(MFEM_FLAGS) $< -o $@ $(MFEM_LIBS)
+
+ale_validation_be: ale_validation_be.cpp $(CONFIG_MK)
+	$(MFEM_CXX) $(MFEM_FLAGS) $< -o $@ $(MFEM_LIBS)
+
+ale_validation_be_stability: ale_validation_be_stability.cpp ale_validation_be.cpp $(CONFIG_MK)
+	$(MFEM_CXX) $(MFEM_FLAGS) ale_validation_be_stability.cpp -o $@ $(MFEM_LIBS)
+
+ale_validation_be_convergence: ale_validation_be_convergence.cpp ale_validation_be.cpp $(CONFIG_MK)
+	$(MFEM_CXX) $(MFEM_FLAGS) ale_validation_be_convergence.cpp -o $@ $(MFEM_LIBS)
+
+ale_validation_be_accuracy: ale_validation_be_accuracy.cpp ale_validation_be.cpp $(CONFIG_MK)
+	$(MFEM_CXX) $(MFEM_FLAGS) ale_validation_be_accuracy.cpp -o $@ $(MFEM_LIBS)
 
 clean:
 	rm -f $(TARGETS) *.o *~

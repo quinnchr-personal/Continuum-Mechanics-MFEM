@@ -2,10 +2,10 @@ mesh_file: Mesh/ablation_strip_tri_uniform.msh
 material_file: Input/material_tacot_case2_2.yaml
 
 order: 1
-serial_ref_levels: 0
+serial_ref_levels: 1
 par_ref_levels: 0
 
-dt: 0.01
+dt: 0.0025
 t_final: 120.0
 
 newton_abs_tol: 1.0e-8
@@ -39,7 +39,7 @@ ale_enabled: true
 ale_mass_enabled: true
 ale_energy_enabled: true
 ale_energy_solid_enabled: true
-ale_energy_gas_enabled: false
+ale_energy_gas_enabled: true
 mesh_smoothing_model: laplacian
 recession_density_mode: char_surface
 recession_density_constant: 1200.0

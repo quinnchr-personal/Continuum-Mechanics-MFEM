@@ -200,6 +200,51 @@ def load_pato_point_plot(path: Path) -> Tuple[np.ndarray, np.ndarray, List[float
     return time, vals, y_vals
 
 
+def safe_divide(num: np.ndarray, den: np.ndarray) -> np.ndarray:
+    num = np.asarray(num, dtype=float)
+    den = np.asarray(den, dtype=float)
+    out = np.full_like(num, np.nan, dtype=float)
+    mask = np.isfinite(num) & np.isfinite(den) & (np.abs(den) > 1.0e-30)
+    out[mask] = num[mask] / den[mask]
+    return out
+
+
+def build_mfem_pressure_by_y(
+    mfem_pressure_probes: np.ndarray, probe_y: List[float]
+) -> Dict[float, Tuple[str, np.ndarray]]:
+    out: Dict[float, Tuple[str, np.ndarray]] = {}
+    names = list(mfem_pressure_probes.dtype.names or [])
+    if "wall" in names and probe_y:
+        out[probe_y[0]] = ("wall", mfem_pressure_probes["wall"])
+    for name in names:
+        if name in ("time", "wall"):
+            continue
+        idx = tc_index(name)
+        if idx > 0 and idx < len(probe_y):
+            out[probe_y[idx]] = (name, mfem_pressure_probes[name])
+    return out
+
+
+def match_pressure_probe_points(
+    mfem_pressure_probes: np.ndarray,
+    probe_y: List[float],
+    pato_p_y: List[float],
+    pato_tol: float = 1.0e-8,
+) -> List[Tuple[float, str, int, np.ndarray]]:
+    mfem_y_map = build_mfem_pressure_by_y(mfem_pressure_probes, probe_y)
+    if not mfem_y_map:
+        return []
+    mfem_y_keys = list(mfem_y_map.keys())
+    matched: List[Tuple[float, str, int, np.ndarray]] = []
+    for j, y_pato in enumerate(pato_p_y):
+        y_best = min(mfem_y_keys, key=lambda y: abs(y - y_pato))
+        if abs(y_best - y_pato) <= pato_tol:
+            name, series = mfem_y_map[y_best]
+            matched.append((y_pato, name, j, series))
+    matched.sort(key=lambda x: x[0], reverse=True)
+    return matched
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -258,6 +303,7 @@ def main() -> None:
     boundary_diag_csv = out_dir / "boundary_diagnostics.csv"
     mfem_pressure_probes_csv = out_dir / "pressure_probes.csv"
     mfem_mesh_diag_csv = out_dir / "mesh_diagnostics.csv"
+    mfem_mass_eq_probe_csv = out_dir / "mass_eq_probe_diagnostics.csv"
     pato_surface_diag_csv = Path(args.pato_surface_diagnostics).expanduser()
     pato_pressure_plot = Path(args.pato_pressure_plot).expanduser()
 
@@ -283,6 +329,11 @@ def main() -> None:
     mfem_mesh_diag = (
         np.genfromtxt(mfem_mesh_diag_csv, delimiter=",", names=True)
         if mfem_mesh_diag_csv.exists()
+        else None
+    )
+    mfem_mass_eq_probe = (
+        np.genfromtxt(mfem_mass_eq_probe_csv, delimiter=",", names=True)
+        if mfem_mass_eq_probe_csv.exists()
         else None
     )
     pato_surface_diag = (
@@ -594,8 +645,12 @@ def main() -> None:
     pato_diag_plot = None
     pato_props_plot = None
     pato_flux_recon_plot = None
+    pato_flux_ratio_plot = None
     pato_pressure_profile_plot = None
+    pato_pressure_slope_plot = None
     mesh_diag_plot = None
+    mass_eq_probe_plot = None
+    mass_eq_wall_pato_plot = None
     if boundary_diag is not None and pato_surface_diag is not None:
         mfem_names = set(boundary_diag.dtype.names or ())
         pato_names = set(pato_surface_diag.dtype.names or ())
@@ -749,6 +804,67 @@ def main() -> None:
             pato_flux_recon_plot = out_dir / f"{args.out_prefix}_flux_reconstruction_compare.png"
             fig.savefig(pato_flux_recon_plot, dpi=180, bbox_inches="tight")
             plt.close(fig)
+
+            # Ratio decomposition on a common time grid (MFEM time samples).
+            t_mf = np.asarray(boundary_diag["time"], dtype=float)
+            t_pa = np.asarray(pato_surface_diag["time"], dtype=float)
+            t0 = max(float(np.nanmin(t_mf)), float(np.nanmin(t_pa)))
+            t1 = min(float(np.nanmax(t_mf)), float(np.nanmax(t_pa)))
+            common_mask = (t_mf >= t0) & (t_mf <= t1)
+            t_common = t_mf[common_mask]
+            if t_common.size >= 2:
+                mfem_direct = np.asarray(boundary_diag["m_dot_g_centerline"], dtype=float)[common_mask]
+                mfem_recon_common = np.asarray(mfem_flux_recon, dtype=float)[common_mask]
+                mfem_mob_common = np.asarray(boundary_diag["mobility_centerline"], dtype=float)[common_mask]
+                mfem_grad_common = np.asarray(boundary_diag["gradp_n_centerline"], dtype=float)[common_mask]
+
+                pato_direct_i = np.interp(t_common, t_pa, pato_surface_diag["mDotGw_centerline"])
+                pato_recon_i = np.interp(t_common, t_pa, pato_flux_recon)
+                pato_mob_i = np.interp(t_common, t_pa, pato_surface_diag["mobility_centerline"])
+                pato_grad_i = np.interp(t_common, t_pa, pato_surface_diag["snGradP_centerline"])
+
+                ratio_direct = safe_divide(mfem_direct, pato_direct_i)
+                ratio_recon = safe_divide(mfem_recon_common, pato_recon_i)
+                ratio_mob = safe_divide(mfem_mob_common, pato_mob_i)
+                ratio_grad_abs = safe_divide(np.abs(mfem_grad_common), np.abs(pato_grad_i))
+
+                fig, (ax_fluxr, ax_mobr, ax_gradr) = plt.subplots(
+                    3, 1, figsize=(13, 9.2), sharex=True, constrained_layout=True
+                )
+                for ax in (ax_fluxr, ax_mobr, ax_gradr):
+                    ax.axhline(1.0, color="black", lw=1.2, ls=":")
+                    ax.grid(True, alpha=0.25)
+
+                ax_fluxr.plot(t_common, ratio_direct, lw=2, color="tab:blue", label="direct flux ratio")
+                ax_fluxr.plot(
+                    t_common, ratio_recon, lw=1.8, ls="--", color="tab:orange", label="reconstructed flux ratio"
+                )
+                ax_fluxr.set_ylabel("MFEM / PATO")
+                ax_fluxr.set_title("Centerline mass-flux ratio decomposition")
+                ax_fluxr.legend(loc="center left", bbox_to_anchor=(1.02, 0.5), ncol=1)
+
+                ax_mobr.plot(t_common, ratio_mob, lw=2, color="tab:green", label="mobility ratio")
+                ax_mobr.set_ylabel("MFEM / PATO")
+                ax_mobr.legend(loc="center left", bbox_to_anchor=(1.02, 0.5), ncol=1)
+
+                ax_gradr.plot(
+                    t_common,
+                    ratio_grad_abs,
+                    lw=2,
+                    color="tab:red",
+                    label=r"$|\nabla p|$ ratio",
+                )
+                ax_gradr.set_xlabel("Time (s)")
+                ax_gradr.set_ylabel("MFEM / PATO")
+                ax_gradr.legend(loc="center left", bbox_to_anchor=(1.02, 0.5), ncol=1)
+
+                ax_fluxr.set_xlim(float(t_common[0]), float(t_common[-1]))
+                ax_mobr.set_xlim(float(t_common[0]), float(t_common[-1]))
+                ax_gradr.set_xlim(float(t_common[0]), float(t_common[-1]))
+
+                pato_flux_ratio_plot = out_dir / f"{args.out_prefix}_flux_ratio_decomposition.png"
+                fig.savefig(pato_flux_ratio_plot, dpi=180, bbox_inches="tight")
+                plt.close(fig)
         else:
             print(
                 "Skipping PATO/MFEM flux reconstruction plot: missing columns in "
@@ -1033,6 +1149,223 @@ def main() -> None:
                 "Skipping pressure profile plot: missing " + " and ".join(missing_parts)
             )
 
+    # Plot 10: Common probe-stencil pressure slopes near the top (same discrete stencil in both codes).
+    if (
+        mfem_pressure_probes is not None
+        and pato_p_time is not None
+        and pato_p_vals is not None
+        and len(pato_p_y) > 0
+        and probe_y
+    ):
+        matched_p = match_pressure_probe_points(mfem_pressure_probes, probe_y, pato_p_y)
+        n_pairs = min(3, max(0, len(matched_p) - 1))
+        if n_pairs >= 1:
+            t_mf_p = np.asarray(mfem_pressure_probes["time"], dtype=float)
+            t_pa_p = np.asarray(pato_p_time, dtype=float)
+            fig, axes = plt.subplots(
+                n_pairs + 1,
+                1,
+                figsize=(13, 3.2 * (n_pairs + 1)),
+                sharex=True,
+                constrained_layout=True,
+            )
+            axes_arr = np.atleast_1d(axes).ravel()
+            ratio_ax = axes_arr[-1]
+            colors = ["tab:blue", "tab:orange", "tab:green"]
+
+            t0 = max(float(np.nanmin(t_mf_p)), float(np.nanmin(t_pa_p)))
+            t1 = min(float(np.nanmax(t_mf_p)), float(np.nanmax(t_pa_p)))
+            common_mask = (t_mf_p >= t0) & (t_mf_p <= t1)
+            t_common = t_mf_p[common_mask]
+
+            for k in range(n_pairs):
+                y_up, name_up, j_up, mfem_up = matched_p[k]
+                y_dn, name_dn, j_dn, mfem_dn = matched_p[k + 1]
+                dy = y_up - y_dn
+                if abs(dy) <= 1.0e-14:
+                    continue
+                mfem_slope = (np.asarray(mfem_up, dtype=float) - np.asarray(mfem_dn, dtype=float)) / dy
+                pato_slope = (np.asarray(pato_p_vals[:, j_up], dtype=float) - np.asarray(pato_p_vals[:, j_dn], dtype=float)) / dy
+
+                ax = axes_arr[k]
+                c = colors[k % len(colors)]
+                ax.plot(t_mf_p, mfem_slope, lw=2, color=c, label=f"MFEM {name_up}-{name_dn}")
+                ax.plot(t_pa_p, pato_slope, lw=2, ls="--", color=c, label="PATO")
+                ax.set_ylabel("dp/dy (Pa/m)")
+                ax.grid(True, alpha=0.25)
+                depth_up = abs(matched_p[0][0] - y_up)
+                depth_dn = abs(matched_p[0][0] - y_dn)
+                ax.set_title(
+                    f"Common stencil {name_up}-{name_dn} (depths {depth_up:.4g} m to {depth_dn:.4g} m)"
+                )
+                ax.legend(loc="center left", bbox_to_anchor=(1.02, 0.5), ncol=1)
+
+                if t_common.size >= 2:
+                    pato_slope_i = np.interp(t_common, t_pa_p, pato_slope)
+                    mfem_slope_i = mfem_slope[common_mask]
+                    ratio = safe_divide(mfem_slope_i, pato_slope_i)
+                    ratio_ax.plot(
+                        t_common,
+                        ratio,
+                        lw=2,
+                        color=c,
+                        label=f"{name_up}-{name_dn}",
+                    )
+
+            ratio_ax.axhline(1.0, color="black", lw=1.2, ls=":")
+            ratio_ax.set_xlabel("Time (s)")
+            ratio_ax.set_ylabel("MFEM / PATO")
+            ratio_ax.set_title("Common probe-stencil pressure-slope ratio")
+            ratio_ax.grid(True, alpha=0.25)
+            ratio_ax.legend(loc="center left", bbox_to_anchor=(1.02, 0.5), ncol=1)
+
+            xmax_slope = max(float(np.nanmax(t_mf_p)), float(np.nanmax(t_pa_p)))
+            for ax in axes_arr:
+                ax.set_xlim(0.0, xmax_slope)
+
+            pato_pressure_slope_plot = (
+                out_dir / f"{args.out_prefix}_pressure_slope_stencils_compare.png"
+            )
+            fig.savefig(pato_pressure_slope_plot, dpi=180, bbox_inches="tight")
+            plt.close(fig)
+        else:
+            print("Skipping pressure-slope stencil plot: insufficient matched pressure probes.")
+    else:
+        print("Skipping pressure-slope stencil plot: missing MFEM or PATO pressure probe data.")
+
+    # Plot 11: MFEM mass-equation probe diagnostics (TC1/TC2/TC3).
+    if mfem_mass_eq_probe is not None:
+        mass_eq_names = set(mfem_mass_eq_probe.dtype.names or ())
+        needed_cols = {"time"}
+        for stem in ("pi_total", "gradp_y", "mflux_y"):
+            for idx in (1, 2, 3):
+                needed_cols.add(f"{stem}_TC{idx}")
+
+        if needed_cols.issubset(mass_eq_names):
+            t_meq = np.asarray(mfem_mass_eq_probe["time"], dtype=float)
+            fig, axes = plt.subplots(
+                3, 1, figsize=(13, 9.0), sharex=True, constrained_layout=True
+            )
+            colors = ["tab:blue", "tab:orange", "tab:green"]
+            tc_ids = [1, 2, 3]
+
+            series_specs = [
+                ("pi_total", "pi_total", r"$\pi_{tot}$ (kg/m$^3$/s)"),
+                ("gradp_y", "gradp_y", r"$\partial p / \partial y$ (Pa/m)"),
+                ("mflux_y", "mflux_y", r"$m_{g,y}$ (kg/m$^2$/s)"),
+            ]
+
+            for ax, (key, title_key, ylabel) in zip(axes, series_specs):
+                for c, idx in zip(colors, tc_ids):
+                    col = f"{key}_TC{idx}"
+                    ax.plot(
+                        t_meq,
+                        np.asarray(mfem_mass_eq_probe[col], dtype=float),
+                        lw=2,
+                        color=c,
+                        label=f"TC{idx}",
+                    )
+                ax.set_ylabel(ylabel)
+                ax.set_title(f"MFEM probe {title_key}: TC1/TC2/TC3")
+                ax.grid(True, alpha=0.25)
+                ax.legend(loc="center left", bbox_to_anchor=(1.02, 0.5), ncol=1)
+
+            axes[-1].set_xlabel("Time (s)")
+            if t_meq.size:
+                xmax = float(np.nanmax(t_meq))
+                for ax in axes:
+                    ax.set_xlim(0.0, xmax)
+
+            mass_eq_probe_plot = out_dir / f"{args.out_prefix}_mass_eq_probe_terms.png"
+            fig.savefig(mass_eq_probe_plot, dpi=180, bbox_inches="tight")
+            plt.close(fig)
+        else:
+            missing = sorted(needed_cols - mass_eq_names)
+            print(
+                "Skipping MFEM mass-equation probe plot: missing columns in "
+                f"{mfem_mass_eq_probe_csv}: {', '.join(missing)}"
+            )
+    else:
+        print(f"Skipping MFEM mass-equation probe plot: missing {mfem_mass_eq_probe_csv}")
+
+    # Plot 12: MFEM wall mass-equation probe terms vs PATO top-centerline diagnostics.
+    if mfem_mass_eq_probe is not None and pato_surface_diag is not None:
+        mfem_meq_names = set(mfem_mass_eq_probe.dtype.names or ())
+        pato_names = set(pato_surface_diag.dtype.names or ())
+        mfem_needed = {"time", "gradp_y_wall", "mflux_y_wall"}
+        pato_needed = {"time", "snGradP_centerline", "mDotGw_centerline"}
+        if mfem_needed.issubset(mfem_meq_names) and pato_needed.issubset(pato_names):
+            t_mf = np.asarray(mfem_mass_eq_probe["time"], dtype=float)
+            t_pa = np.asarray(pato_surface_diag["time"], dtype=float)
+            fig, (ax_grad, ax_flux) = plt.subplots(
+                2, 1, figsize=(13, 7.5), sharex=True, constrained_layout=True
+            )
+
+            ax_grad.plot(
+                t_mf,
+                np.asarray(mfem_mass_eq_probe["gradp_y_wall"], dtype=float),
+                lw=2,
+                color="tab:blue",
+                label="MFEM gradp_y_wall",
+            )
+            ax_grad.plot(
+                t_pa,
+                np.asarray(pato_surface_diag["snGradP_centerline"], dtype=float),
+                lw=2,
+                ls="--",
+                color="tab:orange",
+                label="PATO snGradP_centerline",
+            )
+            ax_grad.set_ylabel("Pressure gradient (Pa/m)")
+            ax_grad.set_title("Wall pressure-gradient comparison (MFEM wall vs PATO top centerline)")
+            ax_grad.grid(True, alpha=0.25)
+            ax_grad.legend(loc="center left", bbox_to_anchor=(1.02, 0.5), ncol=1)
+
+            ax_flux.plot(
+                t_mf,
+                np.asarray(mfem_mass_eq_probe["mflux_y_wall"], dtype=float),
+                lw=2,
+                color="tab:blue",
+                label="MFEM mflux_y_wall",
+            )
+            ax_flux.plot(
+                t_pa,
+                np.asarray(pato_surface_diag["mDotGw_centerline"], dtype=float),
+                lw=2,
+                ls="--",
+                color="tab:orange",
+                label="PATO mDotGw_centerline",
+            )
+            ax_flux.set_xlabel("Time (s)")
+            ax_flux.set_ylabel(r"$m_g \cdot \hat{y}$ (kg/m$^2$/s)")
+            ax_flux.set_title("Wall gas mass-flux comparison (MFEM wall vs PATO top centerline)")
+            ax_flux.grid(True, alpha=0.25)
+            ax_flux.legend(loc="center left", bbox_to_anchor=(1.02, 0.5), ncol=1)
+
+            xmax = max(float(np.nanmax(t_mf)), float(np.nanmax(t_pa)))
+            ax_grad.set_xlim(0.0, xmax)
+            ax_flux.set_xlim(0.0, xmax)
+
+            mass_eq_wall_pato_plot = out_dir / f"{args.out_prefix}_wall_massflux_pressure_compare.png"
+            fig.savefig(mass_eq_wall_pato_plot, dpi=180, bbox_inches="tight")
+            plt.close(fig)
+        else:
+            missing_mf = sorted(mfem_needed - mfem_meq_names)
+            missing_pa = sorted(pato_needed - pato_names)
+            parts = []
+            if missing_mf:
+                parts.append(f"{mfem_mass_eq_probe_csv}: {', '.join(missing_mf)}")
+            if missing_pa:
+                parts.append(f"{pato_surface_diag_csv}: {', '.join(missing_pa)}")
+            print("Skipping MFEM/PATO wall comparison plot: missing " + " | ".join(parts))
+    elif mfem_mass_eq_probe is None or pato_surface_diag is None:
+        missing_parts = []
+        if mfem_mass_eq_probe is None:
+            missing_parts.append(str(mfem_mass_eq_probe_csv))
+        if pato_surface_diag is None:
+            missing_parts.append(str(pato_surface_diag_csv))
+        print("Skipping MFEM/PATO wall comparison plot: missing " + " and ".join(missing_parts))
+
     if len(mfem_by_depth) != len(am_by_depth):
         print("Probe-count mismatch: using nearest-to-surface shared count =", n_common)
         print("  MFEM probes:", len(mfem_by_depth), "Amaryllis probes:", len(am_by_depth))
@@ -1044,12 +1377,20 @@ def main() -> None:
         print(f"Wrote: {pato_diag_plot}")
     if pato_flux_recon_plot is not None:
         print(f"Wrote: {pato_flux_recon_plot}")
+    if pato_flux_ratio_plot is not None:
+        print(f"Wrote: {pato_flux_ratio_plot}")
     if pato_props_plot is not None:
         print(f"Wrote: {pato_props_plot}")
     if pato_pressure_profile_plot is not None:
         print(f"Wrote: {pato_pressure_profile_plot}")
+    if pato_pressure_slope_plot is not None:
+        print(f"Wrote: {pato_pressure_slope_plot}")
     if mesh_diag_plot is not None:
         print(f"Wrote: {mesh_diag_plot}")
+    if mass_eq_probe_plot is not None:
+        print(f"Wrote: {mass_eq_probe_plot}")
+    if mass_eq_wall_pato_plot is not None:
+        print(f"Wrote: {mass_eq_wall_pato_plot}")
     print(f"Overall PASS: {overall_pass}")
     print(f"Temperature PASS: {temp_pass}")
     print(f"Wall heating RMSE/max: {heat_rmse:.6g} / {heat_max:.6g}")
