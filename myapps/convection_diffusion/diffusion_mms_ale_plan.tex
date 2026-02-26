@@ -1,0 +1,524 @@
+\documentclass[11pt,letterpaper]{article}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{geometry}
+\usepackage{hyperref}
+\usepackage{booktabs}
+\usepackage{xcolor}
+\usepackage{listings}
+
+\geometry{margin=1.2in}
+
+\newcommand{\xh}{\hat{x}}
+\newcommand{\yh}{\hat{y}}
+\newcommand{\Oh}{\hat{\Omega}}
+\newcommand{\Ah}{\hat{\mathcal{A}}}
+\newcommand{\Gh}{\hat{G}}
+\newcommand{\Ch}{\hat{C}}
+\newcommand{\Jh}{\hat{\mathcal{J}}}
+\newcommand{\uh}{\hat{u}}
+\newcommand{\vh}{\hat{v}}
+\newcommand{\psih}{\hat{\psi}}
+\newcommand{\fh}{\hat{f}}
+\newcommand{\wh}{\hat{w}}
+\newcommand{\nablah}{\hat{\nabla}}
+\newcommand{\divh}{\widehat{\operatorname{div}}}
+
+\title{Implementation Plan: \texttt{diffusion\_mms\_ale.cpp}\\
+  \large ALE Backward Euler Driver for Example 7.3 of Ivan\v{c}i\'{c} et al.\
+  (SIAM final; arXiv:1809.06553v1 preprint)}
+\author{Implementation notes}
+\date{\today}
+
+\begin{document}
+\maketitle
+\tableofcontents
+\newpage
+
+%=============================================================================
+\section{Context and Goal}
+%=============================================================================
+
+We are creating \texttt{diffusion\_mms\_ale.cpp}, a driver based on the existing
+\texttt{diffusion\_mms.cpp} (static mesh, manufactured solution), extended to use
+the SCL-preserving ALE Backward Euler formulation from
+\begin{quote}
+  Filip Ivan\v{c}i\'{c}, Tony W.H.\ Sheu, Maxim Solovchuk,
+  \textit{ALE-type FEM formulation for PDEs on time-dependent domains with vanishing
+  discrete SCL}. We use the locally available final SIAM version
+  (\texttt{SIAM\_ALE.pdf}) as the authoritative source and keep the arXiv v1 preprint
+  (\texttt{1809.06553v1.pdf}) for cross-reference.
+\end{quote}
+We implement \textbf{Example 7.3} (Section 7.3, Accuracy test).
+
+\paragraph{Key design choice.}
+The MFEM mesh remains in the \emph{referent (reference) configuration} throughout the
+simulation — nodes are never moved. Instead, the ALE displacement field
+$\Ah(\xh, t) - \xh$ is registered as a vector ParaView field. The user applies
+\textbf{Warp by Vector} in ParaView to visualize the physical (Eulerian) domain.
+
+%=============================================================================
+\section{Problem Statement: Example 7.3}
+%=============================================================================
+
+\subsection{PDE}
+
+\begin{equation}
+  \partial_t u - \alpha\,\Delta u = f \quad \text{in } \Omega(t)\times(0,T),
+  \label{eq:pde}
+\end{equation}
+with $\alpha = 0.1$, $T = 2$, $\Omega(t) = \Omega_0 = [0,1]^2$ for all $t$.
+The domain boundary is kept fixed; only the interior grid moves.
+
+\subsection{Exact solution}
+
+\begin{equation}
+  u(\boldsymbol{x},t) = \sin(t)\cos\!\left(2\!\left(x-\tfrac{1}{2}\right)^{\!2}
+    + 2\!\left(y-\tfrac{1}{2}\right)^{\!2}\right),
+  \label{eq:exact}
+\end{equation}
+which is the same manufactured solution as \texttt{diffusion\_mms.cpp}.
+
+\subsection{Forcing term}
+
+From the exact solution \eqref{eq:exact}, the forcing at physical point
+$\boldsymbol{x} = (x,y)$ is
+\begin{align}
+  f(\boldsymbol{x},t) &= \partial_t u - \alpha\,\Delta u \notag\\
+  &= \cos(t)\cos(q) - \alpha\sin(t)\left[-16r^2\cos(q) - 8\sin(q)\right], \\
+  q &= 2(x-\tfrac{1}{2})^2 + 2(y-\tfrac{1}{2})^2, \quad
+  r^2 = (x-\tfrac{1}{2})^2 + (y-\tfrac{1}{2})^2. \notag
+\end{align}
+
+\subsection{ALE maps}
+
+Let $\Oh = [0,1]^2$ be the fixed referent domain. Define reference coordinates
+$\hat{\boldsymbol{x}} = (\xh, \yh) \in \Oh$. The ALE map
+$\Ah(\cdot,t): \Oh \to \Omega(t) = \Omega_0$ is prescribed.
+
+\paragraph{Map A (``accuracy\_a'').}
+
+\begin{equation}
+  \Ah^A(\hat{\boldsymbol{x}},t) =
+  \begin{pmatrix}
+    \xh + \tfrac{1}{2}\sin(\pi t)\,g(\xh) \\
+    \yh + \tfrac{1}{2}\sin(\pi t)\,g(\yh)
+  \end{pmatrix},
+  \label{eq:mapA}
+\end{equation}
+where $g(z) = \sin\!\bigl(\pi h(z)\bigr)$ and
+$h(z) = z(1-z)(z-\tfrac{1}{2}) = -z^3 + \tfrac{3}{2}z^2 - \tfrac{1}{2}z$.
+
+\paragraph{Map B (``accuracy\_b'').}
+
+\begin{equation}
+  \Ah^B(\hat{\boldsymbol{x}},t) =
+  \begin{pmatrix}
+    \xh + \sin(\pi t)\,\xh(1-\xh)\,\yh(1-\yh) \\
+    \yh + \sin(\pi t)\,\xh(1-\xh)\,\yh(1-\yh)
+  \end{pmatrix}.
+  \label{eq:mapB}
+\end{equation}
+
+\noindent Both maps satisfy $\Ah(\hat{\boldsymbol{x}},t) = \hat{\boldsymbol{x}}$ on
+$\partial\Oh$, so the domain boundary is preserved. The identity map
+($\Ah(\hat{\boldsymbol{x}},t) = \hat{\boldsymbol{x}}$, no deformation) is also supported
+and should reproduce the static-mesh \texttt{diffusion\_mms} result exactly.
+
+\subsection{ALE map gradient, cofactor, and metric}
+
+To avoid the paper's symbol overload, we use:
+\begin{itemize}
+  \item $\Gh_t = \nablah \Ah(\cdot,t)$ for the ALE map gradient (deformation gradient),
+  \item $\Jh_t = \det \Gh_t$ for the Jacobian determinant,
+  \item $\Ch_t = \operatorname{cof}(\Gh_t) = \Jh_t\,\Gh_t^{-T}$ for the 2D cofactor matrix.
+\end{itemize}
+The paper later writes the pulled-back weak form using a symbol $\hat{F}$ for the
+cofactor matrix (while eq.~1.7 used $\hat{F}$ for the ALE-map gradient). This symbol
+reuse appears in both the arXiv v1 preprint and the SIAM final version; in this plan
+we write it explicitly as $\Ch$.
+
+\noindent The deformation gradient is
+\begin{equation}
+  \Gh_t(\hat{\boldsymbol{x}}) = \nablah \Ah(\hat{\boldsymbol{x}},t)
+  \in \mathbb{R}^{2\times 2},
+  \qquad
+  \Jh_t(\hat{\boldsymbol{x}}) = \det\Gh_t.
+\end{equation}
+For Map A, $\Gh = \mathrm{diag}(1 + \frac{1}{2}\sin(\pi t)\,g'(\xh),\;
+1 + \frac{1}{2}\sin(\pi t)\,g'(\yh))$ (diagonal).
+For Map B, $\Gh$ is a full $2\times2$ matrix. The corresponding cofactor $\Ch$ is
+used in the pulled-back diffusion and ALE motion terms.
+
+%=============================================================================
+\section{Formulation: Equations 5.1--5.7}
+%=============================================================================
+
+\subsection{Weak form on referent configuration (eq.\ 5.1)}
+
+The heat equation weak form pulled back to $\Oh$ (paper eq.\ 5.1) is
+\begin{equation}
+  0 = \frac{d}{dt}\int_{\Oh} \psih\,\uh\,\Jh_t\,d\hat{\boldsymbol{x}}
+  + \int_{\Oh}\!\left[\frac{\alpha}{\Jh_t}\Ch_t\Ch_t^T\nablah\psih\!\cdot\!\nablah\uh
+    - \psih\Ch_t\wh\!\cdot\!\nablah\uh
+    - \psih\uh\,\divh(\Ch_t\wh)
+    - \psih\fh\,\Jh_t\right]d\hat{\boldsymbol{x}}.
+  \label{eq:weak51}
+\end{equation}
+Here $\wh(\hat{\boldsymbol{x}},t) = \partial_t \Ah(\hat{\boldsymbol{x}},t)$ is the
+grid velocity in reference coordinates.
+
+\subsection{Compact notation (eqs.\ 5.4--5.6)}
+
+Following the paper, define:
+\begin{align}
+  d_{n,n+1}(\uh_k,\psih)
+  &= \Delta t \int_{\Oh} \alpha\,\frac{1}{\Jh_{n,n+1}(\Delta t)}\,
+     \Ch_{n,n+1}(\Delta t)\,\Ch_{n,n+1}^T(\Delta t)\,
+     \nablah\psih\!\cdot\!\nablah\uh_k\,d\hat{\boldsymbol{x}},
+  \label{eq:d54} \\[6pt]
+  b_{n,n+1}(\fh_k,\psih)
+  &= \Delta t \int_{\Oh} \psih\,\fh_k\,\Jh_{n,n+1}(\Delta t)\,d\hat{\boldsymbol{x}},
+  \label{eq:b55} \\[6pt]
+  \mathcal{M}_{n,n+1}(\uh_k,\psih)
+  &= \int_{\Oh} \hat{\boldsymbol{\varphi}}\!\cdot\!\nablah\uh_k\,\psih\,d\hat{\boldsymbol{x}}
+    + \int_{\Oh} \psih\,\uh_k\,\divh\hat{\boldsymbol{\varphi}}\,d\hat{\boldsymbol{x}},
+  \label{eq:M56}
+\end{align}
+where the \emph{integrated mapped grid flux} is
+\begin{equation}
+  \hat{\boldsymbol{\varphi}}(\hat{\boldsymbol{x}})
+  = \int_0^{\Delta t} \Ch_{n,n+1}(t)\,\wh_{n,n+1}(\hat{\boldsymbol{x}},t)\,dt.
+  \label{eq:flux}
+\end{equation}
+This integral is computed \emph{analytically} for each map by the
+\texttt{AleMap::IntegratedMappedGridFlux} method (already implemented in
+\texttt{ale\_validation\_be.cpp}).
+
+\paragraph{Approximation of diffusion term.}
+The term $1/\Jh_t$ generates a rational function of $t$, which cannot in general be
+integrated exactly. Following the paper (eq.\ 5.3), we approximate:
+\begin{equation}
+  \int_{t_n}^{t_{n+1}} \frac{1}{\Jh_t}\,\Ch_t\Ch_t^T\,dt
+  \approx \Delta t\,\frac{1}{\Jh_{n,n+1}(\Delta t)}\,
+     \Ch_{n,n+1}(\Delta t)\,\Ch_{n,n+1}^T(\Delta t).
+\end{equation}
+Here $\Ch_{n,n+1}(s)$ denotes $\Ch$ evaluated at local time $s \in [0,\Delta t]$,
+so the approximation evaluates everything at the endpoint $s = \Delta t$, i.e.\ at
+$t = t_{n+1}$.
+
+\subsection{Implicit Euler scheme (eq.\ 5.7)}
+
+Integrating \eqref{eq:weak51} from $t_n$ to $t_{n+1}$ with unknown taken at $t_{n+1}$
+gives (paper eq.\ 5.7):
+\begin{equation}
+  \boxed{
+  \int_{\Oh}\psih\,\uh_{n+1}\,\Jh_{n+1}\,d\hat{\boldsymbol{x}}
+  - \int_{\Oh}\psih\,\uh_n\,\Jh_n\,d\hat{\boldsymbol{x}}
+  + d_{n,n+1}(\uh_{n+1},\psih)
+  - b_{n,n+1}(\fh_{n+1},\psih)
+  - \mathcal{M}_{n,n+1}(\uh_{n+1},\psih) = 0.
+  }
+  \label{eq:BE57}
+\end{equation}
+
+Rearranging into the standard $A\mathbf{u}^{n+1} = \mathbf{b}$ form:
+\begin{align}
+  \underbrace{
+    \int_{\Oh}\psih\,\uh_{n+1}\,\Jh_{n+1}\,d\hat{\boldsymbol{x}}
+    + d_{n,n+1}(\uh_{n+1},\psih)
+    - \mathcal{M}_{n,n+1}(\uh_{n+1},\psih)
+  }_{\text{LHS bilinear form applied to }u^{n+1}}
+  =
+  \underbrace{
+    \int_{\Oh}\psih\,\uh_n\,\Jh_n\,d\hat{\boldsymbol{x}}
+    + b_{n,n+1}(\fh_{n+1},\psih)
+  }_{\text{RHS}}.
+  \label{eq:linsys}
+\end{align}
+
+%=============================================================================
+\section{MFEM Assembly}
+%=============================================================================
+
+All FE spaces live on the \emph{fixed reference mesh} $\Oh = [0,1]^2$
+(mesh nodes never move). The function \texttt{T.Transform(ip, x)} returns
+$\hat{\boldsymbol{x}}$ directly, so no map inversion is ever needed. This is the main
+computational advantage of working in the referent configuration.
+
+\subsection{LHS bilinear form contributions}
+
+\begin{center}
+\renewcommand{\arraystretch}{1.5}
+\begin{tabular}{lll}
+\toprule
+Term & MFEM integrator & Coefficient \\
+\midrule
+$\int_{\Oh}\psih\,\uh_{n+1}\,\Jh_{n+1}\,d\hat{\boldsymbol{x}}$
+  & \texttt{MassIntegrator} & $\Jh(\hat{\boldsymbol{x}},t_{n+1})$ \\
+$d_{n,n+1}$ (diffusion)
+  & \texttt{DiffusionIntegrator(MatCoeff)} & $\dfrac{\alpha\,\Delta t}{\Jh_{n+1}}\Ch_{n+1}\Ch_{n+1}^T$ \\
+$-\int_{\Oh}\hat{\boldsymbol{\varphi}}\!\cdot\!\nablah\uh\,\psih\,d\hat{\boldsymbol{x}}$
+  & \texttt{ConvectionIntegrator(VecCoeff, -1)} & $\hat{\boldsymbol{\varphi}}(\hat{\boldsymbol{x}})$ \\
+$-\int_{\Oh}\psih\,\uh\,\divh\hat{\boldsymbol{\varphi}}\,d\hat{\boldsymbol{x}}$
+  & \texttt{MassIntegrator(Coeff)} & $-\divh\hat{\boldsymbol{\varphi}}(\hat{\boldsymbol{x}})$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{RHS contributions}
+
+\begin{center}
+\renewcommand{\arraystretch}{1.5}
+\begin{tabular}{lll}
+\toprule
+Term & MFEM form & Coefficient \\
+\midrule
+$\int_{\Oh}\psih\,\uh_n\,\Jh_n\,d\hat{\boldsymbol{x}}$
+  & \texttt{m\_old.Mult(u, rhs)} & \texttt{MassIntegrator}($\Jh_n$), pre-assembled at $t_n$ \\
+$b_{n,n+1}$ (forcing)
+  & \texttt{DomainLFIntegrator(Coeff)} & $f(\Ah(\hat{\boldsymbol{x}},t_{n+1}),\,t_{n+1})\cdot\Jh_{n+1}\cdot\Delta t$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Coefficient classes}
+
+All evaluate at $\hat{\boldsymbol{x}} =$ mesh point (no inversion).
+
+\medskip
+\noindent\textbf{\texttt{AleJacobianCoefficient}} $\to$ $\Jh(\hat{\boldsymbol{x}},t)$:
+\[
+  J = \det\Gh(\hat{\boldsymbol{x}},t)
+\]
+
+\noindent\textbf{\texttt{AleMetricTensorCoefficient}} (MatrixCoefficient) $\to$ $\frac{\alpha\,\Delta t}{\Jh_{n+1}}\Ch\Ch^T$:
+\[
+  M_{ij} = \frac{\alpha\,\Delta t}{\Jh_{n+1}(\hat{\boldsymbol{x}})}\,
+  \bigl(\Ch_{n+1}(\hat{\boldsymbol{x}})\bigr)_{ik}
+  \bigl(\Ch_{n+1}(\hat{\boldsymbol{x}})\bigr)_{jk}
+\]
+
+\noindent\textbf{\texttt{AleIntegratedFluxConvCoefficient}} (VectorCoefficient) $\to$ $\hat{\boldsymbol{\varphi}}$:
+\[
+  \hat{\boldsymbol{\varphi}}(\hat{\boldsymbol{x}})
+  = \texttt{AleMap::IntegratedMappedGridFlux}(\hat{\boldsymbol{x}},\,t_n,\,t_{n+1})
+  \quad\text{(first output)}
+\]
+
+\noindent\textbf{\texttt{AleIntegratedFluxDivCoefficient}} (Coefficient) $\to$ $\divh\hat{\boldsymbol{\varphi}}$:
+\[
+  \divh\hat{\boldsymbol{\varphi}}(\hat{\boldsymbol{x}})
+  = \texttt{AleMap::IntegratedMappedGridFlux}(\hat{\boldsymbol{x}},\,t_n,\,t_{n+1})
+  \quad\text{(second output)}
+\]
+
+\noindent\textbf{\texttt{AleExactCoefficient}} (Coefficient):
+\begin{align*}
+  \boldsymbol{x} &= \Ah(\hat{\boldsymbol{x}},t),\quad
+  q = 2(x-\tfrac{1}{2})^2 + 2(y-\tfrac{1}{2})^2 \\
+  \uh_{\rm exact}(\hat{\boldsymbol{x}},t) &= \sin(t)\cos(q)
+\end{align*}
+
+\noindent\textbf{\texttt{AleForcingJacobianCoefficient}} (Coefficient):
+\begin{align*}
+  \boldsymbol{x} &= \Ah(\hat{\boldsymbol{x}},t),\quad
+  r^2 = (x-\tfrac{1}{2})^2 + (y-\tfrac{1}{2})^2,\quad
+  q = 2r^2 \\
+  f &= \cos(t)\cos(q) - \alpha\sin(t)[-16r^2\cos(q) - 8\sin(q)] \\
+  \text{returns} &\quad f\cdot\Jh(\hat{\boldsymbol{x}},t)
+\end{align*}
+
+\noindent\textbf{\texttt{AleDisplacementCoefficient}} (VectorCoefficient, for ParaView):
+\[
+  \boldsymbol{d}(\hat{\boldsymbol{x}},t) = \Ah(\hat{\boldsymbol{x}},t) - \hat{\boldsymbol{x}}
+\]
+
+\subsection{Remark on the diffusion term}
+
+The MFEM \texttt{DiffusionIntegrator} with \texttt{MatrixCoefficient} \texttt{M} computes
+\[
+  \int_{\Oh} M(\hat{\boldsymbol{x}})\,\nablah\psih\!\cdot\!\nablah\uh\,d\hat{\boldsymbol{x}}.
+\]
+With $M = \frac{\alpha\,\Delta t}{\Jh_{n+1}}\Ch_{n+1}\Ch_{n+1}^T$, this gives exactly
+$d_{n,n+1}(\uh_{n+1},\psih)$ as defined in eq.~\eqref{eq:d54}. ✓
+
+\subsection{Remark on the ALE motion term}
+
+The \texttt{ConvectionIntegrator} with VectorCoefficient \texttt{b} and scale $\beta$ computes
+\[
+  \beta\int_{\Oh}(\mathbf{b}\!\cdot\!\nablah\uh)\,\psih\,d\hat{\boldsymbol{x}}.
+\]
+With $\mathbf{b} = \hat{\boldsymbol{\varphi}}$ and $\beta = -1$, this is the first term of
+$-\mathcal{M}_{n,n+1}$. The second term $-\int\divh\hat{\boldsymbol{\varphi}}\,\uh\,\psih$
+is assembled by \texttt{MassIntegrator} with coefficient $-\divh\hat{\boldsymbol{\varphi}}$. ✓
+
+%=============================================================================
+\section{Time Loop Structure}
+%=============================================================================
+
+\begin{enumerate}
+  \item \textbf{Assemble old mass} (at $t = t_n$):
+    \[
+      \texttt{m\_old} = \int_{\Oh} \Jh_n\,\psih\,\uh\,d\hat{\boldsymbol{x}},
+      \quad \texttt{rhs} = \texttt{m\_old.Mult}(u)
+    \]
+    Note: assembled \emph{before} advancing time to $t_{n+1}$.
+
+  \item \textbf{Advance time}: $t \leftarrow t + \Delta t$.
+
+  \item \textbf{Assemble LHS bilinear form} $a$ (at $t_{n+1}$):
+    \begin{enumerate}
+      \item \texttt{MassIntegrator}($\Jh_{n+1}$)
+      \item \texttt{DiffusionIntegrator}($\frac{\alpha\,\Delta t}{\Jh_{n+1}}\Ch_{n+1}\Ch_{n+1}^T$)
+      \item \texttt{ConvectionIntegrator}($\hat{\boldsymbol{\varphi}}_{n,n+1}$, $-1$)
+      \item \texttt{MassIntegrator}($-\divh\hat{\boldsymbol{\varphi}}_{n,n+1}$)
+    \end{enumerate}
+
+  \item \textbf{Assemble RHS forcing}: \texttt{rhs} $+=$ \texttt{DomainLFIntegrator}($f\,\Jh_{n+1}\,\Delta t$)
+
+  \item \textbf{Apply Dirichlet BCs}: project \texttt{AleExactCoefficient}($t_{n+1}$) onto $\partial\Oh$.
+    (Valid since $\Ah(\hat{\boldsymbol{x}},t) = \hat{\boldsymbol{x}}$ on $\partial\Oh$ for Maps A and B.)
+
+  \item \textbf{Form linear system}: \texttt{FormLinearSystem} $\to$ \textbf{Solve} (PETSc GMRES+LU/ILU) $\to$ \texttt{RecoverFEMSolution}.
+
+  \item \textbf{Update output fields}:
+    \begin{itemize}
+      \item Project \texttt{AleExactCoefficient} $\to$ \texttt{u\_exact}
+      \item \texttt{u\_error = u - u\_exact}
+      \item Project \texttt{AleDisplacementCoefficient} $\to$ \texttt{ale\_disp}
+      \item Project \texttt{AleJacobianCoefficient} $\to$ \texttt{ale\_jac}
+    \end{itemize}
+
+  \item \textbf{Save ParaView snapshot}, \textbf{log L2 error}.
+\end{enumerate}
+
+\paragraph{Important note.} The LHS bilinear form is \emph{reassembled at every time step}
+because all coefficients ($\Jh_{n+1}$, $\Ch_{n+1}$, $\hat{\boldsymbol{\varphi}}$) are
+time-dependent. This differs from \texttt{diffusion\_mms.cpp}, which pre-assembles the
+static LHS once.
+
+%=============================================================================
+\section{ParaView Output and Visualization}
+%=============================================================================
+
+\subsection{Registered fields}
+
+\begin{center}
+\renewcommand{\arraystretch}{1.3}
+\begin{tabular}{lll}
+\toprule
+Field name & Type & Description \\
+\midrule
+\texttt{u} & scalar & Numerical solution $\uh_h(\hat{\boldsymbol{x}},t)$ on reference mesh \\
+\texttt{u\_exact} & scalar & Exact $\uh_{\rm exact}(\hat{\boldsymbol{x}},t) = u(\Ah(\hat{\boldsymbol{x}},t),t)$ \\
+\texttt{u\_error} & scalar & Pointwise error $\uh_h - \uh_{\rm exact}$ \\
+\texttt{ale\_displacement} & vector & $\Ah(\hat{\boldsymbol{x}},t) - \hat{\boldsymbol{x}}$ \\
+\texttt{ale\_jacobian} & scalar & $\Jh(\hat{\boldsymbol{x}},t) = \det\Gh$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Visualization workflow in ParaView}
+
+\begin{enumerate}
+  \item Open \texttt{ParaView/diffusion\_mms\_ale/diffusion\_mms\_ale.pvd}
+  \item The mesh is the reference square $[0,1]^2$ (undeformed).
+  \item Apply \textbf{Filters $\to$ Alphabetical $\to$ Warp By Vector}:
+    \begin{itemize}
+      \item Vectors: \texttt{ale\_displacement}
+      \item Scale Factor: 1.0
+    \end{itemize}
+  \item The mesh now shows the physical (Eulerian) domain at each time step.
+  \item Color by \texttt{u}, \texttt{u\_exact}, or \texttt{u\_error} on the warped mesh.
+  \item The \texttt{ale\_jacobian} field shows volumetric compression ($J < 1$) and
+    expansion ($J > 1$) of the mesh.
+\end{enumerate}
+
+\paragraph{Note.} Since $\Omega(t) = [0,1]^2$ for all $t$ in Example 7.3, the Warp
+operation does not change the domain shape, but it does reveal the non-uniform grid
+motion. The deformation is internal to the domain.
+
+%=============================================================================
+\section{Files to Create and Modify}
+%=============================================================================
+
+\begin{enumerate}
+  \item \textbf{New: \texttt{diffusion\_mms\_ale.cpp}} --- main driver ($\sim$600--700 lines):
+    \begin{itemize}
+      \item \texttt{DriverParams} struct with \texttt{ale\_map} field added
+      \item \texttt{AleMap} class (ported from \texttt{ale\_map\_drivers/ale\_validation\_be.cpp},
+        keeping only \texttt{Identity}, \texttt{AccuracyA}, \texttt{AccuracyB})
+      \item 7 new coefficient classes (Section~\ref{sec:coeff} above)
+      \item \texttt{main()} follows \texttt{diffusion\_mms.cpp} pattern
+    \end{itemize}
+  \item \textbf{New: \texttt{Input/input\_diffusion\_mms\_ale.yaml}}:
+\begin{verbatim}
+mesh_file: Mesh/unit_square.msh
+order: 1
+serial_ref_levels: 0
+par_ref_levels: 0
+alpha: 0.1
+dt: 0.05
+t_final: 2.0
+ale_map: accuracy_a       # accuracy_a | accuracy_b | identity
+petsc_options_file: Input/petsc.opts
+output_path: ParaView/diffusion_mms_ale
+save_paraview: true
+paraview_every: 1
+\end{verbatim}
+  \item \textbf{Modified: \texttt{makefile}} --- add:
+\begin{verbatim}
+TARGETS = ... diffusion_mms_ale
+
+diffusion_mms_ale: diffusion_mms_ale.cpp $(CONFIG_MK)
+    $(MFEM_CXX) $(MFEM_FLAGS) $(YAML_CXXFLAGS) $< \
+        -o $@ $(MFEM_LIBS) $(YAML_LIBS) -lyaml-cpp
+\end{verbatim}
+\end{enumerate}
+
+%=============================================================================
+\section{Verification Strategy}
+%=============================================================================
+
+\begin{enumerate}
+  \item \textbf{Build}: \texttt{make diffusion\_mms\_ale}
+
+  \item \textbf{Identity map test} (\texttt{ale\_map: identity}):
+    \begin{itemize}
+      \item $\Jh \equiv 1$, $\Gh \equiv I$, $\Ch \equiv I$, $\hat{\boldsymbol{\varphi}} \equiv \mathbf{0}$
+      \item Scheme reduces exactly to the static-mesh BE scheme in \texttt{diffusion\_mms.cpp}
+      \item Results must match \texttt{diffusion\_mms} output
+    \end{itemize}
+
+  \item \textbf{Map A accuracy test} (\texttt{ale\_map: accuracy\_a}, \texttt{dt: 0.05}):
+    \begin{itemize}
+      \item Run to $t = 2$, observe L2 error history
+      \item Compare against SIAM Fig.~10 (arXiv Fig.~7.5), ``backward Euler -- A'' curve
+    \end{itemize}
+
+  \item \textbf{Map B accuracy test}: Same as above with \texttt{ale\_map: accuracy\_b}
+
+  \item \textbf{Convergence sweep} (manual, optional):
+    Run with \texttt{dt: 0.1, 0.05, 0.02, 0.01, 0.005}; plot final L2 error vs $\Delta t$;
+    expect slope $\approx 1$ in log-log scale (first-order Backward Euler).
+
+  \item \textbf{ParaView check}: Load output, apply Warp by Vector, verify deformation
+    matches expected Map A / Map B shape (SIAM Fig.~9; arXiv Fig.~7.4).
+\end{enumerate}
+
+%=============================================================================
+\section{Summary}
+%=============================================================================
+
+The driver \texttt{diffusion\_mms\_ale.cpp} is a clean, standalone implementation of
+the ALE Backward Euler scheme (Eq.~5.7 of the paper) for Example 7.3. It:
+\begin{itemize}
+  \item Keeps the MFEM mesh at reference configuration (no node movement)
+  \item Implements the SCL-preserving ``Paper Eq.\ 5.7'' formulation using analytically
+    integrated grid fluxes
+  \item Outputs \texttt{ale\_displacement} to ParaView for ``Warp by Vector'' visualization
+  \item Is structurally based on \texttt{diffusion\_mms.cpp} with ALE extensions
+  \item Reuses the \texttt{AleMap} class from the existing \texttt{ale\_validation\_be.cpp}
+\end{itemize}
+
+\end{document}
