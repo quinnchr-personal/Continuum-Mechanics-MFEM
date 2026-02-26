@@ -29,7 +29,7 @@ t_final: 2.0
 #   identity   — no mesh motion; result should match diffusion_mms.cpp
 #   accuracy_a — Map A from Example 7.3 (smooth sinusoidal deformation)
 #   accuracy_b — Map B from Example 7.3 (product-of-parabolae deformation)
-ale_map: identity
+ale_map: accuracy_a
 
 # --- Solver -----------------------------------------------------------------
 petsc_options_file: Input/petsc.opts

@@ -918,8 +918,10 @@ int main(int argc, char *argv[])
          disp_coeff.SetTime(t);
          j_coeff.SetTime(t);
 
-         // L2 error on the reference domain (not J-weighted physical L2 norm).
-         const double l2_err = u.ComputeL2Error(exact_coeff, irs);
+         // Physical-domain L2 error:
+         //   ||u_h - u_exact||_{L2(Omega(t))}^2
+         //   = int_{Omegahat} J(xhat,t) * |u_h(xhat)-u_exact(A(xhat,t),t)|^2 dxhat.
+         const double l2_err = u.ComputeLpError(2.0, exact_coeff, &j_coeff, irs);
 
          // Project fields for visualization
          u_exact_gf.ProjectCoefficient(exact_coeff);
@@ -1051,7 +1053,8 @@ int main(int argc, char *argv[])
       if (myid == 0)
       {
          exact_coeff.SetTime(t);
-         const double final_l2 = u.ComputeL2Error(exact_coeff, irs);
+         j_coeff.SetTime(t);
+         const double final_l2 = u.ComputeLpError(2.0, exact_coeff, &j_coeff, irs);
          cout << "\nFinal L2 error at t=" << t << ":  " << final_l2 << endl;
          cout << "Output written to:   " << params.output_path << endl;
          if (params.save_paraview)
