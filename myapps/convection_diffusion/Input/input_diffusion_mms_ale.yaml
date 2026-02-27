@@ -22,7 +22,7 @@ par_ref_levels: 0
 
 # --- Physics ----------------------------------------------------------------
 alpha: 0.1
-dt: 0.05
+dt: 0.01
 t_final: 2.0
 
 # ALE map: identity | accuracy_a | accuracy_b
