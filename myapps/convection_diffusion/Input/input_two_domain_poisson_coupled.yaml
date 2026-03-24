@@ -1,0 +1,34 @@
+# Configuration for two_domain_poisson_coupled.
+#
+# Two adjacent unit squares:
+#   left  domain: [0,1]x[0,1]
+#   right domain: [1,2]x[0,1] (created by shifting a copy of mesh_file by +1 in x)
+#
+# PDE on each domain: -div(k * grad(T)) = 0
+# Coupling (Dirichlet-Neumann iteration):
+#   left  interface BC: Dirichlet temperature from right iterate
+#   right interface BC: Neumann flux from left solve
+
+mesh_file: Mesh/unit_square.msh
+order: 1
+serial_ref_levels: 0
+par_ref_levels: 0
+
+k_left: 1.0
+k_right: 0.01
+left_dirichlet_value: 1.0
+right_dirichlet_value: 0.0
+
+interface_initial_temperature: 0.5
+relaxation: 0.01
+coupling_tol: 1.0e-8
+coupling_max_iters: 200
+use_flux_convergence: true
+flux_tol: 1.0e-8
+use_flux_change_convergence: true
+flux_change_tol: 1.0e-9
+
+petsc_options_file: Input/petsc.opts
+output_path: ParaView/two_domain_poisson_coupled
+save_paraview: true
+save_csv: true
