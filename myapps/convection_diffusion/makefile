@@ -44,7 +44,7 @@ MFEM_LIBS ?=
 YAML_CXXFLAGS ?= $(shell pkg-config --cflags yaml-cpp 2>/dev/null)
 YAML_LIBS ?= $(shell pkg-config --libs yaml-cpp 2>/dev/null)
 
-TARGETS = linear_convection_diffusion_1D linear_convection_diffusion_2D linear_convection_diffusion_2D_circle nonlinear_convection_diffusion_1D ablation_test_case1_2D ablation_test_case2_1_2D ablation_test_case2_2_2D ablation_test_case2_2_2D_test ablation_qstar_blowing_1D ale_validation_be ale_validation_be_stability ale_validation_be_convergence ale_validation_be_accuracy diffusion_mms diffusion_mms_ale two_domain_poisson_coupled two_domain_poisson_coupled_transient
+TARGETS = linear_convection_diffusion_1D linear_convection_diffusion_2D linear_convection_diffusion_2D_circle nonlinear_convection_diffusion_1D ablation_test_case1_2D ablation_test_case2_1_2D ablation_test_case2_2_2D ablation_test_case2_2_2D_test ablation_qstar_blowing_1D ale_validation_be ale_validation_be_stability ale_validation_be_convergence ale_validation_be_accuracy diffusion_mms diffusion_mms_ale stefan_problem_ablating_material_ale two_domain_poisson_coupled two_domain_poisson_coupled_transient
 
 .PHONY: all clean
 
@@ -95,6 +95,9 @@ diffusion_mms: diffusion_mms.cpp $(CONFIG_MK)
 # ALE backward Euler driver — Example 7.3 of arXiv:1809.06553v1.
 # Mesh stays in reference configuration; ale_displacement field for Warp by Vector.
 diffusion_mms_ale: diffusion_mms_ale.cpp $(CONFIG_MK)
+	$(MFEM_CXX) $(MFEM_FLAGS) $(YAML_CXXFLAGS) $< -o $@ $(MFEM_LIBS) $(YAML_LIBS) -lyaml-cpp
+
+stefan_problem_ablating_material_ale: stefan_problem_ablating_material_ale.cpp $(CONFIG_MK)
 	$(MFEM_CXX) $(MFEM_FLAGS) $(YAML_CXXFLAGS) $< -o $@ $(MFEM_LIBS) $(YAML_LIBS) -lyaml-cpp
 
 two_domain_poisson_coupled: two_domain_poisson_coupled.cpp $(CONFIG_MK)

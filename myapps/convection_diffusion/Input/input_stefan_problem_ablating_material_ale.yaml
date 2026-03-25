@@ -1,0 +1,39 @@
+# Configuration for stefan_problem_ablating_material_ale.
+#
+# Finite-length Stefan verification on a fixed reference unit-square mesh.
+# The physical domain is [x_left, s(t)] x [0,1], visualized in ParaView by
+# applying Warp By Vector to the 'ale_displacement' field.
+
+# --- Mesh -------------------------------------------------------------------
+mesh_file: Mesh/unit_square.msh
+order: 3
+serial_ref_levels: 1
+par_ref_levels: 0
+
+# --- Physics ----------------------------------------------------------------
+# These defaults are chosen for a clean verification run, not for a specific
+# material. They give Ste = c*(T_a-T_0)/L_star = 0.1 and alpha = k/(rho*c) = 0.1.
+rho: 1.0
+c: 1.0
+k: 0.1
+L_star: 5000.0
+T_0: 300.0
+T_a: 800.0
+
+# Fixed left boundary x_left = -domain_length
+domain_length: 1.0
+dt: 0.001
+t_final: 10.0
+
+# --- Solver -----------------------------------------------------------------
+petsc_options_file: Input/petsc.opts
+linear_max_iter: 400
+linear_rel_tol: 1.0e-10
+linear_abs_tol: 0.0
+
+# --- Output -----------------------------------------------------------------
+output_path: ParaView/stefan_problem_ablating_material_ale
+save_paraview: true
+
+# 0 = initial/final only, 1 = every step
+paraview_every: 1
