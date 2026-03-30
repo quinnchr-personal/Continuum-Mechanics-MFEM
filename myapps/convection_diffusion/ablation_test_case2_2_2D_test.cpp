@@ -458,6 +458,75 @@ RecessionComparisonMetrics ComputeRecessionComparisonMetrics(
    return m;
 }
 
+bool RestartConfigured(const DriverParams &p)
+{
+   return !p.restart_read_file.empty() ||
+          !p.restart_write_file.empty() ||
+          p.restart_write_every > 0 ||
+          std::isfinite(p.restart_write_at_time);
+}
+
+void RequireExistingFile(const string &path, const string &description)
+{
+   if (path.empty())
+   {
+      throw runtime_error(description + " is required.");
+   }
+   if (!filesystem::exists(path))
+   {
+      throw runtime_error(description + " not found: " + path);
+   }
+}
+
+void ConfigureWorkshopCase2_2Variant(DriverParams &p)
+{
+   // This driver is the prescribed-Dirichlet workshop variant, not the
+   // standard surface-energy-balance case2_2 driver.
+   p.top_thermal_bc = "temperature_dirichlet";
+   if (p.top_temperature_file.empty())
+   {
+      p.top_temperature_file = p.amaryllis_energy_file;
+   }
+}
+
+void ValidateWorkshopCase2_2Variant(const DriverParams &p)
+{
+   if (p.top_thermal_bc != "temperature_dirichlet")
+   {
+      throw runtime_error(
+         "Workshop Test Case 2.2 requires top_thermal_bc=temperature_dirichlet "
+         "after workshop normalization.");
+   }
+
+   RequireExistingFile(p.boundary_conditions_file,
+                       "Workshop Test Case 2.2 pressure schedule file");
+   RequireExistingFile(p.top_temperature_file,
+                       "Workshop Test Case 2.2 temperature schedule file");
+
+   if (p.moving_mesh)
+   {
+      RequireExistingFile(p.amaryllis_mass_file,
+                          "Workshop Test Case 2.2 recession history file");
+      if (!p.ale_enabled ||
+          !p.ale_mass_enabled ||
+          !p.ale_energy_enabled ||
+          !p.ale_energy_solid_enabled ||
+          !p.ale_energy_gas_enabled)
+      {
+         throw runtime_error(
+            "Workshop Test Case 2.2 moving_mesh mode requires "
+            "ale_enabled, ale_mass_enabled, ale_energy_enabled, "
+            "ale_energy_solid_enabled, and ale_energy_gas_enabled to all be true.");
+      }
+      if (RestartConfigured(p))
+      {
+         throw runtime_error(
+            "Restart is disabled for moving-mesh workshop case2_2. "
+            "Clear restart_read_file/restart_write_file and related triggers.");
+      }
+   }
+}
+
 void LoadParams(const string &path, DriverParams &p)
 {
    if (!filesystem::exists(path))
@@ -4125,6 +4194,10 @@ void PrintConfig(const DriverParams &p)
    cout << "  top_temperature_value: " << p.top_temperature_value << endl;
    cout << "  top_temperature_file: "
         << (p.top_temperature_file.empty() ? "none" : p.top_temperature_file) << endl;
+   cout << "  workshop_driver_mode: fixed_dirichlet_ale" << endl;
+   cout << "  top_recession_source: "
+        << (p.moving_mesh ? "amaryllis_mass_file" : "disabled (moving_mesh=false)")
+        << endl;
    cout << "  emissivity_override: "
         << (std::isfinite(p.emissivity) ? std::to_string(p.emissivity) : "none")
         << endl;
@@ -4168,21 +4241,15 @@ int main(int argc, char *argv[])
       return 2;
    }
 
-   // Test-driver override: use Amaryllis wall temperature history as the
-   // prescribed top-wall temperature schedule (time, Tw are the first 2 columns).
-   params.top_thermal_bc = "temperature_dirichlet";
-   if (params.top_temperature_file.empty())
+   try
    {
-      if (params.amaryllis_energy_file.empty())
-      {
-         if (myid == 0)
-         {
-            cerr << "Error: amaryllis_energy_file is empty; cannot set test-driver "
-                 << "top wall temperature from Amaryllis." << endl;
-         }
-         return 2;
-      }
-      params.top_temperature_file = params.amaryllis_energy_file;
+      ConfigureWorkshopCase2_2Variant(params);
+      ValidateWorkshopCase2_2Variant(params);
+   }
+   catch (const exception &e)
+   {
+      if (myid == 0) { cerr << e.what() << endl; }
+      return 2;
    }
 
    if (myid == 0) { PrintConfig(params); }
@@ -4197,21 +4264,11 @@ int main(int argc, char *argv[])
    int exit_code = 0;
    try
    {
-      if (params.moving_mesh &&
-          (!params.restart_read_file.empty() ||
-           !params.restart_write_file.empty() ||
-           params.restart_write_every > 0 ||
-           std::isfinite(params.restart_write_at_time)))
-      {
-         throw runtime_error(
-            "Restart is disabled for moving-mesh case2_2. "
-            "Clear restart_read_file/restart_write_file and related triggers.");
-      }
-
       const bool use_temperature_dirichlet =
          (params.top_thermal_bc == "temperature_dirichlet");
+      MFEM_VERIFY(use_temperature_dirichlet,
+                  "Workshop Test Case 2.2 driver requires top temperature Dirichlet BC.");
       TopTemperatureSchedule top_temperature_schedule;
-      bool use_top_temperature_schedule = false;
       AmaryllisRecessionHistory amaryllis_recession_history;
       bool use_amaryllis_recession_history = false;
 
@@ -4229,27 +4286,16 @@ int main(int argc, char *argv[])
 
       SurfaceBCSchedule bc_schedule;
       bc_schedule.LoadFromFile(params.boundary_conditions_file);
-      if (use_temperature_dirichlet && !params.top_temperature_file.empty())
-      {
-         top_temperature_schedule.LoadFromFile(params.top_temperature_file);
-         use_top_temperature_schedule = true;
-      }
+      top_temperature_schedule.LoadFromFile(params.top_temperature_file);
       if (params.moving_mesh)
       {
-         if (params.amaryllis_mass_file.empty())
-         {
-            throw runtime_error(
-               "moving_mesh test mode requires amaryllis_mass_file to drive recession.");
-         }
          amaryllis_recession_history.LoadFromMassFile(params.amaryllis_mass_file);
          use_amaryllis_recession_history = true;
       }
 
       auto top_temperature_at = [&](const double t)
       {
-         return use_top_temperature_schedule ?
-                   top_temperature_schedule.Eval(t) :
-                   params.top_temperature_value;
+         return top_temperature_schedule.Eval(t);
       };
 
       unique_ptr<Mesh> mesh = make_unique<Mesh>(params.mesh_file.c_str(), 1, 1);
@@ -4316,12 +4362,10 @@ int main(int argc, char *argv[])
       fes_p.GetEssentialTrueDofs(ess_bdr_p, ess_tdof_p);
 
       ParGridFunction T(&fes_T), p(&fes_p), T_old(&fes_T), p_old(&fes_p);
-      ParGridFunction cooling_bc_lag_T(&fes_T);
       T = 300.0;
       p = bc_schedule.Eval(0.0).p_w;
       T_old = T;
       p_old = p;
-      cooling_bc_lag_T = T;
 
       // Apply initial essential pressure values.
       {
@@ -4337,7 +4381,6 @@ int main(int argc, char *argv[])
          p.SetFromTrueDofs(ptrue);
          T_old = T;
          p_old = p;
-         cooling_bc_lag_T = T;
       }
 
       const int quad_order = max(2, 2 * params.order + 2);
@@ -4369,7 +4412,6 @@ int main(int argc, char *argv[])
          }
          T_old = T;
          p_old = p;
-         cooling_bc_lag_T = T;
          if (myid == 0)
          {
             cout << "Loaded restart from " << params.restart_read_file
@@ -4458,21 +4500,9 @@ int main(int argc, char *argv[])
                                   jac_check_opts);
       vector<vector<double>> solid_ale_J_old_qp;
       tp_integrator->SetSolidAleOldJacobians(&solid_ale_J_old_qp);
+      // The workshop variant prescribes both T and p on the top boundary, so
+      // it never attaches the surface energy-balance operator.
       SurfaceEnergyBalanceIntegrator *surf_integrator = nullptr;
-      if (!use_temperature_dirichlet)
-      {
-         surf_integrator =
-            new SurfaceEnergyBalanceIntegrator(material,
-                                               state_manager,
-                                               bprime_table,
-                                               bc_schedule,
-                                               surface_model,
-                                               gravity,
-                                               quad_order,
-                                               jac_check_opts,
-                                               &cooling_bc_lag_T);
-         surf_integrator->SetTime(restart_time);
-      }
 
       ParBlockNonlinearForm block_form(spaces);
       block_form.SetGradientType(Operator::Hypre_ParCSR);
