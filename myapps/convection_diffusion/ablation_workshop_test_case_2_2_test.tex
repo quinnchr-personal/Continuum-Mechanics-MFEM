@@ -19,9 +19,9 @@ $\chi_i(t)$, $i=1,\dots,N_r$. For each reaction,
 \frac{\partial \chi_i}{\partial t}
 =
 \begin{cases}
-0, & T < T_{\mathrm{thr},i}, \\[0.5em]
-A_i \exp\!\left(-\dfrac{E_i}{R\,T}\right)\,T^{n_i}\,(1-\chi_i)^{m_i},
-& T \ge T_{\mathrm{thr},i},
+0, & \theta < \theta_{\mathrm{thr},i}, \\[0.5em]
+A_i \exp\!\left(-\dfrac{E_i}{R\,\theta}\right)\,\theta^{n_i}\,(1-\chi_i)^{m_i},
+& \theta \ge \theta_{\mathrm{thr},i},
 \end{cases}
 \qquad i=1,\dots,N_r,
 \end{equation}
@@ -77,7 +77,7 @@ completed reaction.
 
 Ideal gas law for the pyrolysis gas:
 \begin{equation}
-\rho_g = \frac{p\,M}{R\,T}
+\rho_g = \frac{p\,M(\theta,p)}{R\,\theta}
 \end{equation}
 
 Darcy flow for the gas velocity:
@@ -87,7 +87,7 @@ Darcy flow for the gas velocity:
 
 Fourier's law for the conductive heat flux:
 \begin{equation}
-\mathbf{q} = -\kappa \nabla T
+\mathbf{q} = -\kappa \nabla \theta
 \end{equation}
 
 Convective heat flux for the gas phase:
@@ -95,13 +95,16 @@ Convective heat flux for the gas phase:
 \mathbf{q}_{\mathrm{conv}} = h_g \phi \rho_g \mathbf{v}_g
 \end{equation}
 
+Here $M(\theta,p)$, $h_g(\theta,p)$, and $\mu_g(\theta,p)$ denote the pyrolysis-gas
+molecular weight, specific enthalpy, and dynamic viscosity.
+
 Internal energy of the mixture:
 \begin{equation}
 \rho e = \rho_s e_s + \phi \rho_g e_g
 \end{equation}
 
 % \begin{equation}
-%     e_{s} = h_{s} = \int_{T_{\text{ref}}}^{T} c_{ps}(T') \,dT'
+%     e_{s} = h_{s} = \int_{\theta_{\text{ref}}}^{\theta} c_{ps}(\theta') \,d\theta'
 % \end{equation}
 
 Degree of Char:
@@ -110,8 +113,8 @@ Degree of Char:
 \end{equation}
 
 Here $\rho_v$ and $\rho_c$ denote the virgin and char solid densities, while
-$h_v(T,p)$, $h_c(T,p)$, $c_{pv}(T,p)$, $c_{pc}(T,p)$, $\kappa_v(T,p)$, and
-$\kappa_c(T,p)$ denote the corresponding virgin and char specific enthalpies,
+$h_v(\theta,p)$, $h_c(\theta,p)$, $c_{pv}(\theta,p)$, $c_{pc}(\theta,p)$, $\kappa_v(\theta,p)$, and
+$\kappa_c(\theta,p)$ denote the corresponding virgin and char specific enthalpies,
 specific heat capacities, and thermal conductivities. Likewise, $\phi_v$,
 $\phi_c$, $K_v$, and $K_c$ denote the virgin and char gas porosities and
 permeabilities.
@@ -139,7 +142,7 @@ K(\beta) = (1 - \beta)K_v + \beta K_c
 \end{equation}
 
 \begin{equation}
-\kappa(\beta, T, p) = y_v \kappa_v(T,p) + y_c \kappa_c(T,p)
+\kappa(\beta, \theta, p) = y_v \kappa_v(\theta,p) + y_c \kappa_c(\theta,p)
 \end{equation}
 
 Internal energy of the gas phase:
@@ -153,7 +156,7 @@ Specific heat capacity of the solid phase:
 \end{equation}
 
 \begin{equation}
-\frac{\partial }{\partial t} \left( \rho_{s} e_{s} \right) = \frac{\partial }{\partial t} \left( \rho_{s} h_{s} \right) = \left( \rho_{c} h_{c} - \rho_{v} h_{v} \right) \frac{\partial \beta}{\partial t} + \left( (1 - \beta) \rho_{v} c_{pv} + \beta \rho_{c} c_{pc} \right) \frac{\partial T}{\partial t}
+\frac{\partial }{\partial t} \left( \rho_{s} e_{s} \right) = \frac{\partial }{\partial t} \left( \rho_{s} h_{s} \right) = \left( \rho_{c} h_{c} - \rho_{v} h_{v} \right) \frac{\partial \beta}{\partial t} + \left( (1 - \beta) \rho_{v} c_{pv} + \beta \rho_{c} c_{pc} \right) \frac{\partial \theta}{\partial t}
 \end{equation}
 
 \begin{equation}
@@ -161,7 +164,7 @@ Specific heat capacity of the solid phase:
 \end{equation}
 
 \begin{equation}
-\frac{\partial }{\partial t} \left( \rho_{s} h_{s} \right) = \frac{\left( \rho_{c} h_{c} - \rho_{v} h_{v} \right)}{\rho_{c} - \rho_{v}} \frac{\partial \rho_{s}}{\partial t} + \rho_{s} c_{ps} \frac{\partial T}{\partial t}
+\frac{\partial }{\partial t} \left( \rho_{s} h_{s} \right) = \frac{\left( \rho_{c} h_{c} - \rho_{v} h_{v} \right)}{\rho_{c} - \rho_{v}} \frac{\partial \rho_{s}}{\partial t} + \rho_{s} c_{ps} \frac{\partial \theta}{\partial t}
 \end{equation}
 
 \begin{equation}
@@ -169,7 +172,7 @@ Specific heat capacity of the solid phase:
 \end{equation}
 
 \begin{equation}
-\frac{\partial }{\partial t} \left( \rho_{s} h_{s} \right) = \bar{h} \frac{\partial \rho_{s}}{\partial t} + \rho_{s} c_{ps} \frac{\partial T}{\partial t} = - \bar{h} \pi_{\mathrm{tot}} + \rho_{s} c_{ps} \frac{\partial T}{\partial t}
+\frac{\partial }{\partial t} \left( \rho_{s} h_{s} \right) = \bar{h} \frac{\partial \rho_{s}}{\partial t} + \rho_{s} c_{ps} \frac{\partial \theta}{\partial t} = - \bar{h} \pi_{\mathrm{tot}} + \rho_{s} c_{ps} \frac{\partial \theta}{\partial t}
 \end{equation}
 
 \section{Boundary Conditions}
@@ -177,13 +180,13 @@ Specific heat capacity of the solid phase:
 For the time-dependent Dirichlet variant documented here, both primary
 unknowns are prescribed on the top boundary:
 \begin{equation}
-T = T_D(t),
+\theta = \theta_D(t),
 \qquad
 p = p_D(t)
 \qquad \text{on } \Gamma_{\mathrm{top}}.
 \end{equation}
 
-In the test-driver interpretation, $T_D(t)$ is supplied by an external
+In the test-driver interpretation, $\theta_D(t)$ is supplied by an external
 temperature schedule and $p_D(t)$ is supplied by the pressure schedule. No
 surface energy-balance flux law is imposed on $\Gamma_{\mathrm{top}}$ in this
 variant, because the top boundary values are enforced directly as essential
@@ -201,7 +204,7 @@ the equations retain their natural conditions:
 \begin{equation}
 \boldsymbol{n}\cdot \boldsymbol{m}_g = 0,
 \qquad
-\boldsymbol{n}\cdot\left(-\kappa \nabla T + h_g \boldsymbol{m}_g\right) = 0
+\boldsymbol{n}\cdot\left(-\kappa \nabla \theta + h_g \boldsymbol{m}_g\right) = 0
 \qquad \text{on } \partial \Omega \setminus \Gamma_{\mathrm{top}}.
 \end{equation}
 
@@ -209,7 +212,7 @@ the equations retain their natural conditions:
 
 The time dependence is carried entirely by the prescribed boundary data
 \begin{equation}
-T_D = T_D(t),
+\theta_D = \theta_D(t),
 \qquad
 p_D = p_D(t).
 \end{equation}
@@ -223,14 +226,19 @@ enters only through the essential constraints applied at the top boundary.
 For any Eulerian field $a(\mathbf{x},t)$, its pullback to the reference domain is
 denoted by $\widehat{a}(\widehat{\mathbf{x}},t) = a(\mathcal{A}(\widehat{\mathbf{x}},t),t)$.
 When a spatial differential operator appears inside a hat, such as
-$\widehat{\nabla T}$ or $\widehat{\nabla \cdot \mathbf{w}}$, the meaning is:
+$\widehat{\nabla \theta}$ or $\widehat{\nabla \cdot \mathbf{w}}$, the meaning is:
 first evaluate the derivative in the current configuration, then pull the resulting
 field back to the reference domain. These objects are therefore not identified with
 reference-domain derivatives until the explicit ALE transformation formulas below
 are applied.
 
 \begin{equation}
-    \mathcal{A}: \widehat{\Omega} \times [0,T] \to \Omega(t), \qquad \mathbf{x} = \mathcal{A}(\widehat{\mathbf{x}}, t)
+    \mathcal{A}: \widehat{\Omega} \times [0,t_f] \to \Omega(t), \qquad \mathbf{x} = \mathcal{A}(\widehat{\mathbf{x}}, t)
+\end{equation}
+
+\begin{equation}
+    \mathbf{w}(\mathbf{x},t) = \left.\frac{\partial \mathcal{A}}{\partial t}\right|_{\widehat{\mathbf{x}}}, \qquad
+    \widehat{\mathbf{w}}(\widehat{\mathbf{x}},t) = \mathbf{w}(\mathcal{A}(\widehat{\mathbf{x}},t),t)
 \end{equation}
 
 \begin{equation}
@@ -257,11 +265,11 @@ are applied.
 \end{equation}
 
 \begin{equation}
-    \left. \frac{\partial}{\partial t} \left( \widehat{T} \widehat{J} \right) \right|_{\widehat{\mathbf{x}}}
-    = \left. \frac{\partial \widehat{T}}{\partial t} \right|_{\widehat{\mathbf{x}}} \widehat{J}
-    + \widehat{T} \left. \frac{\partial \widehat{J}}{\partial t} \right|_{\widehat{\mathbf{x}}}
-    = \left. \frac{\partial \widehat{T}}{\partial t} \right|_{\widehat{\mathbf{x}}} \widehat{J}
-    + \widehat{T} \widehat{J} \widehat{\nabla \cdot \mathbf{w}}
+    \left. \frac{\partial}{\partial t} \left( \widehat{\theta} \widehat{J} \right) \right|_{\widehat{\mathbf{x}}}
+    = \left. \frac{\partial \widehat{\theta}}{\partial t} \right|_{\widehat{\mathbf{x}}} \widehat{J}
+    + \widehat{\theta} \left. \frac{\partial \widehat{J}}{\partial t} \right|_{\widehat{\mathbf{x}}}
+    = \left. \frac{\partial \widehat{\theta}}{\partial t} \right|_{\widehat{\mathbf{x}}} \widehat{J}
+    + \widehat{\theta} \widehat{J} \widehat{\nabla \cdot \mathbf{w}}
 \end{equation}
 
 
@@ -274,21 +282,21 @@ are applied.
 - \int_{\widehat{\Omega}} \widehat{\psi} \widehat{\mathbf{F}} \widehat{\mathbf{w}}\cdot
 \widehat{\nabla}\left(\widehat{\phi} \widehat{\rho}_g\right) \,d\widehat{V}
 \\
-+ \int_{\widehat{\Omega}} \left( \widehat{\rho}_g \frac{\widehat{K}}{\widehat{\mu_g} } \frac{1}{\widehat{J}} \widehat{\mathbf{F}} \widehat{\mathbf{F}}^{T} \right) \widehat{\nabla} \widehat{p} \cdot \widehat{\nabla}\widehat{\psi} \,d\widehat{V}
++ \int_{\widehat{\Omega}} \left( \widehat{\rho}_g \frac{\widehat{K}}{\widehat{\mu}_g } \frac{1}{\widehat{J}} \widehat{\mathbf{F}} \widehat{\mathbf{F}}^{T} \right) \widehat{\nabla} \widehat{p} \cdot \widehat{\nabla}\widehat{\psi} \,d\widehat{V}
 - \int_{\widehat{\Omega}} \widehat{\psi}\,\widehat{\pi}_{\mathrm{tot}} \widehat{J} \,d\widehat{V}
 = 0
 \end{multline}
 
 \begin{multline}
 \int_{\widehat{\Omega}}
-\widehat{\psi}\,\widehat{\rho}_{s} \widehat{c}_{ps} \left. \frac{\partial}{\partial t} \left( \widehat{T} \widehat{J} \right)\right|_{\widehat{\mathbf{x}}} \,d\widehat{V}
+\widehat{\psi}\,\widehat{\rho}_{s} \widehat{c}_{ps} \left. \frac{\partial}{\partial t} \left( \widehat{\theta} \widehat{J} \right)\right|_{\widehat{\mathbf{x}}} \,d\widehat{V}
 + \frac{d}{dt} \int_{\widehat{\Omega}}
 \widehat{\psi}\,\widehat{\phi}(\widehat{\rho}_g \widehat{h}_g - \widehat{p}) \widehat{J}\,d\widehat{V}
 \\
 - \int_{\widehat{\Omega}}
 \widehat{\psi}\,\widehat{\rho}_{s} \widehat{c}_{ps}
-\widehat{\nabla} \cdot \left( \widehat{\mathbf{F}} \widehat{T} \widehat{\mathbf{w}} \right) \,d\widehat{V}
-- \int_{\widehat{\Omega}} \widehat{\psi} \left( \widehat{\phi} \widehat{\rho}_{g} \widehat{h}_{g} - \widehat{\phi} \widehat{p} \right)
+\widehat{\nabla} \cdot \left( \widehat{\mathbf{F}} \widehat{\theta} \widehat{\mathbf{w}} \right) \,d\widehat{V}
+- \int_{\widehat{\Omega}} \widehat{\psi} \left( \widehat{\phi} \widehat{\rho}_g \widehat{h}_g - \widehat{\phi} \widehat{p} \right)
 \widehat{\nabla} \cdot \left( \widehat{\mathbf{F}} \widehat{\mathbf{w}} \right) \,d\widehat{V}
 - \int_{\widehat{\Omega}}
 \widehat{\psi}\, \widehat{\mathbf{F}} \widehat{\mathbf{w}} \cdot
@@ -299,13 +307,13 @@ are applied.
 + \int_{\widehat{\Omega}}
 \frac{1}{\widehat{J}}
  \widehat{\kappa}
- \widehat{\mathbf{F}} \widehat{\mathbf{F}}^{T} \widehat{\nabla}\widehat{T}
+ \widehat{\mathbf{F}} \widehat{\mathbf{F}}^{T} \widehat{\nabla}\widehat{\theta}
 \cdot\widehat{\nabla}\widehat{\psi} \,d\widehat{V}
 + \int_{\widehat{\Omega}}
 \frac{1}{\widehat{J}}
 \left(
-\widehat{h}_{g} \widehat{\rho}_{g}
-\frac{\widehat{K}}{\widehat{\mu_g}} \right) \widehat{\mathbf{F}} \widehat{\mathbf{F}}^{T} \widehat{\nabla} \widehat{p}
+\widehat{h}_g \widehat{\rho}_g
+\frac{\widehat{K}}{\widehat{\mu}_g} \right) \widehat{\mathbf{F}} \widehat{\mathbf{F}}^{T} \widehat{\nabla} \widehat{p}
 \cdot
 \widehat{\nabla}\widehat{\psi}
 \,d\widehat{V}
@@ -386,7 +394,7 @@ are applied.
 - \int_{\widehat{\Omega}} \widehat{\psi}\,\widehat{\phi}\,\widehat{\rho}_g \widehat{\nabla \cdot \mathbf{w}} \widehat{J} \,d\widehat{V}
 - \int_{\widehat{\Omega}} \widehat{\psi}\,\widehat{\mathbf{w}}\cdot \widehat{\nabla\left(\phi \rho_g\right)} \widehat{J} \,d\widehat{V}
 \\
--  \int_{\widehat{\Omega}} \widehat{\phi} \widehat{\rho_g} \widehat{\mathbf{v}_g} \cdot \widehat{\nabla \psi}
+-  \int_{\widehat{\Omega}} \widehat{\phi} \widehat{\rho}_g \widehat{\mathbf{v}}_g \cdot \widehat{\nabla \psi}
 \widehat{J} \,d\widehat{V}
 - \int_{\widehat{\Omega}} \widehat{\psi}\,\widehat{\pi}_{\mathrm{tot}} \widehat{J} \,d\widehat{V}
 = 0
@@ -409,7 +417,7 @@ are applied.
 \end{multline}
 
 \begin{equation}
-    \widehat{\mathbf{v}}_{g} = -\frac{\widehat{K}}{\widehat{\mu_g} \widehat{\phi}} \widehat{\nabla p} = -\frac{\widehat{K}}{\widehat{\mu_g} \widehat{\phi}} \frac{1}{\widehat{J}} \widehat{\mathbf{F}}^{T} \widehat{\nabla} \widehat{p}
+    \widehat{\mathbf{v}}_g = -\frac{\widehat{K}}{\widehat{\mu}_g \widehat{\phi}} \widehat{\nabla p} = -\frac{\widehat{K}}{\widehat{\mu}_g \widehat{\phi}} \frac{1}{\widehat{J}} \widehat{\mathbf{F}}^{T} \widehat{\nabla} \widehat{p}
 \end{equation}
 
 \begin{multline}
@@ -423,7 +431,7 @@ are applied.
 \\
 + \int_{\widehat{\Omega}} \widehat{\phi}\,\widehat{\rho}_g\,
 \left(
-\frac{\widehat{K}}{\widehat{\mu_g} \widehat{\phi}} \frac{1}{\widehat{J}} \widehat{\mathbf{F}}^{T} \widehat{\nabla} \widehat{p}
+\frac{\widehat{K}}{\widehat{\mu}_g \widehat{\phi}} \frac{1}{\widehat{J}} \widehat{\mathbf{F}}^{T} \widehat{\nabla} \widehat{p}
 \right) \cdot
 \left(
 \frac{1}{\widehat{J}} \widehat{\mathbf{F}}^{T}\widehat{\nabla}\widehat{\psi}\right)
@@ -441,7 +449,7 @@ are applied.
 \\
 + \int_{\widehat{\Omega}} \widehat{\phi}\,\widehat{\rho}_g\,
 \left(
-\frac{\widehat{K}}{\widehat{\mu_g} \widehat{\phi}} \frac{1}{\widehat{J}} \widehat{\mathbf{F}}^{T} \widehat{\nabla} \widehat{p}
+\frac{\widehat{K}}{\widehat{\mu}_g \widehat{\phi}} \frac{1}{\widehat{J}} \widehat{\mathbf{F}}^{T} \widehat{\nabla} \widehat{p}
 \right) \cdot
 \left( \widehat{\mathbf{F}}^{T}\widehat{\nabla}\widehat{\psi}\right) \,d\widehat{V}
 - \int_{\widehat{\Omega}} \widehat{\psi}\,\widehat{\pi}_{\mathrm{tot}} \widehat{J} \,d\widehat{V}
@@ -455,7 +463,7 @@ are applied.
 - \int_{\widehat{\Omega}} \widehat{\psi} \widehat{\mathbf{F}} \widehat{\mathbf{w}}\cdot
 \widehat{\nabla}\left(\widehat{\phi} \widehat{\rho}_g\right) \,d\widehat{V}
 \\
-+ \int_{\widehat{\Omega}} \left( \widehat{\rho}_g \frac{\widehat{K}}{\widehat{\mu_g} } \frac{1}{\widehat{J}} \widehat{\mathbf{F}} \widehat{\mathbf{F}}^{T} \right) \widehat{\nabla} \widehat{p} \cdot \widehat{\nabla}\widehat{\psi} \,d\widehat{V}
++ \int_{\widehat{\Omega}} \left( \widehat{\rho}_g \frac{\widehat{K}}{\widehat{\mu}_g } \frac{1}{\widehat{J}} \widehat{\mathbf{F}} \widehat{\mathbf{F}}^{T} \right) \widehat{\nabla} \widehat{p} \cdot \widehat{\nabla}\widehat{\psi} \,d\widehat{V}
 - \int_{\widehat{\Omega}} \widehat{\psi}\,\widehat{\pi}_{\mathrm{tot}} \widehat{J} \,d\widehat{V}
 = 0
 \end{multline}
@@ -466,37 +474,37 @@ are applied.
 \frac{\partial }{\partial t} \left( \rho e \right)
 + \nabla \cdot
 \left(
- -\kappa\nabla T + h_g \phi \rho_{g} \mathbf{v}_{g}
+ -\kappa\nabla \theta + h_g \phi \rho_{g} \mathbf{v}_{g}
 \right)
 = 0.
 \end{equation}
 
 \begin{equation}
-\rho_{s} c_{ps} \frac{\partial T}{\partial t}
+\rho_{s} c_{ps} \frac{\partial \theta}{\partial t}
 + \frac{\partial}{\partial t} \left( \phi(\rho_g h_g - p) \right)
 - \bar{h} \pi_{\mathrm{tot}}
 + \nabla \cdot
 \left(
- -\kappa\nabla T + h_g \phi \rho_{g} \mathbf{v}_{g}
+ -\kappa\nabla \theta + h_g \phi \rho_{g} \mathbf{v}_{g}
 \right)
 = 0.
 \end{equation}
 
 \begin{equation}
-\rho_{s} c_{ps} \left( \left.\frac{\partial T}{\partial t}\right|_{\widehat{\mathbf{x}}} - \mathbf{w}\cdot\nabla T \right)
+\rho_{s} c_{ps} \left( \left.\frac{\partial \theta}{\partial t}\right|_{\widehat{\mathbf{x}}} - \mathbf{w}\cdot\nabla \theta \right)
 + \left.\frac{\partial}{\partial t}\left( \phi(\rho_g h_g - p) \right)\right|_{\widehat{\mathbf{x}}}
 - \mathbf{w}\cdot\nabla\left( \phi(\rho_g h_g - p) \right)
 - \bar{h} \pi_{\mathrm{tot}}
 + \nabla \cdot
 \left(
- -\kappa\nabla T + h_g \phi \rho_{g} \mathbf{v}_{g}
+ -\kappa\nabla \theta + h_g \phi \rho_{g} \mathbf{v}_{g}
 \right)
 = 0.
 \end{equation}
 
 \begin{multline}
 \int_{\Omega}
-\psi\,\rho_{s} c_{ps} \left( \left.\frac{\partial T}{\partial t}\right|_{\widehat{\mathbf{x}}} - \mathbf{w}\cdot\nabla T \right)\,dV
+\psi\,\rho_{s} c_{ps} \left( \left.\frac{\partial \theta}{\partial t}\right|_{\widehat{\mathbf{x}}} - \mathbf{w}\cdot\nabla \theta \right)\,dV
 + \int_{\Omega}
 \psi\,\left.\frac{\partial}{\partial t}\left( \phi(\rho_g h_g - p) \right)\right|_{\widehat{\mathbf{x}}}\,dV
 \\
@@ -507,14 +515,14 @@ are applied.
 + \int_{\Omega}
 \psi\,\nabla \cdot
 \left(
- -\kappa\nabla T + h_g \phi \rho_{g} \mathbf{v}_{g}
+ -\kappa\nabla \theta + h_g \phi \rho_{g} \mathbf{v}_{g}
 \right)\,dV
 = 0.
 \end{multline}
 
 \begin{multline}
 \int_{\Omega}
-\psi\,\rho_{s} c_{ps} \left( \left.\frac{\partial T}{\partial t}\right|_{\widehat{\mathbf{x}}} - \mathbf{w}\cdot\nabla T \right)\,dV
+\psi\,\rho_{s} c_{ps} \left( \left.\frac{\partial \theta}{\partial t}\right|_{\widehat{\mathbf{x}}} - \mathbf{w}\cdot\nabla \theta \right)\,dV
 + \int_{\Omega}
  \left.\frac{\partial}{\partial t}\left(\psi \phi(\rho_g h_g - p) \right)\right|_{\widehat{\mathbf{x}}}\,dV
 \\
@@ -525,14 +533,14 @@ are applied.
 + \int_{\Omega}
 \psi\,\nabla \cdot
 \left(
- -\kappa\nabla T + h_g \phi \rho_{g} \mathbf{v}_{g}
+ -\kappa\nabla \theta + h_g \phi \rho_{g} \mathbf{v}_{g}
 \right)\,dV
 = 0.
 \end{multline}
 
 \begin{multline}
 \int_{\Omega}
-\psi\,\rho_{s} c_{ps} \left( \frac{1}{\widehat{J}} \left. \frac{\partial}{\partial t} \left( T \widehat{J} \right)\right|_{\widehat{\mathbf{x}}} - T \nabla \cdot \mathbf{w} - \mathbf{w} \cdot \nabla T \right)\,dV
+\psi\,\rho_{s} c_{ps} \left( \frac{1}{\widehat{J}} \left. \frac{\partial}{\partial t} \left( \theta \widehat{J} \right)\right|_{\widehat{\mathbf{x}}} - \theta \nabla \cdot \mathbf{w} - \mathbf{w} \cdot \nabla \theta \right)\,dV
 + \int_{\Omega}
  \left.\frac{\partial}{\partial t}\left(\psi \phi(\rho_g h_g - p) \right)\right|_{\widehat{\mathbf{x}}}\,dV
 \\
@@ -543,14 +551,14 @@ are applied.
 + \int_{\Omega}
 \psi\,\nabla \cdot
 \left(
- -\kappa\nabla T + h_g \phi \rho_{g} \mathbf{v}_{g}
+ -\kappa\nabla \theta + h_g \phi \rho_{g} \mathbf{v}_{g}
 \right)\,dV
 = 0.
 \end{multline}
 
 \begin{multline}
 \int_{\Omega}
-\psi\,\rho_{s} c_{ps} \left( \frac{1}{\widehat{J}} \left. \frac{\partial}{\partial t} \left( T \widehat{J} \right)\right|_{\widehat{\mathbf{x}}} - \nabla \cdot \left( T \mathbf{w} \right) \right)\,dV
+\psi\,\rho_{s} c_{ps} \left( \frac{1}{\widehat{J}} \left. \frac{\partial}{\partial t} \left( \theta \widehat{J} \right)\right|_{\widehat{\mathbf{x}}} - \nabla \cdot \left( \theta \mathbf{w} \right) \right)\,dV
 + \int_{\Omega}
  \left.\frac{\partial}{\partial t}\left(\psi \phi(\rho_g h_g - p) \right)\right|_{\widehat{\mathbf{x}}}\,dV
 \\
@@ -561,14 +569,14 @@ are applied.
 + \int_{\Omega}
 \psi\,\nabla \cdot
 \left(
- -\kappa\nabla T + h_g \phi \rho_{g} \mathbf{v}_{g}
+ -\kappa\nabla \theta + h_g \phi \rho_{g} \mathbf{v}_{g}
 \right)\,dV
 = 0.
 \end{multline}
 
 \begin{multline}
 \int_{\Omega}
-\psi\,\rho_{s} c_{ps} \left( \frac{1}{\widehat{J}} \left. \frac{\partial}{\partial t} \left( T \widehat{J} \right)\right|_{\widehat{\mathbf{x}}} - \nabla \cdot \left( T \mathbf{w} \right) \right)\,dV
+\psi\,\rho_{s} c_{ps} \left( \frac{1}{\widehat{J}} \left. \frac{\partial}{\partial t} \left( \theta \widehat{J} \right)\right|_{\widehat{\mathbf{x}}} - \nabla \cdot \left( \theta \mathbf{w} \right) \right)\,dV
 + \frac{d}{dt} \int_{\Omega}
 \psi \phi(\rho_g h_g - p) \,dV
 - \int_{\Omega} \psi \left( \phi \rho_{g} h_{g} - \phi p \right) \nabla \cdot \mathbf{w} \,dV
@@ -580,19 +588,19 @@ are applied.
 + \int_{\Omega}
 \psi\,\nabla \cdot
 \left(
- -\kappa\nabla T + h_g \phi \rho_{g} \mathbf{v}_{g}
+ -\kappa\nabla \theta + h_g \phi \rho_{g} \mathbf{v}_{g}
 \right)\,dV
 = 0.
 \end{multline}
 
 \begin{multline}
 \int_{\Omega}
-\psi\,\rho_{s} c_{ps} \frac{1}{\widehat{J}} \left. \frac{\partial}{\partial t} \left( T \widehat{J} \right)\right|_{\widehat{\mathbf{x}}} \,dV
+\psi\,\rho_{s} c_{ps} \frac{1}{\widehat{J}} \left. \frac{\partial}{\partial t} \left( \theta \widehat{J} \right)\right|_{\widehat{\mathbf{x}}} \,dV
 + \frac{d}{dt} \int_{\Omega}
 \psi \phi(\rho_g h_g - p) \,dV
 \\
 - \int_{\Omega}
-\psi\,\rho_{s} c_{ps} \nabla \cdot \left( T \mathbf{w} \right)\,dV
+\psi\,\rho_{s} c_{ps} \nabla \cdot \left( \theta \mathbf{w} \right)\,dV
 - \int_{\Omega} \psi \left( \phi \rho_{g} h_{g} - \phi p \right) \nabla \cdot \mathbf{w} \,dV
 - \int_{\Omega}
 \psi\,\mathbf{w}\cdot\nabla\left( \phi(\rho_g h_g - p) \right)\,dV
@@ -602,19 +610,19 @@ are applied.
 + \int_{\Omega}
 \psi\,\nabla \cdot
 \left(
- -\kappa\nabla T + h_g \phi \rho_{g} \mathbf{v}_{g}
+ -\kappa\nabla \theta + h_g \phi \rho_{g} \mathbf{v}_{g}
 \right)\,dV
 = 0.
 \end{multline}
 
 \begin{multline}
 \int_{\Omega}
-\psi\,\rho_{s} c_{ps} \frac{1}{\widehat{J}} \left. \frac{\partial}{\partial t} \left( T \widehat{J} \right)\right|_{\widehat{\mathbf{x}}} \,dV
+\psi\,\rho_{s} c_{ps} \frac{1}{\widehat{J}} \left. \frac{\partial}{\partial t} \left( \theta \widehat{J} \right)\right|_{\widehat{\mathbf{x}}} \,dV
 + \frac{d}{dt} \int_{\Omega}
 \psi \phi(\rho_g h_g - p) \,dV
 \\
 - \int_{\Omega}
-\psi\,\rho_{s} c_{ps} \nabla \cdot \left( T \mathbf{w} \right)\,dV
+\psi\,\rho_{s} c_{ps} \nabla \cdot \left( \theta \mathbf{w} \right)\,dV
 - \int_{\Omega} \psi \left( \phi \rho_{g} h_{g} - \phi p \right) \nabla \cdot \mathbf{w} \,dV
 - \int_{\Omega}
 \psi\,\mathbf{w}\cdot\nabla\left( \phi(\rho_g h_g - p) \right)\,dV
@@ -623,20 +631,20 @@ are applied.
 \psi\,\bar{h} \pi_{\mathrm{tot}}\,dV
 - \int_{\Omega}
 \left(
- -\kappa\nabla T + h_g \phi \rho_{g} \mathbf{v}_{g}
+ -\kappa\nabla \theta + h_g \phi \rho_{g} \mathbf{v}_{g}
 \right) \cdot \nabla \psi \,dV
 = 0.
 \end{multline}
 
 \begin{multline}
 \int_{\widehat{\Omega}}
-\widehat{\psi}\,\widehat{\rho}_{s} \widehat{c}_{ps} \frac{1}{\widehat{J}} \left. \frac{\partial}{\partial t} \left( \widehat{T} \widehat{J} \right)\right|_{\widehat{\mathbf{x}}} \widehat{J}\,d\widehat{V}
+\widehat{\psi}\,\widehat{\rho}_{s} \widehat{c}_{ps} \frac{1}{\widehat{J}} \left. \frac{\partial}{\partial t} \left( \widehat{\theta} \widehat{J} \right)\right|_{\widehat{\mathbf{x}}} \widehat{J}\,d\widehat{V}
 + \frac{d}{dt} \int_{\widehat{\Omega}}
 \widehat{\psi}\,\widehat{\phi}(\widehat{\rho}_g \widehat{h}_g - \widehat{p}) \widehat{J}\,d\widehat{V}
 \\
 - \int_{\widehat{\Omega}}
-\widehat{\psi}\,\widehat{\rho}_{s} \widehat{c}_{ps} \widehat{\nabla \cdot \left( T \mathbf{w} \right)} \widehat{J}\,d\widehat{V}
-- \int_{\widehat{\Omega}} \widehat{\psi} \left( \widehat{\phi} \widehat{\rho}_{g} \widehat{h}_{g} - \widehat{\phi} \widehat{p} \right) \widehat{\nabla \cdot \mathbf{w}} \widehat{J}\,d\widehat{V}
+\widehat{\psi}\,\widehat{\rho}_{s} \widehat{c}_{ps} \widehat{\nabla \cdot \left( \theta \mathbf{w} \right)} \widehat{J}\,d\widehat{V}
+- \int_{\widehat{\Omega}} \widehat{\psi} \left( \widehat{\phi} \widehat{\rho}_g \widehat{h}_g - \widehat{\phi} \widehat{p} \right) \widehat{\nabla \cdot \mathbf{w}} \widehat{J}\,d\widehat{V}
 - \int_{\widehat{\Omega}}
 \widehat{\psi}\,\widehat{\mathbf{w}} \cdot \widehat{\nabla\left( \phi(\rho_g h_g - p) \right)} \widehat{J}\,d\widehat{V}
 \\
@@ -644,22 +652,22 @@ are applied.
 \widehat{\psi}\,\widehat{\bar{h}} \widehat{\pi}_{\mathrm{tot}}\widehat{J}\,d\widehat{V}
 - \int_{\widehat{\Omega}}
 \left(
- -\widehat{\kappa}\widehat{\nabla T} + \widehat{h}_{g} \widehat{\phi} \widehat{\rho}_{g} \widehat{\mathbf{v}}_{g}
+ -\widehat{\kappa}\widehat{\nabla \theta} + \widehat{h}_g \widehat{\phi} \widehat{\rho}_g \widehat{\mathbf{v}}_g
  \right) \cdot \widehat{\nabla \psi} \widehat{J}\,d\widehat{V}
 = 0.
 \end{multline}
 
 \begin{multline}
 \int_{\widehat{\Omega}}
-\widehat{\psi}\,\widehat{\rho}_{s} \widehat{c}_{ps} \frac{1}{\widehat{J}} \left. \frac{\partial}{\partial t} \left( \widehat{T} \widehat{J} \right)\right|_{\widehat{\mathbf{x}}} \widehat{J}\,d\widehat{V}
+\widehat{\psi}\,\widehat{\rho}_{s} \widehat{c}_{ps} \frac{1}{\widehat{J}} \left. \frac{\partial}{\partial t} \left( \widehat{\theta} \widehat{J} \right)\right|_{\widehat{\mathbf{x}}} \widehat{J}\,d\widehat{V}
 + \frac{d}{dt} \int_{\widehat{\Omega}}
 \widehat{\psi}\,\widehat{\phi}(\widehat{\rho}_g \widehat{h}_g - \widehat{p}) \widehat{J}\,d\widehat{V}
 \\
 - \int_{\widehat{\Omega}}
 \widehat{\psi}\,\widehat{\rho}_{s} \widehat{c}_{ps}
-\frac{1}{\widehat{J}} \widehat{\nabla} \cdot \left( \widehat{\mathbf{F}} \widehat{T} \widehat{\mathbf{w}} \right)
+\frac{1}{\widehat{J}} \widehat{\nabla} \cdot \left( \widehat{\mathbf{F}} \widehat{\theta} \widehat{\mathbf{w}} \right)
 \widehat{J}\,d\widehat{V}
-- \int_{\widehat{\Omega}} \widehat{\psi} \left( \widehat{\phi} \widehat{\rho}_{g} \widehat{h}_{g} - \widehat{\phi} \widehat{p} \right)
+- \int_{\widehat{\Omega}} \widehat{\psi} \left( \widehat{\phi} \widehat{\rho}_g \widehat{h}_g - \widehat{\phi} \widehat{p} \right)
 \frac{1}{\widehat{J}} \widehat{\nabla} \cdot \left( \widehat{\mathbf{F}} \widehat{\mathbf{w}} \right)
 \widehat{J}\,d\widehat{V}
 - \int_{\widehat{\Omega}}
@@ -674,11 +682,11 @@ are applied.
 \left(
  -\widehat{\kappa}
  \left(
- \frac{1}{\widehat{J}} \widehat{\mathbf{F}}^{T} \widehat{\nabla}\widehat{T}
+ \frac{1}{\widehat{J}} \widehat{\mathbf{F}}^{T} \widehat{\nabla}\widehat{\theta}
  \right)
-+ \widehat{h}_{g} \widehat{\phi} \widehat{\rho}_{g}
++ \widehat{h}_g \widehat{\phi} \widehat{\rho}_g
 \left(
--\frac{\widehat{K}}{\widehat{\mu_g} \widehat{\phi}} \frac{1}{\widehat{J}} \widehat{\mathbf{F}}^{T} \widehat{\nabla} \widehat{p}
+-\frac{\widehat{K}}{\widehat{\mu}_g \widehat{\phi}} \frac{1}{\widehat{J}} \widehat{\mathbf{F}}^{T} \widehat{\nabla} \widehat{p}
 \right)
  \right) \cdot
 \left(
@@ -689,15 +697,15 @@ are applied.
 
 \begin{multline}
 \int_{\widehat{\Omega}}
-\widehat{\psi}\,\widehat{\rho}_{s} \widehat{c}_{ps} \frac{1}{\widehat{J}} \left. \frac{\partial}{\partial t} \left( \widehat{T} \widehat{J} \right)\right|_{\widehat{\mathbf{x}}} \widehat{J}\,d\widehat{V}
+\widehat{\psi}\,\widehat{\rho}_{s} \widehat{c}_{ps} \frac{1}{\widehat{J}} \left. \frac{\partial}{\partial t} \left( \widehat{\theta} \widehat{J} \right)\right|_{\widehat{\mathbf{x}}} \widehat{J}\,d\widehat{V}
 + \frac{d}{dt} \int_{\widehat{\Omega}}
 \widehat{\psi}\,\widehat{\phi}(\widehat{\rho}_g \widehat{h}_g - \widehat{p}) \widehat{J}\,d\widehat{V}
 \\
 - \int_{\widehat{\Omega}}
 \widehat{\psi}\,\widehat{\rho}_{s} \widehat{c}_{ps}
-\frac{1}{\widehat{J}} \widehat{\nabla} \cdot \left( \widehat{\mathbf{F}} \widehat{T} \widehat{\mathbf{w}} \right)
+\frac{1}{\widehat{J}} \widehat{\nabla} \cdot \left( \widehat{\mathbf{F}} \widehat{\theta} \widehat{\mathbf{w}} \right)
 \widehat{J}\,d\widehat{V}
-- \int_{\widehat{\Omega}} \widehat{\psi} \left( \widehat{\phi} \widehat{\rho}_{g} \widehat{h}_{g} - \widehat{\phi} \widehat{p} \right)
+- \int_{\widehat{\Omega}} \widehat{\psi} \left( \widehat{\phi} \widehat{\rho}_g \widehat{h}_g - \widehat{\phi} \widehat{p} \right)
 \frac{1}{\widehat{J}} \widehat{\nabla} \cdot \left( \widehat{\mathbf{F}} \widehat{\mathbf{w}} \right)
 \widehat{J}\,d\widehat{V}
 - \int_{\widehat{\Omega}}
@@ -712,11 +720,11 @@ are applied.
 \left(
  -\widehat{\kappa}
  \left(
- \frac{1}{\widehat{J}} \widehat{\mathbf{F}}^{T} \widehat{\nabla}\widehat{T}
+ \frac{1}{\widehat{J}} \widehat{\mathbf{F}}^{T} \widehat{\nabla}\widehat{\theta}
  \right)
-+ \widehat{h}_{g} \widehat{\phi} \widehat{\rho}_{g}
++ \widehat{h}_g \widehat{\phi} \widehat{\rho}_g
 \left(
--\frac{\widehat{K}}{\widehat{\mu_g} \widehat{\phi}} \frac{1}{\widehat{J}} \widehat{\mathbf{F}}^{T} \widehat{\nabla} \widehat{p}
+-\frac{\widehat{K}}{\widehat{\mu}_g \widehat{\phi}} \frac{1}{\widehat{J}} \widehat{\mathbf{F}}^{T} \widehat{\nabla} \widehat{p}
 \right)
  \right) \cdot
 \left(
@@ -727,15 +735,15 @@ are applied.
 
 \begin{multline}
 \int_{\widehat{\Omega}}
-\widehat{\psi}\,\widehat{\rho}_{s} \widehat{c}_{ps} \frac{1}{\widehat{J}} \left. \frac{\partial}{\partial t} \left( \widehat{T} \widehat{J} \right)\right|_{\widehat{\mathbf{x}}} \widehat{J}\,d\widehat{V}
+\widehat{\psi}\,\widehat{\rho}_{s} \widehat{c}_{ps} \frac{1}{\widehat{J}} \left. \frac{\partial}{\partial t} \left( \widehat{\theta} \widehat{J} \right)\right|_{\widehat{\mathbf{x}}} \widehat{J}\,d\widehat{V}
 + \frac{d}{dt} \int_{\widehat{\Omega}}
 \widehat{\psi}\,\widehat{\phi}(\widehat{\rho}_g \widehat{h}_g - \widehat{p}) \widehat{J}\,d\widehat{V}
 \\
 - \int_{\widehat{\Omega}}
 \widehat{\psi}\,\widehat{\rho}_{s} \widehat{c}_{ps}
-\frac{1}{\widehat{J}} \widehat{\nabla} \cdot \left( \widehat{\mathbf{F}} \widehat{T} \widehat{\mathbf{w}} \right)
+\frac{1}{\widehat{J}} \widehat{\nabla} \cdot \left( \widehat{\mathbf{F}} \widehat{\theta} \widehat{\mathbf{w}} \right)
 \widehat{J}\,d\widehat{V}
-- \int_{\widehat{\Omega}} \widehat{\psi} \left( \widehat{\phi} \widehat{\rho}_{g} \widehat{h}_{g} - \widehat{\phi} \widehat{p} \right)
+- \int_{\widehat{\Omega}} \widehat{\psi} \left( \widehat{\phi} \widehat{\rho}_g \widehat{h}_g - \widehat{\phi} \widehat{p} \right)
 \frac{1}{\widehat{J}} \widehat{\nabla} \cdot \left( \widehat{\mathbf{F}} \widehat{\mathbf{w}} \right)
 \widehat{J}\,d\widehat{V}
 - \int_{\widehat{\Omega}}
@@ -750,7 +758,7 @@ are applied.
 \left(
  -\widehat{\kappa}
  \left(
- \frac{1}{\widehat{J}} \widehat{\mathbf{F}}^{T} \widehat{\nabla}\widehat{T}
+ \frac{1}{\widehat{J}} \widehat{\mathbf{F}}^{T} \widehat{\nabla}\widehat{\theta}
  \right)
  \right) \cdot
 \left(
@@ -758,9 +766,9 @@ are applied.
 \right) \widehat{J}\,d\widehat{V}
 - \int_{\widehat{\Omega}}
 \left(
-\widehat{h}_{g} \widehat{\phi} \widehat{\rho}_{g}
+\widehat{h}_g \widehat{\phi} \widehat{\rho}_g
 \left(
--\frac{\widehat{K}}{\widehat{\mu_g} \widehat{\phi}} \frac{1}{\widehat{J}} \widehat{\mathbf{F}}^{T} \widehat{\nabla} \widehat{p}
+-\frac{\widehat{K}}{\widehat{\mu}_g \widehat{\phi}} \frac{1}{\widehat{J}} \widehat{\mathbf{F}}^{T} \widehat{\nabla} \widehat{p}
 \right)
 \right) \cdot
 \left(
@@ -772,14 +780,14 @@ are applied.
 
 \begin{multline}
 \int_{\widehat{\Omega}}
-\widehat{\psi}\,\widehat{\rho}_{s} \widehat{c}_{ps} \left. \frac{\partial}{\partial t} \left( \widehat{T} \widehat{J} \right)\right|_{\widehat{\mathbf{x}}} \,d\widehat{V}
+\widehat{\psi}\,\widehat{\rho}_{s} \widehat{c}_{ps} \left. \frac{\partial}{\partial t} \left( \widehat{\theta} \widehat{J} \right)\right|_{\widehat{\mathbf{x}}} \,d\widehat{V}
 + \frac{d}{dt} \int_{\widehat{\Omega}}
 \widehat{\psi}\,\widehat{\phi}(\widehat{\rho}_g \widehat{h}_g - \widehat{p}) \widehat{J}\,d\widehat{V}
 \\
 - \int_{\widehat{\Omega}}
 \widehat{\psi}\,\widehat{\rho}_{s} \widehat{c}_{ps}
-\widehat{\nabla} \cdot \left( \widehat{\mathbf{F}} \widehat{T} \widehat{\mathbf{w}} \right) \,d\widehat{V}
-- \int_{\widehat{\Omega}} \widehat{\psi} \left( \widehat{\phi} \widehat{\rho}_{g} \widehat{h}_{g} - \widehat{\phi} \widehat{p} \right)
+\widehat{\nabla} \cdot \left( \widehat{\mathbf{F}} \widehat{\theta} \widehat{\mathbf{w}} \right) \,d\widehat{V}
+- \int_{\widehat{\Omega}} \widehat{\psi} \left( \widehat{\phi} \widehat{\rho}_g \widehat{h}_g - \widehat{\phi} \widehat{p} \right)
 \widehat{\nabla} \cdot \left( \widehat{\mathbf{F}} \widehat{\mathbf{w}} \right) \,d\widehat{V}
 - \int_{\widehat{\Omega}}
 \widehat{\psi}\, \widehat{\mathbf{F}} \widehat{\mathbf{w}} \cdot
@@ -790,13 +798,13 @@ are applied.
 + \int_{\widehat{\Omega}}
 \frac{1}{\widehat{J}}
  \widehat{\kappa}
- \widehat{\mathbf{F}} \widehat{\mathbf{F}}^{T} \widehat{\nabla}\widehat{T}
+ \widehat{\mathbf{F}} \widehat{\mathbf{F}}^{T} \widehat{\nabla}\widehat{\theta}
 \cdot\widehat{\nabla}\widehat{\psi} \,d\widehat{V}
 + \int_{\widehat{\Omega}}
 \frac{1}{\widehat{J}}
 \left(
-\widehat{h}_{g} \widehat{\rho}_{g}
-\frac{\widehat{K}}{\widehat{\mu_g}} \right) \widehat{\mathbf{F}} \widehat{\mathbf{F}}^{T} \widehat{\nabla} \widehat{p}
+\widehat{h}_g \widehat{\rho}_g
+\frac{\widehat{K}}{\widehat{\mu}_g} \right) \widehat{\mathbf{F}} \widehat{\mathbf{F}}^{T} \widehat{\nabla} \widehat{p}
 \cdot
 \widehat{\nabla}\widehat{\psi}
 \,d\widehat{V}
