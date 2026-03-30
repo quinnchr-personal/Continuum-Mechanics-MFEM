@@ -68,6 +68,17 @@ public:
       ScalarDerivatives reflectivity;
    };
 
+   struct SolidBulkDerivatives
+   {
+      ScalarDerivatives cp;
+      ScalarDerivatives h;
+      ScalarDerivatives k;
+      ScalarDerivatives K;
+      ScalarDerivatives eps_g;
+      ScalarDerivatives rho_s;
+      ScalarDerivatives tau;
+   };
+
    struct GasSurfaceDerivatives
    {
       ScalarDerivatives M;
@@ -81,10 +92,17 @@ public:
    InternalState CreateInitialState() const;
    InternalState SolveReactionExtents(double T, double dt,
                                       const InternalState &old_state) const;
+   std::vector<double> EvaluateExtentTemperatureDerivative(
+      double T, const InternalState &internal_state) const;
    SolidProperties EvaluateSolid(double T, double p,
                                  const InternalState &internal_state) const;
    GasProperties EvaluateGas(double T, double p,
                              const InternalState &internal_state) const;
+   SolidBulkDerivatives EvaluateSolidBulkDerivatives(
+      double T, double p, const InternalState &internal_state) const;
+   SolidBulkDerivatives EvaluateSolidBulkDerivatives(
+      double T, double p, const InternalState &internal_state,
+      const std::vector<double> &dextent_dT) const;
    SolidSurfaceDerivatives EvaluateSolidSurfaceDerivatives(
       double T, double p, const InternalState &internal_state) const;
    GasSurfaceDerivatives EvaluateGasSurfaceDerivatives(

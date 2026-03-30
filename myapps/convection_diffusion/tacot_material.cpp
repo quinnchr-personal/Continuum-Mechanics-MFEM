@@ -279,6 +279,68 @@ TACOTMaterial::InternalState TACOTMaterial::SolveReactionExtents(
    return state;
 }
 
+std::vector<double> TACOTMaterial::EvaluateExtentTemperatureDerivative(
+   const double T,
+   const InternalState &internal_state) const
+{
+   if (internal_state.extent.size() != reactions_.size())
+   {
+      throw std::runtime_error("InternalState.extent size does not match reaction count.");
+   }
+
+   std::vector<double> out(reactions_.size(), 0.0);
+   if (internal_state.extent_old.size() != reactions_.size() ||
+       internal_state.dt <= 0.0)
+   {
+      return out;
+   }
+
+   const double T_clamped = std::max(T, 1.0);
+   const double dT_clamped_dT = (T > 1.0) ? 1.0 : 0.0;
+   if (dT_clamped_dT == 0.0)
+   {
+      return out;
+   }
+
+   for (int i = 0; i < static_cast<int>(reactions_.size()); ++i)
+   {
+      const Reaction &r = reactions_[i];
+      const double x_old = Clamp(internal_state.extent_old[i], 0.0, 1.0);
+      const double x = Clamp(internal_state.extent[i], x_old, 1.0);
+
+      if (T_clamped < r.T_threshold ||
+          x <= x_old + 1.0e-14 ||
+          x >= 1.0 - 1.0e-12)
+      {
+         continue;
+      }
+
+      const double arrhenius = r.A * std::exp(-r.E / (R_ * T_clamped));
+      if (arrhenius <= 0.0)
+      {
+         continue;
+      }
+
+      const double tpow = SafePow(T_clamped, r.n);
+      const double rate_prefactor = arrhenius * tpow;
+      const double one_minus_x = std::max(1.0 - x, 1.0e-14);
+      const double dfdx = 1.0 + internal_state.dt * rate_prefactor * r.m *
+                          SafePow(one_minus_x, r.m - 1.0);
+      if (std::abs(dfdx) < 1.0e-14)
+      {
+         continue;
+      }
+
+      const double dlog_rate_dT =
+         (r.E / (R_ * T_clamped * T_clamped) + r.n / T_clamped) * dT_clamped_dT;
+      const double drate_prefactor_dT = rate_prefactor * dlog_rate_dT;
+      out[i] = internal_state.dt * drate_prefactor_dT *
+               SafePow(one_minus_x, r.m) / dfdx;
+   }
+
+   return out;
+}
+
 TACOTMaterial::SolidProperties TACOTMaterial::EvaluateSolid(
    const double T,
    const double p,
@@ -415,6 +477,138 @@ TACOTMaterial::GasProperties TACOTMaterial::EvaluateGas(
 
    const double T_clamped = std::max(T, 1.0);
    out.rho = p * out.M / (R_ * T_clamped);
+   return out;
+}
+
+TACOTMaterial::SolidBulkDerivatives TACOTMaterial::EvaluateSolidBulkDerivatives(
+   const double T,
+   const double p,
+   const InternalState &internal_state) const
+{
+   std::vector<double> dextent_dT(reactions_.size(), 0.0);
+   return EvaluateSolidBulkDerivatives(T, p, internal_state, dextent_dT);
+}
+
+TACOTMaterial::SolidBulkDerivatives TACOTMaterial::EvaluateSolidBulkDerivatives(
+   const double T,
+   const double p,
+   const InternalState &internal_state,
+   const std::vector<double> &dextent_dT) const
+{
+   if (internal_state.extent.size() != reactions_.size())
+   {
+      throw std::runtime_error("InternalState.extent size does not match reaction count.");
+   }
+   if (dextent_dT.size() != reactions_.size())
+   {
+      throw std::runtime_error("dextent_dT size does not match reaction count.");
+   }
+
+   SolidBulkDerivatives out;
+
+   const double tau = ComputeTau(internal_state.extent);
+   out.tau.value = Clamp(tau, 0.0, 1.0);
+   out.K.value = BlendTau(K_v_, K_c_, out.tau.value);
+   out.eps_g.value = BlendTau(eps_g_v_, eps_g_c_, out.tau.value);
+
+   const int nph = std::min(rhoI_.size(), epsI_.size());
+   std::vector<double> rho_eps0(nph, 0.0);
+   for (int ph = 0; ph < nph; ++ph)
+   {
+      rho_eps0[ph] = rhoI_[ph] * epsI_[ph];
+   }
+
+   double rho_v = 0.0;
+   for (int ph = 0; ph < nph; ++ph)
+   {
+      rho_v += rho_eps0[ph];
+   }
+
+   double rho_c = rho_v;
+   for (const Reaction &r : reactions_)
+   {
+      const int ph = static_cast<int>(Clamp(r.phase_index, 0, nph - 1));
+      rho_c -= rho_eps0[ph] * r.F;
+   }
+   rho_c = std::max(rho_c, 1.0e-14);
+
+   std::vector<double> phase_factor(nph, 1.0);
+    std::vector<double> phase_factor_dT(nph, 0.0);
+   for (int i = 0; i < static_cast<int>(reactions_.size()); ++i)
+   {
+      const int ph = static_cast<int>(Clamp(reactions_[i].phase_index, 0, nph - 1));
+      const double x = Clamp(internal_state.extent[i], 0.0, 1.0);
+      phase_factor[ph] -= reactions_[i].F * x;
+      phase_factor_dT[ph] -= reactions_[i].F * dextent_dT[i];
+   }
+   for (int ph = 0; ph < nph; ++ph)
+   {
+      if (phase_factor[ph] <= 0.0)
+      {
+         phase_factor[ph] = 0.0;
+         phase_factor_dT[ph] = 0.0;
+      }
+   }
+
+   out.rho_s.value = 0.0;
+   out.rho_s.dT = 0.0;
+   for (int ph = 0; ph < nph; ++ph)
+   {
+      out.rho_s.value += rho_eps0[ph] * phase_factor[ph];
+      out.rho_s.dT += rho_eps0[ph] * phase_factor_dT[ph];
+   }
+
+   double tau_dT = 0.0;
+   const double norm_sum = std::max(rho_v - rho_c, 0.0);
+   if (norm_sum > 0.0)
+   {
+      for (int i = 0; i < static_cast<int>(reactions_.size()); ++i)
+      {
+         const int ph = static_cast<int>(Clamp(reactions_[i].phase_index, 0, nph - 1));
+         const double w = reactions_[i].F * rho_eps0[ph] / norm_sum;
+         tau_dT -= w * dextent_dT[i];
+      }
+   }
+   out.tau.dT = tau_dT;
+   out.K.dT = (K_v_ - K_c_) * tau_dT;
+   out.eps_g.dT = (eps_g_v_ - eps_g_c_) * tau_dT;
+
+   const double rho_ref = std::max(out.rho_s.value, rho_c);
+   const double rho_ref_dT =
+      (out.rho_s.value > rho_c) ? out.rho_s.dT : 0.0;
+   const double virgin_weight =
+      (rho_ref > 0.0) ? (out.tau.value * rho_v / rho_ref) : out.tau.value;
+   double virgin_weight_dT = out.tau.dT;
+   if (rho_ref > 0.0)
+   {
+      virgin_weight_dT =
+         rho_v * (out.tau.dT * rho_ref - out.tau.value * rho_ref_dT) /
+         (rho_ref * rho_ref);
+   }
+
+   const MultiTable2D::EvalResult cp_v = virgin_.EvalWithDerivatives(0, p, T);
+   const MultiTable2D::EvalResult h_v = virgin_.EvalWithDerivatives(1, p, T);
+   const MultiTable2D::EvalResult k_v = virgin_.EvalWithDerivatives(2, p, T);
+
+   const MultiTable2D::EvalResult cp_c = char_.EvalWithDerivatives(0, p, T);
+   const MultiTable2D::EvalResult h_c = char_.EvalWithDerivatives(1, p, T);
+   const MultiTable2D::EvalResult k_c = char_.EvalWithDerivatives(2, p, T);
+
+   out.cp.value = cp_v.value * virgin_weight + cp_c.value * (1.0 - virgin_weight);
+   out.cp.dT = cp_v.dT * virgin_weight + cp_c.dT * (1.0 - virgin_weight) +
+               (cp_v.value - cp_c.value) * virgin_weight_dT;
+   out.cp.dp = cp_v.dp * virgin_weight + cp_c.dp * (1.0 - virgin_weight);
+
+   out.h.value = h_v.value * virgin_weight + h_c.value * (1.0 - virgin_weight);
+   out.h.dT = h_v.dT * virgin_weight + h_c.dT * (1.0 - virgin_weight) +
+              (h_v.value - h_c.value) * virgin_weight_dT;
+   out.h.dp = h_v.dp * virgin_weight + h_c.dp * (1.0 - virgin_weight);
+
+   out.k.value = k_v.value * virgin_weight + k_c.value * (1.0 - virgin_weight);
+   out.k.dT = k_v.dT * virgin_weight + k_c.dT * (1.0 - virgin_weight) +
+              (k_v.value - k_c.value) * virgin_weight_dT;
+   out.k.dp = k_v.dp * virgin_weight + k_c.dp * (1.0 - virgin_weight);
+
    return out;
 }
 

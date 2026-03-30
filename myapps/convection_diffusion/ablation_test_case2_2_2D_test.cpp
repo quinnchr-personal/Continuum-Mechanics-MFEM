@@ -1815,6 +1815,20 @@ private:
       double dp = 0.0;
    };
 
+   struct AleStorageEvaluation
+   {
+      MassStorageData mass;
+      MassStorageData solid_heatcap;
+      MassStorageData gas_energy;
+   };
+
+   struct MaterialPointEvaluation
+   {
+      TACOTMaterial::InternalState state;
+      TACOTMaterial::SolidProperties solid;
+      TACOTMaterial::GasProperties gas;
+   };
+
    struct QPCoeffs
    {
       double A = 0.0; // storage_p - source_p
@@ -2007,107 +2021,82 @@ private:
       }
    }
 
-   MassStorageData EvaluateMassStorageData(
+   AleStorageEvaluation EvaluateAleStorageData(
       const double T,
       const double p,
       const TACOTMaterial::InternalState &old_state,
+      const TACOTMaterial::InternalState &new_state,
       const TACOTMaterial::SolidProperties &solid,
       const TACOTMaterial::GasProperties &gas) const
    {
-      MassStorageData out;
-      out.value = solid.eps_g * gas.rho;
+      (void)old_state;
+      AleStorageEvaluation out;
+      out.mass.value = solid.eps_g * gas.rho;
+      out.solid_heatcap.value = solid.rho_s * solid.cp;
+      out.gas_energy.value = solid.eps_g * (gas.rho * gas.h - p);
 
-      const bool use_exact_ale_mass_form =
+      const bool need_mass =
          (ale_mass_enabled_ && UseReferenceAleGeometry());
-      if (!use_exact_ale_mass_form)
+      const bool need_energy = UseExactAleEnergyForm();
+      if (!need_mass && !need_energy)
       {
          return out;
       }
 
-      const double coeff_fd_eps = 1.0e-7;
-      const double hT = coeff_fd_eps * std::max(1.0, std::abs(T));
-      const double hp = coeff_fd_eps * std::max(1.0, std::abs(p));
+      const std::vector<double> dextent_dT =
+         material_.EvaluateExtentTemperatureDerivative(T, new_state);
 
-      auto eval_mass_storage = [&](const double Tq, const double pq)
+      const TACOTMaterial::SolidBulkDerivatives solid_bulk_deriv =
+         material_.EvaluateSolidBulkDerivatives(T, p, new_state, dextent_dT);
+      const TACOTMaterial::GasSurfaceDerivatives gas_deriv =
+         material_.EvaluateGasSurfaceDerivatives(T, p, new_state);
+
+      if (need_mass)
       {
-         TACOTMaterial::InternalState state_q =
-            material_.SolveReactionExtents(Tq, dt_, old_state);
-         const TACOTMaterial::SolidProperties solid_q =
-            material_.EvaluateSolid(Tq, pq, state_q);
-         const TACOTMaterial::GasProperties gas_q =
-            material_.EvaluateGas(Tq, pq, state_q);
-         return solid_q.eps_g * gas_q.rho;
-      };
+         out.mass.dT =
+            solid_bulk_deriv.eps_g.dT * gas.rho +
+            solid.eps_g * gas_deriv.rho.dT;
+         out.mass.dp = solid.eps_g * gas_deriv.rho.dp;
+      }
 
-      out.dT = (eval_mass_storage(T + hT, p) - out.value) / hT;
-      out.dp = (eval_mass_storage(T, p + hp) - out.value) / hp;
+      if (need_energy)
+      {
+         out.solid_heatcap.dT =
+            solid_bulk_deriv.rho_s.dT * solid.cp +
+            solid.rho_s * solid_bulk_deriv.cp.dT;
+         out.solid_heatcap.dp = solid.rho_s * solid_bulk_deriv.cp.dp;
+
+         out.gas_energy.dT =
+            solid_bulk_deriv.eps_g.dT * (gas.rho * gas.h - p) +
+            solid.eps_g * (gas.h * gas_deriv.rho.dT + gas.rho * gas_deriv.h.dT);
+         out.gas_energy.dp =
+            solid.eps_g * (gas.h * gas_deriv.rho.dp + gas.rho * gas_deriv.h.dp - 1.0);
+      }
+
       return out;
    }
 
-   MassStorageData EvaluateSolidHeatCapacityData(
+   MaterialPointEvaluation EvaluateMaterialPoint(
       const double T,
       const double p,
-      const TACOTMaterial::InternalState &old_state,
-      const TACOTMaterial::SolidProperties &solid) const
+      const TACOTMaterial::InternalState &old_state) const
    {
-      MassStorageData out;
-      out.value = solid.rho_s * solid.cp;
-
-      if (!UseExactAleEnergyForm())
-      {
-         return out;
-      }
-
-      const double coeff_fd_eps = 1.0e-7;
-      const double hT = coeff_fd_eps * std::max(1.0, std::abs(T));
-      const double hp = coeff_fd_eps * std::max(1.0, std::abs(p));
-
-      auto eval_solid_heatcap = [&](const double Tq, const double pq)
-      {
-         TACOTMaterial::InternalState state_q =
-            material_.SolveReactionExtents(Tq, dt_, old_state);
-         const TACOTMaterial::SolidProperties solid_q =
-            material_.EvaluateSolid(Tq, pq, state_q);
-         return solid_q.rho_s * solid_q.cp;
-      };
-
-      out.dT = (eval_solid_heatcap(T + hT, p) - out.value) / hT;
-      out.dp = (eval_solid_heatcap(T, p + hp) - out.value) / hp;
+      MaterialPointEvaluation out;
+      out.state = material_.SolveReactionExtents(T, dt_, old_state);
+      out.solid = material_.EvaluateSolid(T, p, out.state);
+      out.gas = material_.EvaluateGas(T, p, out.state);
       return out;
    }
 
-   MassStorageData EvaluateGasEnergyData(
+   MaterialPointEvaluation EvaluateMaterialPointWithState(
       const double T,
       const double p,
-      const TACOTMaterial::InternalState &old_state,
-      const TACOTMaterial::SolidProperties &solid,
-      const TACOTMaterial::GasProperties &gas) const
+      const TACOTMaterial::InternalState &state) const
    {
-      MassStorageData out;
-      out.value = solid.eps_g * (gas.rho * gas.h - p);
-
-      if (!UseExactAleEnergyForm())
-      {
-         return out;
-      }
-
-      const double coeff_fd_eps = 1.0e-7;
-      const double hT = coeff_fd_eps * std::max(1.0, std::abs(T));
-      const double hp = coeff_fd_eps * std::max(1.0, std::abs(p));
-
-      auto eval_gas_energy = [&](const double Tq, const double pq)
-      {
-         TACOTMaterial::InternalState state_q =
-            material_.SolveReactionExtents(Tq, dt_, old_state);
-         const TACOTMaterial::SolidProperties solid_q =
-            material_.EvaluateSolid(Tq, pq, state_q);
-         const TACOTMaterial::GasProperties gas_q =
-            material_.EvaluateGas(Tq, pq, state_q);
-         return solid_q.eps_g * (gas_q.rho * gas_q.h - pq);
-      };
-
-      out.dT = (eval_gas_energy(T + hT, p) - out.value) / hT;
-      out.dp = (eval_gas_energy(T, p + hp) - out.value) / hp;
+      MaterialPointEvaluation out;
+      out.state = state;
+      out.solid = material_.EvaluateSolid(T, p, out.state);
+      out.gas = material_.EvaluateGas(T, p, out.state);
       return out;
    }
 
@@ -2118,16 +2107,13 @@ private:
                              const double p_old,
                              const TACOTMaterial::SolidProperties &solid_old,
                              const TACOTMaterial::GasProperties &gas_old,
-                             const AleGeometry &geom) const
+                             const AleGeometry &geom,
+                             const MaterialPointEvaluation &eval) const
    {
       QPCoeffs out;
-
-      TACOTMaterial::InternalState new_state =
-         material_.SolveReactionExtents(T, dt_, old_state);
-      const TACOTMaterial::SolidProperties solid =
-         material_.EvaluateSolid(T, p, new_state);
-      const TACOTMaterial::GasProperties gas =
-         material_.EvaluateGas(T, p, new_state);
+      const TACOTMaterial::InternalState &new_state = eval.state;
+      const TACOTMaterial::SolidProperties &solid = eval.solid;
+      const TACOTMaterial::GasProperties &gas = eval.gas;
 
       const double mu = max(gas.mu, 1.0e-12);
       const double darcy = solid.K / mu;
@@ -2136,12 +2122,11 @@ private:
       const double h_rho_darcy = gas.h * rho_darcy;
       const double h_rho2_darcy = gas.h * rho2_darcy;
 
-      const MassStorageData mass_storage =
-         EvaluateMassStorageData(T, p, old_state, solid, gas);
-      const MassStorageData solid_heatcap_data =
-         EvaluateSolidHeatCapacityData(T, p, old_state, solid);
-      const MassStorageData gas_energy_data =
-         EvaluateGasEnergyData(T, p, old_state, solid, gas);
+      const AleStorageEvaluation ale_storage =
+         EvaluateAleStorageData(T, p, old_state, new_state, solid, gas);
+      const MassStorageData &mass_storage = ale_storage.mass;
+      const MassStorageData &solid_heatcap_data = ale_storage.solid_heatcap;
+      const MassStorageData &gas_energy_data = ale_storage.gas_energy;
       const double e_m_new = mass_storage.value;
       const double e_m_old = solid_old.eps_g * gas_old.rho;
       const double solid_heatcap = solid_heatcap_data.value;
@@ -2292,15 +2277,23 @@ private:
 
          AleGeometry geom;
          EvaluateAleGeometry(Tr, ip, geom);
-         const QPCoeffs base =
-            EvaluateQPCoeffs(T, p, old_state, T_old, p_old, solid_old, gas_old, geom);
-
          const double hT = coeff_fd_eps * std::max(1.0, std::abs(T));
          const double hp = coeff_fd_eps * std::max(1.0, std::abs(p));
+         const MaterialPointEvaluation base_eval =
+            EvaluateMaterialPoint(T, p, old_state);
+         const MaterialPointEvaluation T_pert_eval =
+            EvaluateMaterialPoint(T + hT, p, old_state);
+         const MaterialPointEvaluation p_pert_eval =
+            EvaluateMaterialPointWithState(T, p + hp, base_eval.state);
+         const QPCoeffs base =
+            EvaluateQPCoeffs(T, p, old_state, T_old, p_old, solid_old, gas_old,
+                             geom, base_eval);
          const QPCoeffs T_pert =
-            EvaluateQPCoeffs(T + hT, p, old_state, T_old, p_old, solid_old, gas_old, geom);
+            EvaluateQPCoeffs(T + hT, p, old_state, T_old, p_old, solid_old, gas_old,
+                             geom, T_pert_eval);
          const QPCoeffs p_pert =
-            EvaluateQPCoeffs(T, p + hp, old_state, T_old, p_old, solid_old, gas_old, geom);
+            EvaluateQPCoeffs(T, p + hp, old_state, T_old, p_old, solid_old, gas_old,
+                             geom, p_pert_eval);
 
          const double A_T = (T_pert.A - base.A) / hT;
          const double B_T = (T_pert.B - base.B) / hT;
@@ -2635,12 +2628,11 @@ private:
          AleGeometry geom;
          EvaluateAleGeometry(Tr, ip, geom);
 
-         const MassStorageData mass_storage =
-            EvaluateMassStorageData(T, p, old_state, solid, gas);
-         const MassStorageData solid_heatcap_data =
-            EvaluateSolidHeatCapacityData(T, p, old_state, solid);
-         const MassStorageData gas_energy_data =
-            EvaluateGasEnergyData(T, p, old_state, solid, gas);
+         const AleStorageEvaluation ale_storage =
+            EvaluateAleStorageData(T, p, old_state, new_state, solid, gas);
+         const MassStorageData &mass_storage = ale_storage.mass;
+         const MassStorageData &solid_heatcap_data = ale_storage.solid_heatcap;
+         const MassStorageData &gas_energy_data = ale_storage.gas_energy;
          const double e_m_new = mass_storage.value;
          const double e_m_old = solid_old.eps_g * gas_old.rho;
          const double solid_heatcap = solid_heatcap_data.value;
@@ -4339,26 +4331,95 @@ static void CaptureElementQPJacobians(const mfem::ParFiniteElementSpace &fes_T,
    }
 }
 
+struct AleRemapWorkspace
+{
+   unique_ptr<L2_FECollection> remap_fec;
+   unique_ptr<ParFiniteElementSpace> remap_fes;
+   vector<unique_ptr<ParGridFunction>> extent_fields;
+   DenseMatrix target_pts;
+   vector<pair<int, int>> qp_map;
+   Array<int> elem_ids;
+   Array<IntegrationPoint> ref_pts;
+   vector<vector<double>> remapped_extents;
+   int total_qps = 0;
+   int num_reactions = 0;
+   int quad_order = -1;
+
+   void Initialize(const ReactionStateManager &state_manager,
+                   const ParFiniteElementSpace &fes_state,
+                   ParMesh &old_lookup_mesh,
+                   const int new_quad_order)
+   {
+      const int nr = state_manager.NumReactions();
+      int new_total_qps = 0;
+      vector<pair<int, int>> new_qp_map;
+      for (int e = 0; e < fes_state.GetNE(); ++e)
+      {
+         const FiniteElement *fe = fes_state.GetFE(e);
+         const int nq = IntRules.Get(fe->GetGeomType(), new_quad_order).GetNPoints();
+         for (int q = 0; q < nq; ++q)
+         {
+            new_qp_map.push_back({e, q});
+         }
+         new_total_qps += nq;
+      }
+
+      const bool need_rebuild =
+         (!remap_fec ||
+          !remap_fes ||
+          remap_fes->GetParMesh() != &old_lookup_mesh ||
+          quad_order != new_quad_order ||
+          num_reactions != nr ||
+          total_qps != new_total_qps);
+      if (!need_rebuild)
+      {
+         return;
+      }
+
+      remap_fec = make_unique<L2_FECollection>(1, old_lookup_mesh.Dimension());
+      remap_fes = make_unique<ParFiniteElementSpace>(&old_lookup_mesh, remap_fec.get());
+
+      extent_fields.clear();
+      extent_fields.reserve(static_cast<size_t>(nr));
+      for (int r = 0; r < nr; ++r)
+      {
+         extent_fields.push_back(make_unique<ParGridFunction>(remap_fes.get()));
+         *extent_fields.back() = 0.0;
+      }
+
+      total_qps = new_total_qps;
+      num_reactions = nr;
+      quad_order = new_quad_order;
+      qp_map = std::move(new_qp_map);
+      target_pts.SetSize(old_lookup_mesh.SpaceDimension(), total_qps);
+      elem_ids.SetSize(total_qps);
+      ref_pts.SetSize(total_qps);
+      remapped_extents.assign(static_cast<size_t>(total_qps),
+                              vector<double>(static_cast<size_t>(nr), 0.0));
+   }
+};
+
 static void ProjectQPointExtentsToAleRemapFields(
    const ReactionStateManager &state_manager,
    const ParFiniteElementSpace &fes_state,
-   ParFiniteElementSpace &remap_fes,
+   AleRemapWorkspace &workspace,
    const int quad_order,
    vector<unique_ptr<ParGridFunction>> &extent_fields)
 {
    const int nr = state_manager.NumReactions();
-   extent_fields.clear();
-   extent_fields.reserve(static_cast<size_t>(nr));
    if (nr == 0) { return; }
 
+   MFEM_VERIFY(workspace.remap_fes != nullptr,
+               "ALE remap projection requires an initialized workspace.");
+   ParFiniteElementSpace &remap_fes = *workspace.remap_fes;
    ParMesh *old_lookup_mesh = remap_fes.GetParMesh();
    MFEM_VERIFY(old_lookup_mesh != nullptr,
                "ALE remap projection requires a valid parallel mesh.");
-
-   for (int r = 0; r < nr; ++r)
+   MFEM_VERIFY(static_cast<int>(extent_fields.size()) == nr,
+               "ALE remap workspace extent field count mismatch.");
+   for (auto &field : extent_fields)
    {
-      extent_fields.push_back(make_unique<ParGridFunction>(&remap_fes));
-      *extent_fields.back() = 0.0;
+      *field = 0.0;
    }
 
    Array<int> vdofs;
@@ -4443,65 +4504,53 @@ static void RemapExtentsALE(ReactionStateManager &state_manager,
                             ParMesh &old_lookup_mesh,
                             const ParFiniteElementSpace &fes_T,
                             const ParGridFunction &ale_displacement_new,
-                            const int quad_order)
+                            const int quad_order,
+                            AleRemapWorkspace &workspace)
 {
    const int ne = fes_T.GetNE();
-   const int dim = reference_pmesh.SpaceDimension();
    if (ne == 0) { return; }
 
-   L2_FECollection remap_fec(1, old_lookup_mesh.Dimension());
-   ParFiniteElementSpace remap_fes(&old_lookup_mesh, &remap_fec);
-   vector<unique_ptr<ParGridFunction>> extent_fields;
+   workspace.Initialize(state_manager, fes_T, old_lookup_mesh, quad_order);
+   if (workspace.total_qps == 0) { return; }
+
    ProjectQPointExtentsToAleRemapFields(state_manager,
                                         fes_T,
-                                        remap_fes,
+                                        workspace,
                                         quad_order,
-                                        extent_fields);
+                                        workspace.extent_fields);
 
-   int total_qps = 0;
-   for (int e = 0; e < ne; ++e)
+   DenseMatrix &target_pts = workspace.target_pts;
+   const vector<pair<int, int>> &qp_map = workspace.qp_map;
+   Array<int> &elem_ids = workspace.elem_ids;
+   Array<IntegrationPoint> &ref_pts = workspace.ref_pts;
+   vector<vector<double>> &remapped_extents = workspace.remapped_extents;
+   const int dim = target_pts.Height();
+
+   for (int col = 0; col < workspace.total_qps; ++col)
    {
-      const FiniteElement *fe = fes_T.GetFE(e);
-      total_qps += IntRules.Get(fe->GetGeomType(), quad_order).GetNPoints();
-   }
-   if (total_qps == 0) { return; }
-
-   DenseMatrix target_pts(dim, total_qps);
-   vector<pair<int, int>> qp_map(static_cast<size_t>(total_qps));
-
-   int col = 0;
-   for (int e = 0; e < ne; ++e)
-   {
+      const auto [e, q] = qp_map[static_cast<size_t>(col)];
       const FiniteElement *fe = fes_T.GetFE(e);
       ElementTransformation *Tr_ref = fes_T.GetElementTransformation(e);
       const IntegrationRule &ir = IntRules.Get(fe->GetGeomType(), quad_order);
+      const IntegrationPoint &ip = ir.IntPoint(q);
+      Tr_ref->SetIntPoint(&ip);
 
-      for (int q = 0; q < ir.GetNPoints(); ++q, ++col)
+      Vector x_ref(dim);
+      Tr_ref->Transform(ip, x_ref);
+
+      Vector disp_new(dim);
+      ale_displacement_new.GetVectorValue(e, ip, disp_new);
+
+      for (int d = 0; d < dim; ++d)
       {
-         const IntegrationPoint &ip = ir.IntPoint(q);
-         Tr_ref->SetIntPoint(&ip);
-
-         Vector x_ref(dim);
-         Tr_ref->Transform(ip, x_ref);
-
-         Vector disp_new(dim);
-         ale_displacement_new.GetVectorValue(e, ip, disp_new);
-
-         for (int d = 0; d < dim; ++d)
-         {
-            target_pts(d, col) = x_ref(d) + disp_new(d);
-         }
-         qp_map[static_cast<size_t>(col)] = {e, q};
+         target_pts(d, col) = x_ref(d) + disp_new(d);
       }
    }
 
-   Array<int> elem_ids(total_qps);
-   Array<IntegrationPoint> ref_pts(total_qps);
    old_lookup_mesh.FindPoints(target_pts, elem_ids, ref_pts, false);
 
-   vector<vector<double>> remapped_extents(static_cast<size_t>(total_qps));
    int local_not_found = 0;
-   for (int k = 0; k < total_qps; ++k)
+   for (int k = 0; k < workspace.total_qps; ++k)
    {
       const auto [e_dest, q_dest] = qp_map[static_cast<size_t>(k)];
       remapped_extents[static_cast<size_t>(k)] =
@@ -4519,9 +4568,9 @@ static void RemapExtentsALE(ReactionStateManager &state_manager,
       for (int r = 0; r < nr; ++r)
       {
          const double xi =
-            extent_fields.empty()
+            workspace.extent_fields.empty()
                ? remapped_extents[static_cast<size_t>(k)][r]
-               : extent_fields[static_cast<size_t>(r)]->GetValue(e_src, ref_pts[k]);
+               : workspace.extent_fields[static_cast<size_t>(r)]->GetValue(e_src, ref_pts[k]);
          remapped_extents[static_cast<size_t>(k)][r] =
             std::max(0.0, std::min(1.0, xi));
       }
@@ -4541,7 +4590,7 @@ static void RemapExtentsALE(ReactionStateManager &state_manager,
                    << "point could not be found.");
    }
 
-   col = 0;
+   int col = 0;
    for (int e = 0; e < ne; ++e)
    {
       const FiniteElement *fe = fes_T.GetFE(e);
@@ -5013,6 +5062,7 @@ int main(int argc, char *argv[])
       unique_ptr<ParGridFunction> T_diag;
       unique_ptr<ParGridFunction> p_diag;
       unique_ptr<ParGridFunction> tau_diag;
+      unique_ptr<AleRemapWorkspace> ale_remap_workspace;
       unique_ptr<ParGridFunction> mesh_velocity_diag;
       unique_ptr<ParGridFunction> ale_displacement_diag;
       double diagnostic_initial_min_quality = 1.0;
@@ -5093,6 +5143,11 @@ int main(int argc, char *argv[])
          T_diag = make_unique<ParGridFunction>(fes_T_diag.get());
          p_diag = make_unique<ParGridFunction>(fes_p_diag.get());
          tau_diag = make_unique<ParGridFunction>(fes_diag_live.get());
+         ale_remap_workspace = make_unique<AleRemapWorkspace>();
+         ale_remap_workspace->Initialize(state_manager,
+                                         fes_T,
+                                         *diagnostic_pmesh,
+                                         quad_order);
          CopyParGridFunctionByTrueDofs(T, *T_diag);
          CopyParGridFunctionByTrueDofs(p, *p_diag);
          ApplyElementScalar(*fes_diag_live, state_manager.TauElement(), *tau_diag);
@@ -5445,7 +5500,8 @@ int main(int argc, char *argv[])
                                *diagnostic_pmesh,
                                fes_T,
                                *ale_displacement,
-                               quad_order);
+                               quad_order,
+                               *ale_remap_workspace);
             }
 
             if (diagnostic_pmesh)
