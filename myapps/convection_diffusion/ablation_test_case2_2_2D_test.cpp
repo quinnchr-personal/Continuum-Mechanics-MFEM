@@ -4716,15 +4716,8 @@ void PrintConfig(const DriverParams &p)
    cout << "  output_every: " << p.output_every << endl;
    cout << "  output_path: " << p.output_path << endl;
    cout << "  collection_name: " << p.collection_name << endl;
-   cout << "  probes_csv: " << p.probes_csv << endl;
-   cout << "  pressure_probes_csv: " << p.pressure_probes_csv << endl;
-   cout << "  mesh_diagnostics_csv: " << p.mesh_diagnostics_csv << endl;
-   cout << "  mass_eq_probe_csv: " << p.mass_eq_probe_csv << endl;
+   cout << "  diagnostics_mode: mass_metrics_only" << endl;
    cout << "  mass_csv: " << p.mass_csv << endl;
-   cout << "  boundary_csv: " << p.boundary_csv << endl;
-   cout << "  newton_csv: " << p.newton_csv << endl;
-   cout << "  timing_step_csv: " << p.timing_step_csv << endl;
-   cout << "  timing_summary_csv: " << p.timing_summary_csv << endl;
    cout << "  save_paraview: " << (p.save_paraview ? "true" : "false") << endl;
    cout << "  restart_read_file: "
         << (p.restart_read_file.empty() ? "none" : p.restart_read_file) << endl;
@@ -5196,86 +5189,21 @@ int main(int argc, char *argv[])
                              " (" + ec.message() + ")");
       }
 
-      ofstream probes_csv;
-      ofstream pressure_probes_csv;
-      ofstream mesh_diag_csv;
-      ofstream mass_eq_probe_csv;
       ofstream mass_csv;
-      ofstream boundary_csv;
-      ofstream newton_csv;
-      ofstream timing_step_csv;
       vector<double> amaryllis_recession_cmp_time;
       vector<double> amaryllis_recession_cmp_driver;
       vector<double> amaryllis_recession_cmp_ref;
       if (myid == 0)
       {
-         probes_csv.open(filesystem::path(params.output_path) / params.probes_csv);
-         pressure_probes_csv.open(filesystem::path(params.output_path) / params.pressure_probes_csv);
-         mesh_diag_csv.open(filesystem::path(params.output_path) / params.mesh_diagnostics_csv);
-         mass_eq_probe_csv.open(filesystem::path(params.output_path) / params.mass_eq_probe_csv);
          mass_csv.open(filesystem::path(params.output_path) / params.mass_csv);
-         boundary_csv.open(filesystem::path(params.output_path) / params.boundary_csv);
-         newton_csv.open(filesystem::path(params.output_path) / params.newton_csv);
-         timing_step_csv.open(filesystem::path(params.output_path) / params.timing_step_csv);
 
-         if (!probes_csv || !pressure_probes_csv || !mesh_diag_csv || !mass_eq_probe_csv ||
-             !mass_csv || !boundary_csv ||
-             !newton_csv || !timing_step_csv)
+         if (!mass_csv)
          {
-            throw runtime_error("Failed to open one or more CSV output files.");
+            throw runtime_error("Failed to open mass_metrics.csv.");
          }
-
-         probes_csv << "time,wall";
-         pressure_probes_csv << "time,wall";
-         mesh_diag_csv << "time,wx_wall,wy_wall,divw_wall";
-         mass_eq_probe_csv << "time";
-         const auto append_mass_eq_headers = [&](const string &tag)
-         {
-            mass_eq_probe_csv << ",pi_total_" << tag
-                             << ",tau_" << tag
-                             << ",epsrho_" << tag
-                             << ",gradp_y_" << tag
-                             << ",rho_g_" << tag
-                             << ",mu_g_" << tag
-                             << ",K_" << tag
-                             << ",mobility_" << tag
-                             << ",mflux_y_" << tag;
-         };
-         append_mass_eq_headers("wall");
-         for (int i = 1; i < static_cast<int>(params.probe_y.size()); ++i)
-         {
-            probes_csv << ",TC" << i;
-            pressure_probes_csv << ",TC" << i;
-            mesh_diag_csv << ",wx_TC" << i << ",wy_TC" << i << ",divw_TC" << i;
-            append_mass_eq_headers("TC" + to_string(i));
-         }
-         probes_csv << "\n";
-         pressure_probes_csv << "\n";
-         mesh_diag_csv << "\n";
-         mass_eq_probe_csv << "\n";
-         mass_csv << "time,m_dot_g_surf,m_dot_g_centerline,m_dot_c,front_98_virgin,front_2_char,recession\n";
-         boundary_csv << "time,m_dot_g_surf,m_dot_g_centerline,gradp_n_centerline,"
-                      << "rho_g_centerline,mu_g_centerline,K_centerline,mobility_centerline,"
-                      << "m_dot_c_surf,rho_s_surf,"
-                      << "BprimeG_surf,BprimeC_surf,h_w_surf,"
-                      << "emissivity_surf,absorptivity_surf,reflectivity_surf,"
-                      << "blowing_correction_surf,q_conv_surf,q_adv_pyro_surf,"
-                      << "q_rad_emit_surf,q_rad_abs_surf,q_surf\n";
-         newton_csv << "step,time,iter,residual,residual0,rel_residual,"
-                    << "update_norm,update0,rel_update,converged\n";
-         timing_step_csv << "step,bc_sec,newton_sec,newton_residual_eval_sec,"
-                         << "newton_jacobian_sec,newton_linear_sec,"
-                         << "newton_update_sec,state_advance_sec,"
-                         << "output_sec,step_total_sec\n";
-
-         probes_csv << setprecision(16);
-         pressure_probes_csv << setprecision(16);
-         mesh_diag_csv << setprecision(16);
-         mass_eq_probe_csv << setprecision(16);
+         mass_csv << "time,m_dot_g_surf,m_dot_g_centerline,m_dot_c,recession\n";
          mass_csv << setprecision(16);
-         boundary_csv << setprecision(16);
-         newton_csv << setprecision(16);
-         timing_step_csv << setprecision(16);
+         mass_csv.flush();
       }
 
       unique_ptr<AleJacobianCoefficient> ale_jacobian_coeff;
@@ -5321,29 +5249,34 @@ int main(int argc, char *argv[])
 
       auto write_outputs = [&](const int step, const double time)
       {
-         ApplyElementScalar(fes_diag, state_manager.TauElement(), tau_gf);
-         ApplyElementScalar(fes_diag, state_manager.RhoElement(), rho_s_gf);
-         ApplyElementScalar(fes_diag, state_manager.PiElement(), pi_total_gf);
-         ApplyElementScalar(fes_diag, state_manager.MdotElement(), mdot_g_gf);
-         ApplyElementScalar(fes_diag, state_manager.DegreeCharElement(), degree_char_gf);
-         ApplyElementScalar(fes_diag, state_manager.CharDensityFractionElement(), char_density_fraction_gf);
-         for (int r = 0; r < state_manager.NumReactions(); ++r)
-         {
-            ApplyElementScalar(fes_diag, state_manager.ExtentElement(r), *extent_gf[r]);
-         }
+         const bool save_paraview_now =
+            params.save_paraview && (step % params.output_every == 0);
 
-         if (ale_displacement && ale_jacobian_gf && recession_gf)
+         if (save_paraview_now)
          {
-            ale_jacobian_gf->ProjectCoefficient(*ale_jacobian_coeff);
-            *recession_gf = recession_total;
+            ApplyElementScalar(fes_diag, state_manager.TauElement(), tau_gf);
+            ApplyElementScalar(fes_diag, state_manager.RhoElement(), rho_s_gf);
+            ApplyElementScalar(fes_diag, state_manager.PiElement(), pi_total_gf);
+            ApplyElementScalar(fes_diag, state_manager.MdotElement(), mdot_g_gf);
+            ApplyElementScalar(fes_diag, state_manager.DegreeCharElement(), degree_char_gf);
+            ApplyElementScalar(fes_diag, state_manager.CharDensityFractionElement(),
+                               char_density_fraction_gf);
+            for (int r = 0; r < state_manager.NumReactions(); ++r)
+            {
+               ApplyElementScalar(fes_diag, state_manager.ExtentElement(r), *extent_gf[r]);
+            }
+
+            if (ale_displacement && ale_jacobian_gf && recession_gf)
+            {
+               ale_jacobian_gf->ProjectCoefficient(*ale_jacobian_coeff);
+               *recession_gf = recession_total;
+            }
          }
 
          if (diagnostic_pmesh)
          {
             CopyParGridFunctionByTrueDofs(T, *T_diag);
             CopyParGridFunctionByTrueDofs(p, *p_diag);
-            CopyParGridFunctionByTrueDofs(recession_handler->MeshVelocity(),
-                                          *mesh_velocity_diag);
             CopyParGridFunctionByTrueDofs(*ale_displacement,
                                           *ale_displacement_diag);
             ApplyElementScalar(*fes_diag_live, state_manager.TauElement(), *tau_diag);
@@ -5355,159 +5288,6 @@ int main(int argc, char *argv[])
          ParMesh &sample_mesh = diagnostic_pmesh ? *diagnostic_pmesh : *pmesh;
          const ParGridFunction &sample_T = diagnostic_pmesh ? *T_diag : T;
          const ParGridFunction &sample_p = diagnostic_pmesh ? *p_diag : p;
-         const ParGridFunction &sample_tau = diagnostic_pmesh ? *tau_diag : tau_gf;
-         const ParGridFunction *sample_mesh_velocity =
-            diagnostic_pmesh ? mesh_velocity_diag.get() :
-            (recession_handler ? &recession_handler->MeshVelocity() : nullptr);
-
-         const Bounds live_bounds = GetGlobalBounds(sample_mesh);
-         const double y_top_live = live_bounds.ymax;
-         const double y_bottom_live = live_bounds.ymin;
-         const double y_span = std::max(1.0e-12, y_top_live - y_bottom_live);
-         const double y_inset = 1.0e-6 * y_span;
-         const double y_min_sample = y_bottom_live + y_inset;
-         const double y_max_sample = y_top_live - y_inset;
-         const auto sample_temperature_at_y = [&](const double y_query)
-         {
-            return SampleFieldAtPoint(sample_mesh, sample_T, params.probe_x, y_query);
-         };
-         const auto sample_pressure_at_y = [&](const double y_query)
-         {
-            return SampleFieldAtPoint(sample_mesh, sample_p, params.probe_x, y_query);
-         };
-         const auto sample_mesh_diag_at_y = [&](const double y_query)
-         {
-            if (sample_mesh_velocity == nullptr)
-            {
-               VectorDivSample zero;
-               zero.wx = 0.0;
-               zero.wy = 0.0;
-               zero.divw = 0.0;
-               return zero;
-            }
-            return SampleVectorFieldAndDivergenceAtPoint(
-               sample_mesh, *sample_mesh_velocity, params.probe_x, y_query);
-         };
-         const auto sample_mass_eq_diag_at_y = [&](const double y_query)
-         {
-            return SampleMassEqProbeAtPoint(sample_mesh,
-                                           diagnostic_pmesh ? *fes_T_diag : fes_T,
-                                           diagnostic_pmesh ? *fes_p_diag : fes_p,
-                                           sample_T,
-                                           sample_p,
-                                           material,
-                                           state_manager,
-                                           gravity,
-                                           quad_order,
-                                           params.probe_x,
-                                           y_query);
-         };
-
-         // Wall point follows the receding surface (sampled just inside domain).
-         double wallT = sample_temperature_at_y(y_max_sample);
-         if (!std::isfinite(wallT))
-         {
-            wallT = sample_temperature_at_y(y_top_live - 10.0 * y_inset);
-         }
-         if (!std::isfinite(wallT))
-         {
-            wallT = 0.0;
-         }
-         double wallP = sample_pressure_at_y(y_max_sample);
-         if (!std::isfinite(wallP))
-         {
-            wallP = sample_pressure_at_y(y_top_live - 10.0 * y_inset);
-         }
-         if (!std::isfinite(wallP))
-         {
-            wallP = 0.0;
-         }
-         VectorDivSample wall_mesh = sample_mesh_diag_at_y(y_max_sample);
-         if (!std::isfinite(wall_mesh.divw))
-         {
-            wall_mesh = sample_mesh_diag_at_y(y_top_live - 10.0 * y_inset);
-         }
-         if (!std::isfinite(wall_mesh.wx)) { wall_mesh.wx = 0.0; }
-         if (!std::isfinite(wall_mesh.wy)) { wall_mesh.wy = 0.0; }
-         if (!std::isfinite(wall_mesh.divw)) { wall_mesh.divw = 0.0; }
-         MassEqProbeSample wall_mass_eq = sample_mass_eq_diag_at_y(y_max_sample);
-         if (!std::isfinite(wall_mass_eq.pi_total))
-         {
-            wall_mass_eq = sample_mass_eq_diag_at_y(y_top_live - 10.0 * y_inset);
-         }
-         if (!std::isfinite(wall_mass_eq.pi_total))
-         {
-            wall_mass_eq = MassEqProbeSample{};
-            wall_mass_eq.pi_total = 0.0;
-            wall_mass_eq.tau = 0.0;
-            wall_mass_eq.epsrho = 0.0;
-            wall_mass_eq.gradp_y = 0.0;
-            wall_mass_eq.rho_g = 0.0;
-            wall_mass_eq.mu_g = 0.0;
-            wall_mass_eq.K = 0.0;
-            wall_mass_eq.mobility = 0.0;
-            wall_mass_eq.mflux_y = 0.0;
-         }
-         vector<double> probe_vals;
-         vector<double> pressure_probe_vals;
-         vector<VectorDivSample> mesh_probe_samples;
-         vector<MassEqProbeSample> mass_eq_probe_samples;
-         probe_vals.reserve(params.probe_y.size() - 1);
-         pressure_probe_vals.reserve(params.probe_y.size() - 1);
-         mesh_probe_samples.reserve(params.probe_y.size() - 1);
-         mass_eq_probe_samples.reserve(params.probe_y.size() - 1);
-         for (int i = 1; i < static_cast<int>(params.probe_y.size()); ++i)
-         {
-            // Interior probes stay at fixed absolute coordinates. If recession
-            // overtakes a probe location, report 0.0 for that channel.
-            const double y_fixed = params.probe_y[i];
-            double val = 0.0;
-            if (y_fixed >= y_bottom_live && y_fixed <= y_top_live)
-            {
-               const double y_query =
-                  std::max(y_min_sample, std::min(y_max_sample, y_fixed));
-               val = sample_temperature_at_y(y_query);
-               if (!std::isfinite(val))
-               {
-                  val = 0.0;
-               }
-            }
-            probe_vals.push_back(val);
-
-            double pval = 0.0;
-            VectorDivSample ms;
-            MassEqProbeSample md;
-            if (y_fixed >= y_bottom_live && y_fixed <= y_top_live)
-            {
-               const double y_query =
-                  std::max(y_min_sample, std::min(y_max_sample, y_fixed));
-               pval = sample_pressure_at_y(y_query);
-               if (!std::isfinite(pval))
-               {
-                  pval = 0.0;
-               }
-               ms = sample_mesh_diag_at_y(y_query);
-               if (!std::isfinite(ms.wx)) { ms.wx = 0.0; }
-               if (!std::isfinite(ms.wy)) { ms.wy = 0.0; }
-               if (!std::isfinite(ms.divw)) { ms.divw = 0.0; }
-               md = sample_mass_eq_diag_at_y(y_query);
-               if (!std::isfinite(md.pi_total))
-               {
-                  md.pi_total = 0.0;
-                  md.tau = 0.0;
-                  md.epsrho = 0.0;
-                  md.gradp_y = 0.0;
-                  md.rho_g = 0.0;
-                  md.mu_g = 0.0;
-                  md.K = 0.0;
-                  md.mobility = 0.0;
-                  md.mflux_y = 0.0;
-               }
-            }
-            pressure_probe_vals.push_back(pval);
-            mesh_probe_samples.push_back(ms);
-            mass_eq_probe_samples.push_back(md);
-         }
 
          const SurfaceBoundaryDiagnostics bdiag =
             ComputeTopBoundaryDiagnostics(sample_mesh,
@@ -5526,58 +5306,14 @@ int main(int argc, char *argv[])
                                           time,
                                           true);
          const double mdot_surf = bdiag.m_dot_g_surf;
-         const double front98 = ComputeFrontDepth(sample_mesh, sample_tau, xmid,
-                                                  y_top_live, y_bottom_live, 0.98);
-         const double front2 = ComputeFrontDepth(sample_mesh, sample_tau, xmid,
-                                                 y_top_live, y_bottom_live, 0.02);
 
          if (myid == 0)
          {
-            probes_csv << time << "," << wallT;
-            for (double v : probe_vals)
-            {
-               probes_csv << "," << v;
-            }
-            probes_csv << "\n";
-            pressure_probes_csv << time << "," << wallP;
-            for (double v : pressure_probe_vals)
-            {
-               pressure_probes_csv << "," << v;
-            }
-            pressure_probes_csv << "\n";
-            mesh_diag_csv << time << "," << wall_mesh.wx << "," << wall_mesh.wy
-                         << "," << wall_mesh.divw;
-            for (const VectorDivSample &ms : mesh_probe_samples)
-            {
-               mesh_diag_csv << "," << ms.wx << "," << ms.wy << "," << ms.divw;
-            }
-            mesh_diag_csv << "\n";
-            const auto write_mass_eq_sample = [&](const MassEqProbeSample &s)
-            {
-               mass_eq_probe_csv << "," << s.pi_total
-                                << "," << s.tau
-                                << "," << s.epsrho
-                                << "," << s.gradp_y
-                                << "," << s.rho_g
-                                << "," << s.mu_g
-                                << "," << s.K
-                                << "," << s.mobility
-                                << "," << s.mflux_y;
-            };
-            mass_eq_probe_csv << time;
-            write_mass_eq_sample(wall_mass_eq);
-            for (const MassEqProbeSample &s : mass_eq_probe_samples)
-            {
-               write_mass_eq_sample(s);
-            }
-            mass_eq_probe_csv << "\n";
-
             mass_csv << time << "," << mdot_surf << ","
                      << bdiag.m_dot_g_centerline << ","
                      << bdiag.m_dot_c_surf << ","
-                     << front98 << ","
-                     << front2 << ","
                      << recession_total << "\n";
+            mass_csv.flush();
             if (use_amaryllis_recession_history)
             {
                amaryllis_recession_cmp_time.push_back(time);
@@ -5585,37 +5321,9 @@ int main(int argc, char *argv[])
                amaryllis_recession_cmp_ref.push_back(
                   amaryllis_recession_history.EvalRecession(time));
             }
-            boundary_csv << time << "," << bdiag.m_dot_g_surf << ","
-                         << bdiag.m_dot_g_centerline << ","
-                         << bdiag.gradp_n_centerline << ","
-                         << bdiag.rho_g_centerline << ","
-                         << bdiag.mu_g_centerline << ","
-                         << bdiag.K_centerline << ","
-                         << bdiag.mobility_centerline << ","
-                         << bdiag.m_dot_c_surf << ","
-                         << bdiag.rho_s_surf << ","
-                         << bdiag.BprimeG_surf << ","
-                         << bdiag.BprimeC_surf << ","
-                         << bdiag.h_w_surf << ","
-                         << bdiag.emissivity_surf << ","
-                         << bdiag.absorptivity_surf << ","
-                         << bdiag.reflectivity_surf << ","
-                         << bdiag.blowing_correction_surf << ","
-                         << bdiag.q_conv_surf << ","
-                         << bdiag.q_adv_pyro_surf << ","
-                         << bdiag.q_rad_emit_surf << ","
-                         << bdiag.q_rad_abs_surf << ","
-                         << bdiag.q_surf << "\n";
-
-            probes_csv.flush();
-            pressure_probes_csv.flush();
-            mesh_diag_csv.flush();
-            mass_eq_probe_csv.flush();
-            mass_csv.flush();
-            boundary_csv.flush();
          }
 
-         if (params.save_paraview && (step % params.output_every == 0))
+         if (save_paraview_now)
          {
             paraview_dc.SetCycle(step);
             paraview_dc.SetTime(time);
@@ -5812,13 +5520,6 @@ int main(int argc, char *argv[])
          {
             if (myid == 0)
             {
-               newton_csv << step << "," << time << "," << it.iter << ","
-                          << it.residual_norm << "," << it.residual_norm0 << ","
-                          << it.relative_residual << ","
-                          << it.update_norm << "," << it.update_norm0 << ","
-                          << it.relative_update << ","
-                          << (it.converged ? 1 : 0) << "\n";
-
                if (params.newton_print_level > 0 && !it.converged)
                {
                   cout << "NR iteration " << it.iter << ":\n"
@@ -5840,10 +5541,6 @@ int main(int argc, char *argv[])
                                 pre_residual_hook,
                                 step);
          const double step_newton_sec = ElapsedSec(newton_t0, steady_clock_t::now());
-         if (myid == 0)
-         {
-            newton_csv.flush();
-         }
 
          if (!newton_result.converged)
          {
@@ -5938,13 +5635,6 @@ int main(int argc, char *argv[])
             timing_sum_state += step_global[6];
             timing_sum_output += step_global[7];
             timing_sum_step += step_global[8];
-
-            timing_step_csv << step << "," << step_global[0] << ","
-                            << step_global[1] << "," << step_global[2] << ","
-                            << step_global[3] << "," << step_global[4] << ","
-                            << step_global[5] << "," << step_global[6] << ","
-                            << step_global[7] << "," << step_global[8] << "\n";
-            timing_step_csv.flush();
          }
       }
 
@@ -5966,23 +5656,6 @@ int main(int argc, char *argv[])
 
       if (myid == 0)
       {
-         ofstream tol_csv(filesystem::path(params.output_path) / "amaryllis_error_tolerances.csv");
-         tol_csv << "signal,tolerance\n";
-         tol_csv << "temperature_rmse_max," << params.tol_temp_rmse << "\n";
-         tol_csv << "temperature_max_abs_max," << params.tol_temp_max_abs << "\n";
-         tol_csv << "m_dot_g_rmse_max," << params.tol_mdot_rmse << "\n";
-         tol_csv << "m_dot_g_max_abs_max," << params.tol_mdot_max_abs << "\n";
-         tol_csv << "m_dot_g_peak_rel_error_max," << params.tol_mdot_peak_rel << "\n";
-         tol_csv << "m_dot_g_peak_time_error_max," << params.tol_mdot_peak_time << "\n";
-         tol_csv << "front98_max_abs_max," << params.tol_front98_max_abs << "\n";
-         tol_csv << "front98_rmse_max," << params.tol_front98_rmse << "\n";
-         tol_csv << "front2_max_abs_max," << params.tol_front2_max_abs << "\n";
-         tol_csv << "front2_rmse_max," << params.tol_front2_rmse << "\n";
-         tol_csv << "m_dot_c_rmse_max," << params.tol_mdot_c_rmse << "\n";
-         tol_csv << "m_dot_c_peak_rel_error_max," << params.tol_mdot_c_peak_rel << "\n";
-         tol_csv << "recession_rmse_max," << params.tol_recession_rmse << "\n";
-         tol_csv << "recession_final_rel_error_max," << params.tol_recession_final_rel << "\n";
-
          if (use_amaryllis_recession_history &&
              !amaryllis_recession_cmp_time.empty())
          {
@@ -5995,45 +5668,6 @@ int main(int argc, char *argv[])
                (rec_cmp.final_rel <= params.tol_recession_final_rel);
             const bool rec_pass = rec_rmse_pass && rec_final_rel_pass;
 
-            ofstream rec_cmp_csv(filesystem::path(params.output_path) /
-                                 "amaryllis_recession_comparison.csv");
-            if (!rec_cmp_csv)
-            {
-               throw runtime_error(
-                  "Failed to open amaryllis_recession_comparison.csv.");
-            }
-            rec_cmp_csv << setprecision(16);
-            rec_cmp_csv << "time,recession_driver,recession_amaryllis,abs_error\n";
-            for (size_t i = 0; i < amaryllis_recession_cmp_time.size(); ++i)
-            {
-               const double abs_err = std::abs(amaryllis_recession_cmp_driver[i] -
-                                               amaryllis_recession_cmp_ref[i]);
-               rec_cmp_csv << amaryllis_recession_cmp_time[i] << ","
-                           << amaryllis_recession_cmp_driver[i] << ","
-                           << amaryllis_recession_cmp_ref[i] << ","
-                           << abs_err << "\n";
-            }
-
-            ofstream rec_metrics_csv(filesystem::path(params.output_path) /
-                                     "amaryllis_recession_metrics.csv");
-            if (!rec_metrics_csv)
-            {
-               throw runtime_error(
-                  "Failed to open amaryllis_recession_metrics.csv.");
-            }
-            rec_metrics_csv << setprecision(16);
-            rec_metrics_csv << "metric,value,tolerance,pass\n";
-            rec_metrics_csv << "rmse," << rec_cmp.rmse << ","
-                            << params.tol_recession_rmse << ","
-                            << int(rec_rmse_pass) << "\n";
-            rec_metrics_csv << "max_abs," << rec_cmp.max_abs << ",,\n";
-            rec_metrics_csv << "final_abs_error," << rec_cmp.final_abs << ",,\n";
-            rec_metrics_csv << "final_rel_error," << rec_cmp.final_rel << ","
-                            << params.tol_recession_final_rel << ","
-                            << int(rec_final_rel_pass) << "\n";
-            rec_metrics_csv << "overall_pass," << int(rec_pass) << ",,"
-                            << int(rec_pass) << "\n";
-
             cout << "Amaryllis recession comparison: "
                  << "RMSE=" << rec_cmp.rmse
                  << ", max_abs=" << rec_cmp.max_abs
@@ -6043,41 +5677,6 @@ int main(int argc, char *argv[])
          }
 
          const BPrimeTable::ClampStats clamp_stats = bprime_table.GetClampStats();
-         ofstream clamp_csv(filesystem::path(params.output_path) / "bprime_clamp_stats.csv");
-         clamp_csv << "axis,clamp_count\n";
-         clamp_csv << "pressure," << clamp_stats.p << "\n";
-         clamp_csv << "BprimeG," << clamp_stats.bg << "\n";
-         clamp_csv << "temperature," << clamp_stats.t << "\n";
-
-         ofstream timing_summary_csv(filesystem::path(params.output_path) /
-                                     params.timing_summary_csv);
-         if (!timing_summary_csv)
-         {
-            throw runtime_error("Failed to open timing summary CSV.");
-         }
-         timing_summary_csv << "metric,seconds\n";
-         timing_summary_csv << setprecision(16);
-         timing_summary_csv << "setup_time_maxrank," << setup_time_global << "\n";
-         timing_summary_csv << "run_time_maxrank," << run_time_global << "\n";
-         timing_summary_csv << "sum_step_time_maxrank," << timing_sum_step << "\n";
-         timing_summary_csv << "sum_bc_time_maxrank," << timing_sum_bc << "\n";
-         timing_summary_csv << "sum_newton_time_maxrank," << timing_sum_newton << "\n";
-         timing_summary_csv << "sum_newton_residual_eval_time_maxrank,"
-                            << timing_sum_newton_res << "\n";
-         timing_summary_csv << "sum_newton_jacobian_time_maxrank,"
-                            << timing_sum_newton_jac << "\n";
-         timing_summary_csv << "sum_newton_linear_time_maxrank,"
-                            << timing_sum_newton_lin << "\n";
-         timing_summary_csv << "sum_newton_update_time_maxrank,"
-                            << timing_sum_newton_upd << "\n";
-         timing_summary_csv << "sum_state_advance_time_maxrank,"
-                            << timing_sum_state << "\n";
-         timing_summary_csv << "sum_output_time_maxrank," << timing_sum_output
-                            << "\n";
-         timing_summary_csv << "avg_step_time_maxrank,"
-                            << (timing_sum_step /
-                                static_cast<double>(max(1, steps_executed)))
-                            << "\n";
 
          cout << "Timing summary (max over ranks):" << endl
               << "  setup: " << setup_time_global << " s\n"

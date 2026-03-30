@@ -84,12 +84,262 @@ def load_probe_y_from_yaml(path: Path) -> List[float]:
     return probe_y
 
 
+def load_top_level_value_from_yaml(path: Path, key: str) -> str | None:
+    if not path.exists():
+        return None
+    key_prefix = f"{key}:"
+    for raw in path.read_text().splitlines():
+        line = raw.rstrip()
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if line.startswith(" "):
+            continue
+        if stripped.startswith(key_prefix):
+            return stripped.split(":", 1)[1].strip()
+    return None
+
+
+def load_probe_x_from_yaml(path: Path) -> float:
+    raw = load_top_level_value_from_yaml(path, "probe_x")
+    if raw is None:
+        raise RuntimeError(f"probe_x not found in {path}")
+    return float(raw)
+
+
 def load_probe_depths_from_yaml(path: Path) -> List[float]:
     probe_y = load_probe_y_from_yaml(path)
     if not probe_y:
         return []
     y_wall = probe_y[0]
     return [abs(y_wall - y) for y in probe_y]
+
+
+def load_named_csv(
+    path: Path, *, required: bool, description: str
+) -> np.ndarray | None:
+    if not path.exists():
+        if required:
+            raise FileNotFoundError(f"{description} not found: {path}")
+        return None
+
+    if path.stat().st_size == 0:
+        if required:
+            raise RuntimeError(
+                f"{description} is empty: {path}. This usually means the "
+                "driver run did not finish cleanly or the output file came "
+                "from an interrupted run."
+            )
+        return None
+
+    data = np.genfromtxt(path, delimiter=",", names=True)
+    if getattr(data, "dtype", None) is None or data.dtype.names is None:
+        if required:
+            raise RuntimeError(f"{description} has no readable header: {path}")
+        return None
+
+    data = np.atleast_1d(data)
+    if data.size == 0:
+        if required:
+            raise RuntimeError(
+                f"{description} has a header but no data rows: {path}"
+            )
+        return None
+
+    return data
+
+
+def find_mfem_collection_pvd(output_dir: Path, input_yaml: Path) -> Path | None:
+    collection_name = load_top_level_value_from_yaml(input_yaml, "collection_name")
+    if collection_name:
+        candidate = output_dir / collection_name / f"{collection_name}.pvd"
+        if candidate.exists():
+            return candidate
+
+    pvd_files = sorted(output_dir.rglob("*.pvd"))
+    if not pvd_files:
+        return None
+    return pvd_files[0]
+
+
+def sample_temperature_probes_from_paraview(
+    output_dir: Path, input_yaml: Path
+) -> np.ndarray:
+    try:
+        import pyvista as pv
+    except ImportError as exc:
+        raise RuntimeError(
+            "temperature_probes.csv is missing and pyvista is not available "
+            "for ParaView post-processing."
+        ) from exc
+
+    pvd_path = find_mfem_collection_pvd(output_dir, input_yaml)
+    if pvd_path is None:
+        raise FileNotFoundError(
+            "temperature_probes.csv is missing and no MFEM ParaView .pvd "
+            f"collection was found under {output_dir}"
+        )
+
+    probe_y = load_probe_y_from_yaml(input_yaml)
+    if not probe_y:
+        raise RuntimeError(f"No probe_y entries found in {input_yaml}")
+    probe_x = load_probe_x_from_yaml(input_yaml)
+
+    reader = pv.get_reader(str(pvd_path))
+    time_values = np.asarray(getattr(reader, "time_values", []), dtype=float)
+    if time_values.size == 0:
+        time_values = np.array([0.0], dtype=float)
+    has_time_values = len(getattr(reader, "time_values", [])) > 0
+
+    dtype = [("time", float), ("wall", float)]
+    dtype.extend((f"TC{i}", float) for i in range(1, len(probe_y)))
+    probes = np.zeros(time_values.size, dtype=dtype)
+    probes["time"] = time_values
+
+    def read_dataset_at_time(time_value: float):
+        if has_time_values:
+            reader.set_active_time_value(float(time_value))
+        ds = reader.read()
+        if hasattr(ds, "n_blocks"):
+            ds = ds.combine()
+        if "temperature" not in ds.point_data:
+            raise RuntimeError(f"Missing temperature field in {pvd_path}")
+
+        warped = ds.copy(deep=True)
+        if "ale_displacement" in warped.point_data:
+            disp = np.asarray(warped.point_data["ale_displacement"], dtype=float)
+            pts = np.asarray(warped.points, dtype=float).copy()
+            ncomp = min(pts.shape[1], disp.shape[1])
+            pts[:, :ncomp] += disp[:, :ncomp]
+            warped.points = pts
+        return warped
+
+    def sample_temperature_at(mesh, x: float, y: float) -> float:
+        query = np.array([[x, y, 0.0]], dtype=float)
+        sampled = pv.PolyData(query).sample(mesh)
+        mask = np.asarray(sampled.point_data.get("vtkValidPointMask", [1]), dtype=int)
+        if mask.size == 0 or int(mask[0]) == 0:
+            return float("nan")
+        vals = np.asarray(sampled.point_data["temperature"], dtype=float)
+        if vals.size == 0:
+            return float("nan")
+        return float(vals.reshape(-1)[0])
+
+    for i_time, time_value in enumerate(time_values):
+        mesh = read_dataset_at_time(float(time_value))
+        xmin, xmax, y_bottom_live, y_top_live, _, _ = mesh.bounds
+        y_span = max(1.0e-12, float(y_top_live - y_bottom_live))
+        y_inset = 1.0e-6 * y_span
+        y_min_sample = float(y_bottom_live + y_inset)
+        y_max_sample = float(y_top_live - y_inset)
+
+        wall_val = sample_temperature_at(mesh, probe_x, y_max_sample)
+        if not np.isfinite(wall_val):
+            wall_val = sample_temperature_at(mesh, probe_x, float(y_top_live - 10.0 * y_inset))
+        if not np.isfinite(wall_val):
+            wall_val = 0.0
+        probes["wall"][i_time] = wall_val
+
+        for i_probe in range(1, len(probe_y)):
+            y_fixed = float(probe_y[i_probe])
+            if y_fixed < y_bottom_live or y_fixed > y_top_live:
+                probes[f"TC{i_probe}"][i_time] = 0.0
+                continue
+            y_query = max(y_min_sample, min(y_max_sample, y_fixed))
+            val = sample_temperature_at(mesh, probe_x, y_query)
+            probes[f"TC{i_probe}"][i_time] = val if np.isfinite(val) else 0.0
+
+    return probes
+
+
+def sample_fronts_from_paraview(
+    output_dir: Path, input_yaml: Path
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    try:
+        import pyvista as pv
+    except ImportError as exc:
+        raise RuntimeError(
+            "front columns are missing from mass_metrics.csv and pyvista is "
+            "not available for ParaView post-processing."
+        ) from exc
+
+    pvd_path = find_mfem_collection_pvd(output_dir, input_yaml)
+    if pvd_path is None:
+        raise FileNotFoundError(
+            "front columns are missing from mass_metrics.csv and no MFEM "
+            f"ParaView .pvd collection was found under {output_dir}"
+        )
+
+    reader = pv.get_reader(str(pvd_path))
+    time_values = np.asarray(getattr(reader, "time_values", []), dtype=float)
+    if time_values.size == 0:
+        time_values = np.array([0.0], dtype=float)
+    has_time_values = len(getattr(reader, "time_values", [])) > 0
+
+    def read_dataset_at_time(time_value: float):
+        if has_time_values:
+            reader.set_active_time_value(float(time_value))
+        ds = reader.read()
+        if hasattr(ds, "n_blocks"):
+            ds = ds.combine()
+        if "tau" not in ds.point_data:
+            raise RuntimeError(f"Missing tau field in {pvd_path}")
+
+        warped = ds.copy(deep=True)
+        if "ale_displacement" in warped.point_data:
+            disp = np.asarray(warped.point_data["ale_displacement"], dtype=float)
+            pts = np.asarray(warped.points, dtype=float).copy()
+            ncomp = min(pts.shape[1], disp.shape[1])
+            pts[:, :ncomp] += disp[:, :ncomp]
+            warped.points = pts
+        return warped
+
+    def compute_front_depth_from_mesh(mesh, x: float, threshold: float) -> float:
+        ns = 250
+        eps = 1.0e-9
+        _, _, y_bottom, y_top, _, _ = mesh.bounds
+        y0 = float(y_top - eps)
+        y1 = float(y_bottom + eps)
+        ys = np.linspace(y0, y1, ns + 1, dtype=float)
+        pts = np.column_stack(
+            [np.full_like(ys, x), ys, np.zeros_like(ys)]
+        )
+        sampled = pv.PolyData(pts).sample(mesh)
+        vals = np.asarray(sampled.point_data.get("tau", []), dtype=float).reshape(-1)
+        mask = np.asarray(
+            sampled.point_data.get("vtkValidPointMask", np.ones(ys.size)),
+            dtype=int,
+        ).reshape(-1)
+        if vals.size != ys.size:
+            return 0.0
+
+        vals = np.where(mask > 0, vals, np.nan)
+        for k in range(1, ys.size):
+            vp = vals[k - 1]
+            vc = vals[k]
+            if np.isfinite(vp) and np.isfinite(vc) and vp > threshold and vc <= threshold:
+                denom = vp - vc
+                frac = 0.0
+                if abs(denom) > 1.0e-14:
+                    frac = (vp - threshold) / denom
+                    frac = max(0.0, min(1.0, frac))
+                y_cross = ys[k - 1] - frac * (ys[k - 1] - ys[k])
+                return max(0.0, float(y_top - y_cross))
+        return 0.0
+
+    front98 = np.zeros(time_values.size, dtype=float)
+    front2 = np.zeros(time_values.size, dtype=float)
+
+    xmid: float | None = None
+    for i_time, time_value in enumerate(time_values):
+        mesh = read_dataset_at_time(float(time_value))
+        if xmid is None:
+            xmin, xmax, _, _, _, _ = mesh.bounds
+            xmid = 0.5 * (float(xmin) + float(xmax))
+        front98[i_time] = compute_front_depth_from_mesh(mesh, xmid, 0.98)
+        front2[i_time] = compute_front_depth_from_mesh(mesh, xmid, 0.02)
+
+    return time_values, front98, front2
 
 
 def rmse(a: np.ndarray, b: np.ndarray) -> float:
@@ -250,7 +500,12 @@ def main() -> None:
     parser.add_argument(
         "--output-dir",
         default="ParaView/ablation_case2_2",
-        help="Directory containing temperature_probes.csv and mass_metrics.csv",
+        help=(
+            "Directory containing mass_metrics.csv and, optionally, "
+            "temperature_probes.csv and front columns in mass_metrics.csv. "
+            "If the temperature CSV or front columns are missing, the script "
+            "samples them from the MFEM ParaView .pvd output."
+        ),
     )
     parser.add_argument(
         "--input",
@@ -307,37 +562,66 @@ def main() -> None:
     pato_surface_diag_csv = Path(args.pato_surface_diagnostics).expanduser()
     pato_pressure_plot = Path(args.pato_pressure_plot).expanduser()
 
-    if not probes_csv.exists() or not mass_csv.exists():
-        raise FileNotFoundError(
-            f"Expected MFEM outputs not found: {probes_csv} and {mass_csv}"
-        )
+    if not mass_csv.exists():
+        raise FileNotFoundError(f"Expected MFEM output not found: {mass_csv}")
 
     tol = load_acceptance_from_yaml(Path(args.input))
 
-    probes = np.genfromtxt(probes_csv, delimiter=",", names=True)
-    mass = np.genfromtxt(mass_csv, delimiter=",", names=True)
+    probes = load_named_csv(
+        probes_csv, required=False, description="temperature_probes.csv"
+    )
+    if probes is None:
+        print(
+            f"temperature_probes.csv not found or empty in {out_dir}; "
+            "sampling temperature probes from ParaView output instead."
+        )
+        probes = sample_temperature_probes_from_paraview(out_dir, Path(args.input))
+
+    mass = load_named_csv(
+        mass_csv, required=True, description="mass_metrics.csv"
+    )
     boundary_diag = (
-        np.genfromtxt(boundary_diag_csv, delimiter=",", names=True)
+        load_named_csv(
+            boundary_diag_csv,
+            required=False,
+            description="boundary_diagnostics.csv",
+        )
         if boundary_diag_csv.exists()
         else None
     )
     mfem_pressure_probes = (
-        np.genfromtxt(mfem_pressure_probes_csv, delimiter=",", names=True)
+        load_named_csv(
+            mfem_pressure_probes_csv,
+            required=False,
+            description="pressure_probes.csv",
+        )
         if mfem_pressure_probes_csv.exists()
         else None
     )
     mfem_mesh_diag = (
-        np.genfromtxt(mfem_mesh_diag_csv, delimiter=",", names=True)
+        load_named_csv(
+            mfem_mesh_diag_csv,
+            required=False,
+            description="mesh_diagnostics.csv",
+        )
         if mfem_mesh_diag_csv.exists()
         else None
     )
     mfem_mass_eq_probe = (
-        np.genfromtxt(mfem_mass_eq_probe_csv, delimiter=",", names=True)
+        load_named_csv(
+            mfem_mass_eq_probe_csv,
+            required=False,
+            description="mass_eq_probe_diagnostics.csv",
+        )
         if mfem_mass_eq_probe_csv.exists()
         else None
     )
     pato_surface_diag = (
-        np.genfromtxt(pato_surface_diag_csv, delimiter=",", names=True)
+        load_named_csv(
+            pato_surface_diag_csv,
+            required=False,
+            description="surface_diags.dat",
+        )
         if pato_surface_diag_csv.exists()
         else None
     )
@@ -419,8 +703,21 @@ def main() -> None:
     mfem_mdot_centerline = (
         mass["m_dot_g_centerline"] if "m_dot_g_centerline" in mass.dtype.names else None
     )
-    mfem_front98 = mass["front_98_virgin"]
-    mfem_front2 = mass["front_2_char"]
+    if (
+        "front_98_virgin" in mass.dtype.names
+        and "front_2_char" in mass.dtype.names
+    ):
+        mfem_front_t = mfem_mass_t
+        mfem_front98 = mass["front_98_virgin"]
+        mfem_front2 = mass["front_2_char"]
+    else:
+        print(
+            "front columns not found in mass_metrics.csv; "
+            "sampling fronts from ParaView output instead."
+        )
+        mfem_front_t, mfem_front98, mfem_front2 = sample_fronts_from_paraview(
+            out_dir, Path(args.input)
+        )
     mfem_mdot_c = mass["m_dot_c"]
     mfem_recession = mass["recession"]
     mfem_recession_rate = time_derivative(mfem_mass_t, mfem_recession)
@@ -428,8 +725,8 @@ def main() -> None:
 
     mfem_mdot_i = np.interp(t_ref, mfem_mass_t, mfem_mdot)
     mfem_mdot_c_i = np.interp(t_ref, mfem_mass_t, mfem_mdot_c)
-    mfem_front98_i = np.interp(t_ref, mfem_mass_t, mfem_front98)
-    mfem_front2_i = np.interp(t_ref, mfem_mass_t, mfem_front2)
+    mfem_front98_i = np.interp(t_ref, mfem_front_t, mfem_front98)
+    mfem_front2_i = np.interp(t_ref, mfem_front_t, mfem_front2)
     mfem_recession_i = np.interp(t_ref, mfem_mass_t, mfem_recession)
 
     mdot_rmse = rmse(mfem_mdot_i, ref_mdot)
@@ -601,13 +898,13 @@ def main() -> None:
 
     # Plot 3: fronts.
     plt.figure(figsize=(13, 4.8))
-    plt.plot(mfem_mass_t, mfem_front98, color="black", lw=2, label="MFEM 98% virgin")
-    plt.plot(mfem_mass_t, mfem_front2, color="gray", lw=2, label="MFEM 2% char")
+    plt.plot(mfem_front_t, mfem_front98, color="black", lw=2, label="MFEM 98% virgin")
+    plt.plot(mfem_front_t, mfem_front2, color="gray", lw=2, label="MFEM 2% char")
     plt.plot(t_ref, ref_front98, color="black", lw=2, ls="--", label="Amaryllis 98% virgin")
     plt.plot(t_ref, ref_front2, color="gray", lw=2, ls="--", label="Amaryllis 2% char")
     plt.xlabel("Time (s)")
     plt.ylabel("Depth (m)")
-    plt.xlim(0.0, max(float(mfem_mass_t[-1]), float(t_ref[-1])))
+    plt.xlim(0.0, max(float(mfem_front_t[-1]), float(t_ref[-1])))
     plt.grid(True, alpha=0.25)
     plt.legend(loc="center left", bbox_to_anchor=(1.02, 0.5), ncol=1)
     plt.tight_layout(rect=(0.0, 0.0, 0.78, 1.0))
@@ -1412,4 +1709,8 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except (FileNotFoundError, RuntimeError) as exc:
+        print(f"compare_ablation_case2_2.py: {exc}", file=sys.stderr)
+        sys.exit(1)
