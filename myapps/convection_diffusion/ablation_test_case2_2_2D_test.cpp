@@ -4317,24 +4317,6 @@ void AdvanceInternalStates(const TACOTMaterial &material,
    }
 }
 
-// Remap per-QP pyrolysis extents to account for ALE mesh motion.
-//
-// After AdvanceInternalStates commits extents at the current (pre-move) mesh
-// QP positions, but before the mesh actually moves, this function corrects the
-// stored extents so that each QP holds the extent of the material that will be
-// at its post-move physical location.
-//
-// For each QP at physical position x_q with mesh velocity w_q, the target
-// position after the mesh moves is x_target = x_q + w_q * dt.  The material
-// at x_target is stationary, so its extent is already recorded (on the current
-// mesh) at whichever QP happens to be nearest to x_target.  We retrieve that
-// value via FindPoints and nearest-QP lookup, write it back, and update the
-// element-averaged extent arrays for consistent ParaView output.
-//
-// Must be called AFTER recession_handler->PrepareAdvance (so mesh velocity is
-// available) and BEFORE recession_handler->CommitAdvance (before the mesh is
-// actually moved).  In the current PATO-compat workflow this is invoked before
-// the PDE solve so the step starts from ALE-remapped internal extents.
 static void CaptureElementQPJacobians(const mfem::ParFiniteElementSpace &fes_T,
                                       const int quad_order,
                                       vector<vector<double>> &J_qp)
@@ -4357,20 +4339,124 @@ static void CaptureElementQPJacobians(const mfem::ParFiniteElementSpace &fes_T,
    }
 }
 
-static void RemapExtentsALE(ReactionStateManager &state_manager,
-                             mfem::ParMesh &pmesh,
-                             const mfem::ParFiniteElementSpace &fes_T,
-                             const mfem::ParGridFunction &mesh_velocity,
-                             const int quad_order,
-                             const double dt)
+static void ProjectQPointExtentsToAleRemapFields(
+   const ReactionStateManager &state_manager,
+   const ParFiniteElementSpace &fes_state,
+   ParFiniteElementSpace &remap_fes,
+   const int quad_order,
+   vector<unique_ptr<ParGridFunction>> &extent_fields)
 {
-   if (dt <= 0.0) { return; }
+   const int nr = state_manager.NumReactions();
+   extent_fields.clear();
+   extent_fields.reserve(static_cast<size_t>(nr));
+   if (nr == 0) { return; }
 
+   ParMesh *old_lookup_mesh = remap_fes.GetParMesh();
+   MFEM_VERIFY(old_lookup_mesh != nullptr,
+               "ALE remap projection requires a valid parallel mesh.");
+
+   for (int r = 0; r < nr; ++r)
+   {
+      extent_fields.push_back(make_unique<ParGridFunction>(&remap_fes));
+      *extent_fields.back() = 0.0;
+   }
+
+   Array<int> vdofs;
+   Vector shape;
+   Vector coeff;
+
+   for (int e = 0; e < fes_state.GetNE(); ++e)
+   {
+      const FiniteElement *fe_state = fes_state.GetFE(e);
+      const FiniteElement *fe_remap = remap_fes.GetFE(e);
+      ElementTransformation *Tr_old = old_lookup_mesh->GetElementTransformation(e);
+      const IntegrationRule &ir =
+         IntRules.Get(fe_state->GetGeomType(), quad_order);
+      const int ndof = fe_remap->GetDof();
+      DenseMatrix mass(ndof);
+      mass = 0.0;
+
+      shape.SetSize(ndof);
+      vector<Vector> rhs(static_cast<size_t>(nr));
+      for (auto &rhs_r : rhs)
+      {
+         rhs_r.SetSize(ndof);
+         rhs_r = 0.0;
+      }
+
+      for (int q = 0; q < ir.GetNPoints(); ++q)
+      {
+         const IntegrationPoint &ip = ir.IntPoint(q);
+         Tr_old->SetIntPoint(&ip);
+         fe_remap->CalcShape(ip, shape);
+         const double weight = ip.weight * Tr_old->Weight();
+
+         for (int i = 0; i < ndof; ++i)
+         {
+            for (int j = 0; j < ndof; ++j)
+            {
+               mass(i, j) += weight * shape(i) * shape(j);
+            }
+         }
+
+         const TACOTMaterial::InternalState &st = state_manager.GetState(e, q);
+         for (int r = 0; r < nr; ++r)
+         {
+            const double xi =
+               (r < static_cast<int>(st.extent.size())) ? st.extent[r] : 0.0;
+            for (int i = 0; i < ndof; ++i)
+            {
+               rhs[static_cast<size_t>(r)](i) += weight * shape(i) * xi;
+            }
+         }
+      }
+
+      DenseMatrixInverse mass_inv(mass);
+      remap_fes.GetElementVDofs(e, vdofs);
+      for (int r = 0; r < nr; ++r)
+      {
+         coeff.SetSize(ndof);
+         mass_inv.Mult(rhs[static_cast<size_t>(r)], coeff);
+         for (int j = 0; j < vdofs.Size(); ++j)
+         {
+            (*extent_fields[static_cast<size_t>(r)])(vdofs[j]) = coeff(j);
+         }
+      }
+   }
+}
+
+// Pull back the stored internal state from the old ALE map to the new ALE map.
+//
+// The reference mesh remains fixed. The old material history is represented on
+// old_lookup_mesh, which must already carry the geometry defined by the old ALE
+// displacement. For each destination reference QP X_q, we evaluate the old
+// internal state at the physical point x^{n+1}(X_q) located in old_lookup_mesh:
+//
+//    xi^{n,remap}(X_q) = xi_h^n( (chi^n)^{-1}(chi^{n+1}(X_q)) ).
+//
+// The old QP data are first projected elementwise to a DG1 field on the old
+// ALE mesh, then sampled at the pullback source point. The remapped values are
+// written into both extent and extent_old so the remap itself does not produce
+// artificial reaction increments on the following local kinetics update.
+static void RemapExtentsALE(ReactionStateManager &state_manager,
+                            ParMesh &reference_pmesh,
+                            ParMesh &old_lookup_mesh,
+                            const ParFiniteElementSpace &fes_T,
+                            const ParGridFunction &ale_displacement_new,
+                            const int quad_order)
+{
    const int ne = fes_T.GetNE();
-   const int dim = pmesh.Dimension();
+   const int dim = reference_pmesh.SpaceDimension();
    if (ne == 0) { return; }
 
-   // --- Step 1: build target-point matrix (x_q + w_q * dt for every QP) ---
+   L2_FECollection remap_fec(1, old_lookup_mesh.Dimension());
+   ParFiniteElementSpace remap_fes(&old_lookup_mesh, &remap_fec);
+   vector<unique_ptr<ParGridFunction>> extent_fields;
+   ProjectQPointExtentsToAleRemapFields(state_manager,
+                                        fes_T,
+                                        remap_fes,
+                                        quad_order,
+                                        extent_fields);
 
    int total_qps = 0;
    for (int e = 0; e < ne; ++e)
@@ -4378,94 +4464,82 @@ static void RemapExtentsALE(ReactionStateManager &state_manager,
       const FiniteElement *fe = fes_T.GetFE(e);
       total_qps += IntRules.Get(fe->GetGeomType(), quad_order).GetNPoints();
    }
+   if (total_qps == 0) { return; }
 
    DenseMatrix target_pts(dim, total_qps);
-   vector<pair<int,int>> qp_map(total_qps);  // [col] -> {elem, local_qp}
+   vector<pair<int, int>> qp_map(static_cast<size_t>(total_qps));
 
    int col = 0;
    for (int e = 0; e < ne; ++e)
    {
       const FiniteElement *fe = fes_T.GetFE(e);
-      ElementTransformation *Tr = fes_T.GetElementTransformation(e);
+      ElementTransformation *Tr_ref = fes_T.GetElementTransformation(e);
       const IntegrationRule &ir = IntRules.Get(fe->GetGeomType(), quad_order);
+
       for (int q = 0; q < ir.GetNPoints(); ++q, ++col)
       {
          const IntegrationPoint &ip = ir.IntPoint(q);
-         Tr->SetIntPoint(&ip);
+         Tr_ref->SetIntPoint(&ip);
 
-         // Physical coordinate of this QP on the current (pre-move) mesh.
-         Vector x_phys(dim);
-         Tr->Transform(ip, x_phys);
+         Vector x_ref(dim);
+         Tr_ref->Transform(ip, x_ref);
 
-         // Mesh velocity at this QP.
-         Vector w_q(dim);
-         mesh_velocity.GetVectorValue(e, ip, w_q);
+         Vector disp_new(dim);
+         ale_displacement_new.GetVectorValue(e, ip, disp_new);
 
-         // Target: where this QP will sit after the mesh moves.
          for (int d = 0; d < dim; ++d)
          {
-            target_pts(d, col) = x_phys(d) + w_q(d) * dt;
+            target_pts(d, col) = x_ref(d) + disp_new(d);
          }
-         qp_map[col] = {e, q};
+         qp_map[static_cast<size_t>(col)] = {e, q};
       }
    }
-
-   // --- Step 2: locate each target point in the current (pre-move) mesh ---
 
    Array<int> elem_ids(total_qps);
    Array<IntegrationPoint> ref_pts(total_qps);
-   pmesh.FindPoints(target_pts, elem_ids, ref_pts, /*warn=*/false);
+   old_lookup_mesh.FindPoints(target_pts, elem_ids, ref_pts, false);
 
-   // --- Step 3: read remapped extents into a temp buffer ---
-   // We must complete all reads from the original state before writing any
-   // updated state back, otherwise an already-remapped QP could be used as
-   // the source for another QP in the same element.
-
-   vector<vector<double>> temp_extents(total_qps);
+   vector<vector<double>> remapped_extents(static_cast<size_t>(total_qps));
+   int local_not_found = 0;
    for (int k = 0; k < total_qps; ++k)
    {
-      const auto [e_orig, q_orig] = qp_map[k];
-      // Default: keep the current value (fallback for not-found points).
-      temp_extents[k] = state_manager.GetState(e_orig, q_orig).extent;
-   }
+      const auto [e_dest, q_dest] = qp_map[static_cast<size_t>(k)];
+      remapped_extents[static_cast<size_t>(k)] =
+         state_manager.GetState(e_dest, q_dest).extent;
 
-   for (int k = 0; k < total_qps; ++k)
-   {
-      const int e_found = elem_ids[k];
-      if (e_found < 0) { continue; }  // not found on this rank; keep old extent
-
-      // Find the QP in e_found whose reference coordinate is nearest to
-      // ip_found.  This is the source QP whose extent we adopt.
-      const FiniteElement *fe_found = fes_T.GetFE(e_found);
-      const IntegrationRule &ir_found =
-         IntRules.Get(fe_found->GetGeomType(), quad_order);
-      const IntegrationPoint &ip_found = ref_pts[k];
-
-      int nearest_q = 0;
-      double min_dist2 = std::numeric_limits<double>::max();
-      for (int qf = 0; qf < ir_found.GetNPoints(); ++qf)
+      const int e_src = elem_ids[k];
+      if (e_src < 0)
       {
-         const IntegrationPoint &ip_qf = ir_found.IntPoint(qf);
-         const double dx = ip_found.x - ip_qf.x;
-         const double dy = ip_found.y - ip_qf.y;
-         const double dz = ip_found.z - ip_qf.z;
-         const double d2 = dx*dx + dy*dy + dz*dz;
-         if (d2 < min_dist2) { min_dist2 = d2; nearest_q = qf; }
+         ++local_not_found;
+         continue;
       }
 
-      const TACOTMaterial::InternalState &src =
-         state_manager.GetState(e_found, nearest_q);
-      const int nr = static_cast<int>(temp_extents[k].size());
+      const int nr =
+         static_cast<int>(remapped_extents[static_cast<size_t>(k)].size());
       for (int r = 0; r < nr; ++r)
       {
-         const double xi = (r < static_cast<int>(src.extent.size()))
-                              ? src.extent[r]
-                              : temp_extents[k][r];  // size mismatch guard
-         temp_extents[k][r] = std::max(0.0, std::min(1.0, xi));
+         const double xi =
+            extent_fields.empty()
+               ? remapped_extents[static_cast<size_t>(k)][r]
+               : extent_fields[static_cast<size_t>(r)]->GetValue(e_src, ref_pts[k]);
+         remapped_extents[static_cast<size_t>(k)][r] =
+            std::max(0.0, std::min(1.0, xi));
       }
    }
 
-   // --- Step 4: write remapped extents back and update element averages ---
+   int global_not_found = 0;
+   MPI_Allreduce(&local_not_found,
+                 &global_not_found,
+                 1,
+                 MPI_INT,
+                 MPI_SUM,
+                 reference_pmesh.GetComm());
+   if (global_not_found > 0)
+   {
+      MFEM_WARNING("ALE internal-state remap left " << global_not_found
+                   << " quadrature points unchanged because the old lookup "
+                   << "point could not be found.");
+   }
 
    col = 0;
    for (int e = 0; e < ne; ++e)
@@ -4475,11 +4549,11 @@ static void RemapExtentsALE(ReactionStateManager &state_manager,
       for (int q = 0; q < ir.GetNPoints(); ++q, ++col)
       {
          TACOTMaterial::InternalState st = state_manager.GetState(e, q);
-         st.extent     = temp_extents[col];
-         st.extent_old = temp_extents[col];
-         state_manager.SetState(e, q, st);
+         st.extent = remapped_extents[static_cast<size_t>(col)];
+         st.extent_old = remapped_extents[static_cast<size_t>(col)];
+         st.dt = 0.0;
+         state_manager.SetState(e, q, std::move(st));
       }
-      // Keep the diagnostic/output element-average array consistent.
       state_manager.UpdateExtentAverageFromQPs(e);
    }
 }
@@ -5655,6 +5729,16 @@ int main(int argc, char *argv[])
             tp_integrator->SetAleFields(ale_displacement_old.get(),
                                         ale_displacement.get(),
                                         &recession_handler->MeshVelocity());
+
+            if (diagnostic_pmesh)
+            {
+               RemapExtentsALE(state_manager,
+                               *pmesh,
+                               *diagnostic_pmesh,
+                               fes_T,
+                               *ale_displacement,
+                               quad_order);
+            }
 
             if (diagnostic_pmesh)
             {
