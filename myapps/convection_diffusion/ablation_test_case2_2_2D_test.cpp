@@ -791,6 +791,71 @@ Bounds GetGlobalBounds(const ParMesh &pmesh)
    return b;
 }
 
+void CopyParGridFunctionByTrueDofs(const ParGridFunction &src,
+                                   ParGridFunction &dst)
+{
+   Vector true_dofs;
+   src.GetTrueDofs(true_dofs);
+   dst.SetFromTrueDofs(true_dofs);
+}
+
+double ComputeMinElementQuality(ParMesh &pmesh)
+{
+   double local_min = std::numeric_limits<double>::infinity();
+   for (int e = 0; e < pmesh.GetNE(); ++e)
+   {
+      ElementTransformation *Tr = pmesh.GetElementTransformation(e);
+      const IntegrationRule &ir = IntRules.Get(pmesh.GetElementBaseGeometry(e), 2);
+      for (int q = 0; q < ir.GetNPoints(); ++q)
+      {
+         const IntegrationPoint &ip = ir.IntPoint(q);
+         Tr->SetIntPoint(&ip);
+         local_min = std::min(local_min, static_cast<double>(Tr->Weight()));
+      }
+   }
+
+   double global_min = local_min;
+   MPI_Allreduce(&local_min, &global_min, 1, MPI_DOUBLE, MPI_MIN, pmesh.GetComm());
+   return global_min;
+}
+
+void UpdateDiagnosticMeshGeometry(const ParGridFunction &live_reference_nodes,
+                                  const ParGridFunction &ale_displacement_live,
+                                  ParMesh &diagnostic_mesh)
+{
+   auto *live_nodes = dynamic_cast<ParGridFunction *>(diagnostic_mesh.GetNodes());
+   MFEM_VERIFY(live_nodes != nullptr,
+               "Diagnostic ALE mesh requires a nodal ParGridFunction.");
+   *live_nodes = live_reference_nodes;
+   live_nodes->Add(1.0, ale_displacement_live);
+   diagnostic_mesh.NodesUpdated();
+}
+
+class AleJacobianCoefficient : public Coefficient
+{
+public:
+   explicit AleJacobianCoefficient(const ParGridFunction &ale_displacement)
+      : ale_displacement_(ale_displacement) {}
+
+   real_t Eval(ElementTransformation &T, const IntegrationPoint &ip) override
+   {
+      T.SetIntPoint(&ip);
+      DenseMatrix grad;
+      ale_displacement_.GetVectorGradient(T, grad);
+      MFEM_VERIFY(grad.Height() == 2 && grad.Width() == 2,
+                  "AleJacobianCoefficient expects a 2D displacement field.");
+
+      const double g00 = 1.0 + grad(0, 0);
+      const double g01 = grad(0, 1);
+      const double g10 = grad(1, 0);
+      const double g11 = 1.0 + grad(1, 1);
+      return g00 * g11 - g01 * g10;
+   }
+
+private:
+   const ParGridFunction &ale_displacement_;
+};
+
 struct SurfaceFluxModelParams
 {
    double lambda = 0.5;
@@ -1665,7 +1730,6 @@ public:
                         ParGridFunction &p_old,
                         const int quad_order,
                         const Vector &gravity,
-                        VectorCoefficient *mesh_velocity_coeff,
                         const bool ale_mass_enabled,
                         const bool ale_energy_solid_enabled,
                         const bool ale_energy_gas_enabled,
@@ -1676,7 +1740,6 @@ public:
         p_old_coeff_(&p_old),
         quad_order_(quad_order),
         gravity_(gravity),
-        mesh_velocity_coeff_(mesh_velocity_coeff),
         ale_mass_enabled_(ale_mass_enabled),
         ale_energy_solid_enabled_(ale_energy_solid_enabled),
         ale_energy_gas_enabled_(ale_energy_gas_enabled),
@@ -1687,9 +1750,13 @@ public:
 
    void SetTimeStep(const double dt) { dt_ = dt; }
 
-   void SetSolidAleOldJacobians(const vector<vector<double>> *J_old_qp)
+   void SetAleFields(const ParGridFunction *ale_displacement_old,
+                     const ParGridFunction *ale_displacement,
+                     const ParGridFunction *mesh_velocity)
    {
-      solid_ale_J_old_qp_ = J_old_qp;
+      ale_displacement_old_gf_ = ale_displacement_old;
+      ale_displacement_gf_ = ale_displacement;
+      mesh_velocity_gf_ = mesh_velocity;
    }
 
    void AssembleElementVector(const Array<const FiniteElement *> &el,
@@ -1731,6 +1798,23 @@ public:
    }
 
 private:
+   struct AleGeometry
+   {
+      double J_old = 1.0;
+      double J_new = 1.0;
+      double divFw = 0.0;
+      DenseMatrix metric;
+      Vector Fg;
+      Vector Fw;
+   };
+
+   struct MassStorageData
+   {
+      double value = 0.0;
+      double dT = 0.0;
+      double dp = 0.0;
+   };
+
    struct QPCoeffs
    {
       double A = 0.0; // storage_p - source_p
@@ -1740,9 +1824,292 @@ private:
       double E = 0.0; // solid.k
       double F = 0.0; // h_rho_darcy
       double G = 0.0; // h_rho2_darcy
-      double H = 0.0; // ALE mass storage (eps_g*rho)
-      double I = 0.0; // ALE energy storage variable
+      double H = 0.0; // ALE mass transport storage (eps_g*rho)
+      double I = 0.0; // ALE energy transport storage
+      double M_T = 0.0; // d(eps_g*rho_g)/dT
+      double M_p = 0.0; // d(eps_g*rho_g)/dp
+      double solid_heatcap = 0.0; // rho_s * c_ps
+      double gas_energy_dT = 0.0; // d(phi(rho_g h_g - p))/dT
+      double gas_energy_dp = 0.0; // d(phi(rho_g h_g - p))/dp
    };
+
+   bool UseReferenceAleGeometry() const
+   {
+      return (ale_displacement_gf_ != nullptr);
+   }
+
+   bool UseExactAleEnergyForm() const
+   {
+      return (UseReferenceAleGeometry() &&
+              ale_energy_solid_enabled_ &&
+              ale_energy_gas_enabled_);
+   }
+
+   static void BuildDeformationMap2D(const DenseMatrix &grad_disp,
+                                     DenseMatrix &cofactor,
+                                     double &J)
+   {
+      MFEM_VERIFY(grad_disp.Height() == 2 && grad_disp.Width() == 2,
+                  "BuildDeformationMap2D expects a 2x2 displacement gradient.");
+
+      const double g00 = 1.0 + grad_disp(0, 0);
+      const double g01 = grad_disp(0, 1);
+      const double g10 = grad_disp(1, 0);
+      const double g11 = 1.0 + grad_disp(1, 1);
+
+      J = g00 * g11 - g01 * g10;
+      cofactor.SetSize(2, 2);
+      cofactor(0, 0) = g11;
+      cofactor(0, 1) = -g01;
+      cofactor(1, 0) = -g10;
+      cofactor(1, 1) = g00;
+   }
+
+   double RowDot(const DenseMatrix &dshape,
+                 const int i,
+                 const Vector &vec) const
+   {
+      double out = 0.0;
+      for (int d = 0; d < vec.Size(); ++d)
+      {
+         out += dshape(i, d) * vec[d];
+      }
+      return out;
+   }
+
+   double VectorDot(const Vector &a,
+                    const Vector &b) const
+   {
+      MFEM_VERIFY(a.Size() == b.Size(), "VectorDot size mismatch.");
+      double out = 0.0;
+      for (int i = 0; i < a.Size(); ++i)
+      {
+         out += a[i] * b[i];
+      }
+      return out;
+   }
+
+   double MetricDot(const DenseMatrix &metric,
+                    const DenseMatrix &dshape,
+                    const int i,
+                    const Vector &grad) const
+   {
+      double out = 0.0;
+      for (int a = 0; a < metric.Height(); ++a)
+      {
+         for (int b = 0; b < metric.Width(); ++b)
+         {
+            out += dshape(i, a) * metric(a, b) * grad[b];
+         }
+      }
+      return out;
+   }
+
+   double MetricEntry(const DenseMatrix &metric,
+                      const DenseMatrix &dshape_a,
+                      const int i,
+                      const DenseMatrix &dshape_b,
+                      const int j) const
+   {
+      double out = 0.0;
+      for (int a = 0; a < metric.Height(); ++a)
+      {
+         for (int b = 0; b < metric.Width(); ++b)
+         {
+            out += dshape_a(i, a) * metric(a, b) * dshape_b(j, b);
+         }
+      }
+      return out;
+   }
+
+   void EvaluateAleGeometry(ElementTransformation &Tr,
+                            const IntegrationPoint &ip,
+                            AleGeometry &geom) const
+   {
+      const int dim = Tr.GetSpaceDim();
+      MFEM_VERIFY(dim == 2, "AblationTPIntegrator ALE geometry expects 2D.");
+
+      geom.metric.SetSize(dim, dim);
+      geom.metric = 0.0;
+      geom.Fg.SetSize(dim);
+      geom.Fg = 0.0;
+      geom.Fw.SetSize(dim);
+      geom.Fw = 0.0;
+      geom.divFw = 0.0;
+      geom.J_old = 1.0;
+      geom.J_new = 1.0;
+
+      if (!UseReferenceAleGeometry())
+      {
+         for (int d = 0; d < dim; ++d)
+         {
+            geom.metric(d, d) = 1.0;
+            geom.Fg[d] = gravity_[d];
+         }
+         if (mesh_velocity_gf_)
+         {
+            mesh_velocity_q_.SetSize(dim);
+            mesh_velocity_gf_->GetVectorValue(Tr, ip, mesh_velocity_q_);
+            geom.Fw = mesh_velocity_q_;
+
+            DenseMatrix grad_w;
+            mesh_velocity_gf_->GetVectorGradient(Tr, grad_w);
+            for (int d = 0; d < dim; ++d)
+            {
+               geom.divFw += grad_w(d, d);
+            }
+         }
+         return;
+      }
+
+      DenseMatrix grad_new;
+      DenseMatrix cofactor_new;
+      Tr.SetIntPoint(&ip);
+      ale_displacement_gf_->GetVectorGradient(Tr, grad_new);
+      BuildDeformationMap2D(grad_new, cofactor_new, geom.J_new);
+      if (!(geom.J_new > 1.0e-12))
+      {
+         throw runtime_error("Degenerate ALE Jacobian in AblationTPIntegrator.");
+      }
+
+      if (ale_displacement_old_gf_)
+      {
+         DenseMatrix grad_old;
+         DenseMatrix cofactor_old;
+         ale_displacement_old_gf_->GetVectorGradient(Tr, grad_old);
+         BuildDeformationMap2D(grad_old, cofactor_old, geom.J_old);
+         if (!(geom.J_old > 1.0e-12))
+         {
+            throw runtime_error("Degenerate old ALE Jacobian in AblationTPIntegrator.");
+         }
+      }
+
+      MultABt(cofactor_new, cofactor_new, geom.metric);
+      geom.metric *= (1.0 / geom.J_new);
+
+      cofactor_new.Mult(gravity_, geom.Fg);
+
+      if (mesh_velocity_gf_)
+      {
+         mesh_velocity_q_.SetSize(dim);
+         mesh_velocity_gf_->GetVectorValue(Tr, ip, mesh_velocity_q_);
+         cofactor_new.Mult(mesh_velocity_q_, geom.Fw);
+
+         DenseMatrix grad_w;
+         mesh_velocity_gf_->GetVectorGradient(Tr, grad_w);
+         for (int a = 0; a < dim; ++a)
+         {
+            for (int b = 0; b < dim; ++b)
+            {
+               geom.divFw += cofactor_new(a, b) * grad_w(b, a);
+            }
+         }
+      }
+   }
+
+   MassStorageData EvaluateMassStorageData(
+      const double T,
+      const double p,
+      const TACOTMaterial::InternalState &old_state,
+      const TACOTMaterial::SolidProperties &solid,
+      const TACOTMaterial::GasProperties &gas) const
+   {
+      MassStorageData out;
+      out.value = solid.eps_g * gas.rho;
+
+      const bool use_exact_ale_mass_form =
+         (ale_mass_enabled_ && UseReferenceAleGeometry());
+      if (!use_exact_ale_mass_form)
+      {
+         return out;
+      }
+
+      const double coeff_fd_eps = 1.0e-7;
+      const double hT = coeff_fd_eps * std::max(1.0, std::abs(T));
+      const double hp = coeff_fd_eps * std::max(1.0, std::abs(p));
+
+      auto eval_mass_storage = [&](const double Tq, const double pq)
+      {
+         TACOTMaterial::InternalState state_q =
+            material_.SolveReactionExtents(Tq, dt_, old_state);
+         const TACOTMaterial::SolidProperties solid_q =
+            material_.EvaluateSolid(Tq, pq, state_q);
+         const TACOTMaterial::GasProperties gas_q =
+            material_.EvaluateGas(Tq, pq, state_q);
+         return solid_q.eps_g * gas_q.rho;
+      };
+
+      out.dT = (eval_mass_storage(T + hT, p) - out.value) / hT;
+      out.dp = (eval_mass_storage(T, p + hp) - out.value) / hp;
+      return out;
+   }
+
+   MassStorageData EvaluateSolidHeatCapacityData(
+      const double T,
+      const double p,
+      const TACOTMaterial::InternalState &old_state,
+      const TACOTMaterial::SolidProperties &solid) const
+   {
+      MassStorageData out;
+      out.value = solid.rho_s * solid.cp;
+
+      if (!UseExactAleEnergyForm())
+      {
+         return out;
+      }
+
+      const double coeff_fd_eps = 1.0e-7;
+      const double hT = coeff_fd_eps * std::max(1.0, std::abs(T));
+      const double hp = coeff_fd_eps * std::max(1.0, std::abs(p));
+
+      auto eval_solid_heatcap = [&](const double Tq, const double pq)
+      {
+         TACOTMaterial::InternalState state_q =
+            material_.SolveReactionExtents(Tq, dt_, old_state);
+         const TACOTMaterial::SolidProperties solid_q =
+            material_.EvaluateSolid(Tq, pq, state_q);
+         return solid_q.rho_s * solid_q.cp;
+      };
+
+      out.dT = (eval_solid_heatcap(T + hT, p) - out.value) / hT;
+      out.dp = (eval_solid_heatcap(T, p + hp) - out.value) / hp;
+      return out;
+   }
+
+   MassStorageData EvaluateGasEnergyData(
+      const double T,
+      const double p,
+      const TACOTMaterial::InternalState &old_state,
+      const TACOTMaterial::SolidProperties &solid,
+      const TACOTMaterial::GasProperties &gas) const
+   {
+      MassStorageData out;
+      out.value = solid.eps_g * (gas.rho * gas.h - p);
+
+      if (!UseExactAleEnergyForm())
+      {
+         return out;
+      }
+
+      const double coeff_fd_eps = 1.0e-7;
+      const double hT = coeff_fd_eps * std::max(1.0, std::abs(T));
+      const double hp = coeff_fd_eps * std::max(1.0, std::abs(p));
+
+      auto eval_gas_energy = [&](const double Tq, const double pq)
+      {
+         TACOTMaterial::InternalState state_q =
+            material_.SolveReactionExtents(Tq, dt_, old_state);
+         const TACOTMaterial::SolidProperties solid_q =
+            material_.EvaluateSolid(Tq, pq, state_q);
+         const TACOTMaterial::GasProperties gas_q =
+            material_.EvaluateGas(Tq, pq, state_q);
+         return solid_q.eps_g * (gas_q.rho * gas_q.h - pq);
+      };
+
+      out.dT = (eval_gas_energy(T + hT, p) - out.value) / hT;
+      out.dp = (eval_gas_energy(T, p + hp) - out.value) / hp;
+      return out;
+   }
 
    QPCoeffs EvaluateQPCoeffs(const double T,
                              const double p,
@@ -1751,9 +2118,7 @@ private:
                              const double p_old,
                              const TACOTMaterial::SolidProperties &solid_old,
                              const TACOTMaterial::GasProperties &gas_old,
-                             const int elem_no = -1,
-                             const int qp = -1,
-                             const double J_new = -1.0) const
+                             const AleGeometry &geom) const
    {
       QPCoeffs out;
 
@@ -1771,59 +2136,59 @@ private:
       const double h_rho_darcy = gas.h * rho_darcy;
       const double h_rho2_darcy = gas.h * rho2_darcy;
 
-      double storage_p =
-         (solid.eps_g * gas.rho - solid_old.eps_g * gas_old.rho) / dt_;
-      if (ale_mass_enabled_ && solid_ale_J_old_qp_ &&
-          elem_no >= 0 &&
-          elem_no < static_cast<int>(solid_ale_J_old_qp_->size()) &&
-          qp >= 0 &&
-          qp < static_cast<int>((*solid_ale_J_old_qp_)[elem_no].size()))
-      {
-         const double J_old = (*solid_ale_J_old_qp_)[elem_no][qp];
-         if (J_new > 0.0 && J_old > 0.0)
-         {
-            const double e_m_new = solid.eps_g * gas.rho;
-            const double e_m_old = solid_old.eps_g * gas_old.rho;
-            storage_p = (J_new * e_m_new - J_old * e_m_old) / (J_new * dt_);
-         }
-      }
-      const double source_p = solid.pi_total;
+      const MassStorageData mass_storage =
+         EvaluateMassStorageData(T, p, old_state, solid, gas);
+      const MassStorageData solid_heatcap_data =
+         EvaluateSolidHeatCapacityData(T, p, old_state, solid);
+      const MassStorageData gas_energy_data =
+         EvaluateGasEnergyData(T, p, old_state, solid, gas);
+      const double e_m_new = mass_storage.value;
+      const double e_m_old = solid_old.eps_g * gas_old.rho;
+      const double solid_heatcap = solid_heatcap_data.value;
+      const double e_g_new = gas_energy_data.value;
+      const double e_g_old = solid_old.eps_g * (gas_old.rho * gas_old.h - p_old);
 
-      double solid_storage = solid.rho_s * solid.cp * (T - T_old) / dt_;
-      if (ale_energy_solid_enabled_ && solid_ale_J_old_qp_ &&
-          elem_no >= 0 &&
-          elem_no < static_cast<int>(solid_ale_J_old_qp_->size()) &&
-          qp >= 0 &&
-          qp < static_cast<int>((*solid_ale_J_old_qp_)[elem_no].size()))
+      double storage_p = (e_m_new - e_m_old) / dt_;
+      double solid_storage = solid_heatcap * ((T - T_old) / dt_);
+      double gas_storage = (e_g_new - e_g_old) / dt_;
+      double source_p = solid.pi_total;
+      double pyro_sink = solid.pyrolysis_heat_sink;
+
+      if (UseReferenceAleGeometry())
       {
-         const double J_old = (*solid_ale_J_old_qp_)[elem_no][qp];
-         if (J_new > 0.0 && J_old > 0.0)
+         if (ale_mass_enabled_)
          {
-            const double e_s_new = solid.rho_s * solid.cp * T;
-            const double e_s_old = solid_old.rho_s * solid_old.cp * T_old;
-            solid_storage = (J_new * e_s_new - J_old * e_s_old) / (J_new * dt_);
+            storage_p = (geom.J_new * e_m_new - geom.J_old * e_m_old) / dt_;
          }
-      }
-      double gas_storage =
-         (solid.eps_g * (gas.rho * gas.h - p) -
-          solid_old.eps_g * (gas_old.rho * gas_old.h - p_old)) / dt_;
-      if (ale_energy_gas_enabled_ && solid_ale_J_old_qp_ &&
-          elem_no >= 0 &&
-          elem_no < static_cast<int>(solid_ale_J_old_qp_->size()) &&
-          qp >= 0 &&
-          qp < static_cast<int>((*solid_ale_J_old_qp_)[elem_no].size()))
-      {
-         const double J_old = (*solid_ale_J_old_qp_)[elem_no][qp];
-         if (J_new > 0.0 && J_old > 0.0)
+         else
          {
-            const double e_g_new = solid.eps_g * (gas.rho * gas.h - p);
-            const double e_g_old = solid_old.eps_g * (gas_old.rho * gas_old.h - p_old);
-            gas_storage = (J_new * e_g_new - J_old * e_g_old) / (J_new * dt_);
+            storage_p = geom.J_new * (e_m_new - e_m_old) / dt_;
          }
+         source_p = geom.J_new * solid.pi_total;
+
+         if (ale_energy_solid_enabled_)
+         {
+            solid_storage = solid_heatcap * ((geom.J_new * T - geom.J_old * T_old) / dt_);
+         }
+         else
+         {
+            solid_storage = geom.J_new * solid_heatcap * ((T - T_old) / dt_);
+         }
+
+         if (ale_energy_gas_enabled_)
+         {
+            gas_storage = (geom.J_new * e_g_new - geom.J_old * e_g_old) / dt_;
+         }
+         else
+         {
+            gas_storage = geom.J_new * ((e_g_new - e_g_old) / dt_);
+         }
+         pyro_sink = geom.J_new * solid.pyrolysis_heat_sink;
       }
-      const double ale_mass_storage = solid.eps_g * gas.rho;
-      const double ale_energy_storage_solid = solid.rho_s * solid.cp * T;
-      const double ale_energy_storage_gas = solid.eps_g * (gas.rho * gas.h - p);
+
+      const double ale_mass_storage = e_m_new;
+      const double ale_energy_storage_solid = solid_heatcap * T;
+      const double ale_energy_storage_gas = e_g_new;
       const double ale_energy_storage =
          (ale_energy_solid_enabled_ ? ale_energy_storage_solid : 0.0) +
          (ale_energy_gas_enabled_ ? ale_energy_storage_gas : 0.0);
@@ -1831,12 +2196,17 @@ private:
       out.A = storage_p - source_p;
       out.B = rho_darcy;
       out.C = rho2_darcy;
-      out.D = solid_storage + gas_storage - solid.pyrolysis_heat_sink;
+      out.D = solid_storage + gas_storage - pyro_sink;
       out.E = solid.k;
       out.F = h_rho_darcy;
       out.G = h_rho2_darcy;
       out.H = ale_mass_storage;
       out.I = ale_energy_storage;
+      out.M_T = mass_storage.dT;
+      out.M_p = mass_storage.dp;
+      out.solid_heatcap = solid_heatcap;
+      out.gas_energy_dT = gas_energy_data.dT;
+      out.gas_energy_dp = gas_energy_data.dp;
       return out;
    }
 
@@ -1869,7 +2239,6 @@ private:
       dshape_p_.SetSize(dof_p, dim);
       gradT_.SetSize(dim);
       gradp_.SetSize(dim);
-      mesh_velocity_q_.SetSize(dim);
 
       const IntegrationRule &ir = IntRules.Get(fe_T.GetGeomType(), quad_order_);
       MFEM_VERIFY(Tr.ElementNo >= 0, "Invalid element number while assembling gradient.");
@@ -1907,12 +2276,6 @@ private:
                gradp_[d] += elp[j] * dshape_p_(j, d);
             }
          }
-         mesh_velocity_q_ = 0.0;
-         if ((ale_mass_enabled_ || ale_energy_solid_enabled_ || ale_energy_gas_enabled_) &&
-             mesh_velocity_coeff_)
-         {
-            mesh_velocity_coeff_->Eval(mesh_velocity_q_, Tr, ip);
-         }
 
          const double T_old = T_old_coeff_.Eval(Tr, ip);
          const double p_old = p_old_coeff_.Eval(Tr, ip);
@@ -1927,19 +2290,17 @@ private:
          const TACOTMaterial::GasProperties gas_old =
             material_.EvaluateGas(T_old, p_old, old_eval_state);
 
-         const double J_new = Tr.Weight();
+         AleGeometry geom;
+         EvaluateAleGeometry(Tr, ip, geom);
          const QPCoeffs base =
-            EvaluateQPCoeffs(T, p, old_state, T_old, p_old, solid_old, gas_old,
-                             Tr.ElementNo, q, J_new);
+            EvaluateQPCoeffs(T, p, old_state, T_old, p_old, solid_old, gas_old, geom);
 
          const double hT = coeff_fd_eps * std::max(1.0, std::abs(T));
          const double hp = coeff_fd_eps * std::max(1.0, std::abs(p));
          const QPCoeffs T_pert =
-            EvaluateQPCoeffs(T + hT, p, old_state, T_old, p_old, solid_old, gas_old,
-                             Tr.ElementNo, q, J_new);
+            EvaluateQPCoeffs(T + hT, p, old_state, T_old, p_old, solid_old, gas_old, geom);
          const QPCoeffs p_pert =
-            EvaluateQPCoeffs(T, p + hp, old_state, T_old, p_old, solid_old, gas_old,
-                             Tr.ElementNo, q, J_new);
+            EvaluateQPCoeffs(T, p + hp, old_state, T_old, p_old, solid_old, gas_old, geom);
 
          const double A_T = (T_pert.A - base.A) / hT;
          const double B_T = (T_pert.B - base.B) / hT;
@@ -1950,6 +2311,14 @@ private:
          const double G_T = (T_pert.G - base.G) / hT;
          const double H_T = (T_pert.H - base.H) / hT;
          const double I_T = (T_pert.I - base.I) / hT;
+         const double M_T_T = (T_pert.M_T - base.M_T) / hT;
+         const double M_p_T = (T_pert.M_p - base.M_p) / hT;
+         const double solid_heatcap_T =
+            (T_pert.solid_heatcap - base.solid_heatcap) / hT;
+         const double gas_energy_dT_T =
+            (T_pert.gas_energy_dT - base.gas_energy_dT) / hT;
+         const double gas_energy_dp_T =
+            (T_pert.gas_energy_dp - base.gas_energy_dp) / hT;
 
          const double A_p = (p_pert.A - base.A) / hp;
          const double B_p = (p_pert.B - base.B) / hp;
@@ -1960,90 +2329,154 @@ private:
          const double G_p = (p_pert.G - base.G) / hp;
          const double H_p = (p_pert.H - base.H) / hp;
          const double I_p = (p_pert.I - base.I) / hp;
+         const double M_T_p = (p_pert.M_T - base.M_T) / hp;
+         const double M_p_p = (p_pert.M_p - base.M_p) / hp;
+         const double solid_heatcap_p =
+            (p_pert.solid_heatcap - base.solid_heatcap) / hp;
+         const double gas_energy_dT_p =
+            (p_pert.gas_energy_dT - base.gas_energy_dT) / hp;
+         const double gas_energy_dp_p =
+            (p_pert.gas_energy_dp - base.gas_energy_dp) / hp;
 
          const double w = ip.weight * Tr.Weight();
+         const bool use_exact_ale_mass_form =
+            (ale_mass_enabled_ && UseReferenceAleGeometry());
+         const bool use_exact_ale_energy_form = UseExactAleEnergyForm();
+         const double Fw_gradT = VectorDot(geom.Fw, gradT_);
+         const double Fw_gradp = VectorDot(geom.Fw, gradp_);
 
          for (int i = 0; i < dof_p; ++i)
          {
-            double Bpi_gradp = 0.0;
-            double g_Bpi = 0.0;
-            double wmesh_Bpi = 0.0;
-            for (int d = 0; d < dim; ++d)
-            {
-               Bpi_gradp += dshape_p_(i, d) * gradp_[d];
-               g_Bpi += gravity_[d] * dshape_p_(i, d);
-               wmesh_Bpi += mesh_velocity_q_[d] * dshape_p_(i, d);
-            }
+            const double Bpi_metric_gradp = MetricDot(geom.metric, dshape_p_, i, gradp_);
+            const double Fg_Bpi = RowDot(dshape_p_, i, geom.Fg);
+            const double Fw_Bpi = RowDot(dshape_p_, i, geom.Fw);
 
             for (int j = 0; j < dof_T; ++j)
             {
-               J10(i, j) += w * (shape_p_[i] * A_T * shape_T_[j]
-                                 + B_T * shape_T_[j] * Bpi_gradp
-                                 - C_T * shape_T_[j] * g_Bpi
-                                 + (ale_mass_enabled_ ? (H_T * shape_T_[j] * wmesh_Bpi) : 0.0));
+               if (use_exact_ale_mass_form)
+               {
+                  const double Fw_BTj = RowDot(dshape_T_, j, geom.Fw);
+                  const double exact_mass_T =
+                     - H_T * shape_T_[j] * geom.divFw
+                     - M_T_T * shape_T_[j] * Fw_gradT
+                     - base.M_T * Fw_BTj
+                     - M_p_T * shape_T_[j] * Fw_gradp;
+                  J10(i, j) += w * (shape_p_[i] * (A_T * shape_T_[j] + exact_mass_T)
+                                    + B_T * shape_T_[j] * Bpi_metric_gradp);
+               }
+               else
+               {
+                  J10(i, j) += w * (shape_p_[i] * A_T * shape_T_[j]
+                                    + B_T * shape_T_[j] * Bpi_metric_gradp
+                                    - C_T * shape_T_[j] * Fg_Bpi
+                                    + (ale_mass_enabled_ ?
+                                          (H_T * shape_T_[j] * Fw_Bpi) :
+                                          0.0));
+               }
             }
 
             for (int j = 0; j < dof_p; ++j)
             {
-               double Bpi_Bpj = 0.0;
-               for (int d = 0; d < dim; ++d)
+               const double Bpi_metric_Bpj =
+                  MetricEntry(geom.metric, dshape_p_, i, dshape_p_, j);
+               if (use_exact_ale_mass_form)
                {
-                  Bpi_Bpj += dshape_p_(i, d) * dshape_p_(j, d);
+                  const double Fw_Bpj = RowDot(dshape_p_, j, geom.Fw);
+                  const double exact_mass_p =
+                     - H_p * shape_p_[j] * geom.divFw
+                     - M_T_p * shape_p_[j] * Fw_gradT
+                     - M_p_p * shape_p_[j] * Fw_gradp
+                     - base.M_p * Fw_Bpj;
+                  J11(i, j) += w * (shape_p_[i] * (A_p * shape_p_[j] + exact_mass_p)
+                                    + B_p * shape_p_[j] * Bpi_metric_gradp
+                                    + base.B * Bpi_metric_Bpj);
                }
-               J11(i, j) += w * (shape_p_[i] * A_p * shape_p_[j]
-                                 + B_p * shape_p_[j] * Bpi_gradp
-                                 + base.B * Bpi_Bpj
-                                 - C_p * shape_p_[j] * g_Bpi
-                                 + (ale_mass_enabled_ ? (H_p * shape_p_[j] * wmesh_Bpi) : 0.0));
+               else
+               {
+                  J11(i, j) += w * (shape_p_[i] * A_p * shape_p_[j]
+                                    + B_p * shape_p_[j] * Bpi_metric_gradp
+                                    + base.B * Bpi_metric_Bpj
+                                    - C_p * shape_p_[j] * Fg_Bpi
+                                    + (ale_mass_enabled_ ?
+                                          (H_p * shape_p_[j] * Fw_Bpi) :
+                                          0.0));
+               }
             }
          }
 
          for (int i = 0; i < dof_T; ++i)
          {
-            double BTi_gradT = 0.0;
-            double BTi_gradp = 0.0;
-            double g_BTi = 0.0;
-            double wmesh_BTi = 0.0;
-            for (int d = 0; d < dim; ++d)
-            {
-               BTi_gradT += dshape_T_(i, d) * gradT_[d];
-               BTi_gradp += dshape_T_(i, d) * gradp_[d];
-               g_BTi += gravity_[d] * dshape_T_(i, d);
-               wmesh_BTi += mesh_velocity_q_[d] * dshape_T_(i, d);
-            }
+            const double BTi_metric_gradT = MetricDot(geom.metric, dshape_T_, i, gradT_);
+            const double BTi_metric_gradp = MetricDot(geom.metric, dshape_T_, i, gradp_);
+            const double Fg_BTi = RowDot(dshape_T_, i, geom.Fg);
+            const double Fw_BTi = RowDot(dshape_T_, i, geom.Fw);
 
             for (int j = 0; j < dof_T; ++j)
             {
-               double BTi_BTj = 0.0;
-               for (int d = 0; d < dim; ++d)
+               const double BTi_metric_BTj =
+                  MetricEntry(geom.metric, dshape_T_, i, dshape_T_, j);
+               if (use_exact_ale_energy_form)
                {
-                  BTi_BTj += dshape_T_(i, d) * dshape_T_(j, d);
+                  const double Fw_BTj = RowDot(dshape_T_, j, geom.Fw);
+                  const double solid_adv_T =
+                     -(solid_heatcap_T * shape_T_[j] * (T * geom.divFw + Fw_gradT)
+                       + base.solid_heatcap *
+                            (shape_T_[j] * geom.divFw + Fw_BTj));
+                  const double gas_adv_T =
+                     -(base.gas_energy_dT * shape_T_[j] * geom.divFw
+                       + gas_energy_dT_T * shape_T_[j] * Fw_gradT
+                       + base.gas_energy_dT * Fw_BTj
+                       + gas_energy_dp_T * shape_T_[j] * Fw_gradp);
+                  J00(i, j) += w * (shape_T_[i] *
+                                       (D_T * shape_T_[j] + solid_adv_T + gas_adv_T)
+                                    + E_T * shape_T_[j] * BTi_metric_gradT
+                                    + base.E * BTi_metric_BTj
+                                    + F_T * shape_T_[j] * BTi_metric_gradp);
                }
-               J00(i, j) += w * (shape_T_[i] * D_T * shape_T_[j]
-                                 + E_T * shape_T_[j] * BTi_gradT
-                                 + base.E * BTi_BTj
-                                 + F_T * shape_T_[j] * BTi_gradp
-                                 - G_T * shape_T_[j] * g_BTi
-                                 + ((ale_energy_solid_enabled_ || ale_energy_gas_enabled_)
-                                       ? (I_T * shape_T_[j] * wmesh_BTi)
-                                       : 0.0));
+               else
+               {
+                  J00(i, j) += w * (shape_T_[i] * D_T * shape_T_[j]
+                                    + E_T * shape_T_[j] * BTi_metric_gradT
+                                    + base.E * BTi_metric_BTj
+                                    + F_T * shape_T_[j] * BTi_metric_gradp
+                                    - G_T * shape_T_[j] * Fg_BTi
+                                    + ((ale_energy_solid_enabled_ || ale_energy_gas_enabled_)
+                                          ? (I_T * shape_T_[j] * Fw_BTi)
+                                          : 0.0));
+               }
             }
 
             for (int j = 0; j < dof_p; ++j)
             {
-               double BTi_Bpj = 0.0;
-               for (int d = 0; d < dim; ++d)
+               const double BTi_metric_Bpj =
+                  MetricEntry(geom.metric, dshape_T_, i, dshape_p_, j);
+               if (use_exact_ale_energy_form)
                {
-                  BTi_Bpj += dshape_T_(i, d) * dshape_p_(j, d);
+                  const double Fw_Bpj = RowDot(dshape_p_, j, geom.Fw);
+                  const double solid_adv_p =
+                     -(solid_heatcap_p * shape_p_[j] * (T * geom.divFw + Fw_gradT));
+                  const double gas_adv_p =
+                     -(base.gas_energy_dp * shape_p_[j] * geom.divFw
+                       + gas_energy_dT_p * shape_p_[j] * Fw_gradT
+                       + gas_energy_dp_p * shape_p_[j] * Fw_gradp
+                       + base.gas_energy_dp * Fw_Bpj);
+                  J01(i, j) += w * (shape_T_[i] *
+                                       (D_p * shape_p_[j] + solid_adv_p + gas_adv_p)
+                                    + E_p * shape_p_[j] * BTi_metric_gradT
+                                    + F_p * shape_p_[j] * BTi_metric_gradp
+                                    + base.F * BTi_metric_Bpj);
                }
-               J01(i, j) += w * (shape_T_[i] * D_p * shape_p_[j]
-                                 + E_p * shape_p_[j] * BTi_gradT
-                                 + F_p * shape_p_[j] * BTi_gradp
-                                 + base.F * BTi_Bpj
-                                 - G_p * shape_p_[j] * g_BTi
-                                 + ((ale_energy_solid_enabled_ || ale_energy_gas_enabled_)
-                                       ? (I_p * shape_p_[j] * wmesh_BTi)
-                                       : 0.0));
+               else
+               {
+                  J01(i, j) += w * (shape_T_[i] * D_p * shape_p_[j]
+                                    + E_p * shape_p_[j] * BTi_metric_gradT
+                                    + F_p * shape_p_[j] * BTi_metric_gradp
+                                    + base.F * BTi_metric_Bpj
+                                    - G_p * shape_p_[j] * Fg_BTi
+                                    + ((ale_energy_solid_enabled_ || ale_energy_gas_enabled_)
+                                          ? (I_p * shape_p_[j] * Fw_BTi)
+                                          : 0.0));
+               }
             }
          }
       }
@@ -2135,7 +2568,6 @@ private:
       dshape_p_.SetSize(dof_p, dim);
       gradT_.SetSize(dim);
       gradp_.SetSize(dim);
-      mesh_velocity_q_.SetSize(dim);
 
       const IntegrationRule &ir = IntRules.Get(fe_T.GetGeomType(), quad_order_);
       MFEM_VERIFY(Tr.ElementNo >= 0, "Invalid element number while assembling residual.");
@@ -2171,12 +2603,6 @@ private:
                gradp_[d] += elp[j] * dshape_p_(j, d);
             }
          }
-         mesh_velocity_q_ = 0.0;
-         if ((ale_mass_enabled_ || ale_energy_solid_enabled_ || ale_energy_gas_enabled_) &&
-             mesh_velocity_coeff_)
-         {
-            mesh_velocity_coeff_->Eval(mesh_velocity_q_, Tr, ip);
-         }
 
          const double T_old = T_old_coeff_.Eval(Tr, ip);
          const double p_old = p_old_coeff_.Eval(Tr, ip);
@@ -2206,110 +2632,121 @@ private:
          const double h_rho_darcy = gas.h * rho_darcy;
          const double h_rho2_darcy = gas.h * rho2_darcy;
 
-         double storage_p =
-            (solid.eps_g * gas.rho - solid_old.eps_g * gas_old.rho) / dt_;
-         if (ale_mass_enabled_ && solid_ale_J_old_qp_ &&
-             Tr.ElementNo >= 0 &&
-             Tr.ElementNo < static_cast<int>(solid_ale_J_old_qp_->size()) &&
-             q < static_cast<int>((*solid_ale_J_old_qp_)[Tr.ElementNo].size()))
-         {
-            const double J_new = Tr.Weight();
-            const double J_old = (*solid_ale_J_old_qp_)[Tr.ElementNo][q];
-            if (J_new > 0.0 && J_old > 0.0)
-            {
-               const double e_m_new = solid.eps_g * gas.rho;
-               const double e_m_old = solid_old.eps_g * gas_old.rho;
-               // GCL-consistent mass storage on the moving mesh.
-               storage_p = (J_new * e_m_new - J_old * e_m_old) / (J_new * dt_);
-            }
-         }
-         const double source_p = solid.pi_total;
+         AleGeometry geom;
+         EvaluateAleGeometry(Tr, ip, geom);
 
-         double solid_storage = solid.rho_s * solid.cp * (T - T_old) / dt_;
-         if (ale_energy_solid_enabled_ && solid_ale_J_old_qp_ &&
-             Tr.ElementNo >= 0 &&
-             Tr.ElementNo < static_cast<int>(solid_ale_J_old_qp_->size()) &&
-             q < static_cast<int>((*solid_ale_J_old_qp_)[Tr.ElementNo].size()))
+         const MassStorageData mass_storage =
+            EvaluateMassStorageData(T, p, old_state, solid, gas);
+         const MassStorageData solid_heatcap_data =
+            EvaluateSolidHeatCapacityData(T, p, old_state, solid);
+         const MassStorageData gas_energy_data =
+            EvaluateGasEnergyData(T, p, old_state, solid, gas);
+         const double e_m_new = mass_storage.value;
+         const double e_m_old = solid_old.eps_g * gas_old.rho;
+         const double solid_heatcap = solid_heatcap_data.value;
+         const double e_g_new = gas_energy_data.value;
+         const double e_g_old = solid_old.eps_g * (gas_old.rho * gas_old.h - p_old);
+
+         double storage_p = (e_m_new - e_m_old) / dt_;
+         double solid_storage = solid_heatcap * ((T - T_old) / dt_);
+         double gas_storage = (e_g_new - e_g_old) / dt_;
+         double source_p = solid.pi_total;
+         double pyro_sink = solid.pyrolysis_heat_sink;
+
+         if (UseReferenceAleGeometry())
          {
-            const double J_new = Tr.Weight();
-            const double J_old = (*solid_ale_J_old_qp_)[Tr.ElementNo][q];
-            if (J_new > 0.0 && J_old > 0.0)
+            if (ale_mass_enabled_)
             {
-               const double e_s_new = solid.rho_s * solid.cp * T;
-               const double e_s_old = solid_old.rho_s * solid_old.cp * T_old;
-               // GCL-consistent solid storage on the moving mesh.
-               solid_storage = (J_new * e_s_new - J_old * e_s_old) / (J_new * dt_);
+               storage_p = (geom.J_new * e_m_new - geom.J_old * e_m_old) / dt_;
             }
-         }
-         double gas_storage =
-            (solid.eps_g * (gas.rho * gas.h - p) -
-             solid_old.eps_g * (gas_old.rho * gas_old.h - p_old)) / dt_;
-         if (ale_energy_gas_enabled_ && solid_ale_J_old_qp_ &&
-             Tr.ElementNo >= 0 &&
-             Tr.ElementNo < static_cast<int>(solid_ale_J_old_qp_->size()) &&
-             q < static_cast<int>((*solid_ale_J_old_qp_)[Tr.ElementNo].size()))
-         {
-            const double J_new = Tr.Weight();
-            const double J_old = (*solid_ale_J_old_qp_)[Tr.ElementNo][q];
-            if (J_new > 0.0 && J_old > 0.0)
+            else
             {
-               const double e_g_new = solid.eps_g * (gas.rho * gas.h - p);
-               const double e_g_old = solid_old.eps_g * (gas_old.rho * gas_old.h - p_old);
-               // GCL-consistent gas storage on the moving mesh.
-               gas_storage = (J_new * e_g_new - J_old * e_g_old) / (J_new * dt_);
+               storage_p = geom.J_new * (e_m_new - e_m_old) / dt_;
             }
+            source_p = geom.J_new * solid.pi_total;
+
+            if (ale_energy_solid_enabled_)
+            {
+               solid_storage = solid_heatcap * ((geom.J_new * T - geom.J_old * T_old) / dt_);
+            }
+            else
+            {
+               solid_storage = geom.J_new * solid_heatcap * ((T - T_old) / dt_);
+            }
+
+            if (ale_energy_gas_enabled_)
+            {
+               gas_storage = (geom.J_new * e_g_new - geom.J_old * e_g_old) / dt_;
+            }
+            else
+            {
+               gas_storage = geom.J_new * ((e_g_new - e_g_old) / dt_);
+            }
+            pyro_sink = geom.J_new * solid.pyrolysis_heat_sink;
          }
-         const double ale_mass_storage = solid.eps_g * gas.rho;
-         const double ale_energy_storage_solid = solid.rho_s * solid.cp * T;
-         const double ale_energy_storage_gas = solid.eps_g * (gas.rho * gas.h - p);
+
+         const double ale_mass_storage = e_m_new;
+         const double ale_energy_storage_solid = solid_heatcap * T;
+         const double ale_energy_storage_gas = e_g_new;
          const double ale_energy_storage =
             (ale_energy_solid_enabled_ ? ale_energy_storage_solid : 0.0) +
             (ale_energy_gas_enabled_ ? ale_energy_storage_gas : 0.0);
 
          const double w = ip.weight * Tr.Weight();
+         const bool use_exact_ale_mass_form =
+            (ale_mass_enabled_ && UseReferenceAleGeometry());
+         const bool use_exact_ale_energy_form = UseExactAleEnergyForm();
+         const double exact_ale_mass_storage =
+            use_exact_ale_mass_form ?
+               (e_m_new * geom.divFw +
+                mass_storage.dT * VectorDot(geom.Fw, gradT_) +
+                mass_storage.dp * VectorDot(geom.Fw, gradp_)) :
+               0.0;
+         const double exact_ale_solid_energy_transport =
+            use_exact_ale_energy_form ?
+               (solid_heatcap * (T * geom.divFw + VectorDot(geom.Fw, gradT_))) :
+               0.0;
+         const double exact_ale_gas_energy_transport =
+            use_exact_ale_energy_form ?
+               (e_g_new * geom.divFw +
+                gas_energy_data.dT * VectorDot(geom.Fw, gradT_) +
+                gas_energy_data.dp * VectorDot(geom.Fw, gradp_)) :
+               0.0;
 
          for (int i = 0; i < dof_p; ++i)
          {
-            double grad_dot = 0.0;
-            double g_dot = 0.0;
-            double wmesh_dot = 0.0;
-            for (int d = 0; d < dim; ++d)
-            {
-               grad_dot += dshape_p_(i, d) * gradp_[d];
-               g_dot += gravity_[d] * dshape_p_(i, d);
-               wmesh_dot += mesh_velocity_q_[d] * dshape_p_(i, d);
-            }
+            const double metric_gradp = MetricDot(geom.metric, dshape_p_, i, gradp_);
+            const double g_dot = RowDot(dshape_p_, i, geom.Fg);
+            const double wmesh_dot = RowDot(dshape_p_, i, geom.Fw);
 
             const double ale_mass_term =
-               ale_mass_enabled_ ? (ale_mass_storage * wmesh_dot) : 0.0;
+               use_exact_ale_mass_form ?
+                  (-shape_p_[i] * exact_ale_mass_storage) :
+                  (ale_mass_enabled_ ? (ale_mass_storage * wmesh_dot) : 0.0);
             rp[i] += w * (shape_p_[i] * (storage_p - source_p)
-                          + rho_darcy * grad_dot
-                          - rho2_darcy * g_dot
+                          + rho_darcy * metric_gradp
+                          - (use_exact_ale_mass_form ? 0.0 : rho2_darcy * g_dot)
                           + ale_mass_term);
          }
 
          for (int i = 0; i < dof_T; ++i)
          {
-            double gradT_dot = 0.0;
-            double gradp_dot = 0.0;
-            double g_dot = 0.0;
-            double wmesh_dot = 0.0;
-            for (int d = 0; d < dim; ++d)
-            {
-               gradT_dot += dshape_T_(i, d) * gradT_[d];
-               gradp_dot += dshape_T_(i, d) * gradp_[d];
-               g_dot += gravity_[d] * dshape_T_(i, d);
-               wmesh_dot += mesh_velocity_q_[d] * dshape_T_(i, d);
-            }
+            const double gradT_dot = MetricDot(geom.metric, dshape_T_, i, gradT_);
+            const double gradp_dot = MetricDot(geom.metric, dshape_T_, i, gradp_);
+            const double g_dot = RowDot(dshape_T_, i, geom.Fg);
+            const double wmesh_dot = RowDot(dshape_T_, i, geom.Fw);
 
             const double ale_energy_term =
-               (ale_energy_solid_enabled_ || ale_energy_gas_enabled_) ?
+               use_exact_ale_energy_form ?
+                  (-shape_T_[i] *
+                   (exact_ale_solid_energy_transport + exact_ale_gas_energy_transport)) :
+                  ((ale_energy_solid_enabled_ || ale_energy_gas_enabled_) ?
                   (ale_energy_storage * wmesh_dot) :
-                  0.0;
-            rT[i] += w * (shape_T_[i] * (solid_storage + gas_storage - solid.pyrolysis_heat_sink)
+                  0.0);
+            rT[i] += w * (shape_T_[i] * (solid_storage + gas_storage - pyro_sink)
                           + solid.k * gradT_dot
                           + h_rho_darcy * gradp_dot
-                          - h_rho2_darcy * g_dot
+                          - (use_exact_ale_energy_form ? 0.0 : h_rho2_darcy * g_dot)
                           + ale_energy_term);
          }
       }
@@ -2324,13 +2761,15 @@ private:
    int quad_order_ = 2;
    double dt_ = 1.0;
    Vector gravity_;
-   VectorCoefficient *mesh_velocity_coeff_ = nullptr;
    bool ale_mass_enabled_ = false;
    bool ale_energy_solid_enabled_ = false;
    bool ale_energy_gas_enabled_ = false;
-   const vector<vector<double>> *solid_ale_J_old_qp_ = nullptr;
    JacobianCheckOptions jac_check_;
    bool jacobian_checked_ = false;
+
+   const ParGridFunction *ale_displacement_old_gf_ = nullptr;
+   const ParGridFunction *ale_displacement_gf_ = nullptr;
+   const ParGridFunction *mesh_velocity_gf_ = nullptr;
 
    mutable Vector shape_T_;
    mutable Vector shape_p_;
@@ -3447,6 +3886,53 @@ void AssembleTopBoundaryRecessionVelocity(
    top_recession_velocity_true = filtered;
 }
 
+double ClampAndAverageTopRecessionVelocity(const Array<int> &top_tdofs,
+                                           const double dt,
+                                           const double max_step_recession,
+                                           Vector &top_recession_velocity_true,
+                                           MPI_Comm comm)
+{
+   double max_velocity = numeric_limits<double>::infinity();
+   if (std::isfinite(max_step_recession) &&
+       max_step_recession > 0.0 &&
+       dt > 0.0)
+   {
+      max_velocity = max_step_recession / dt;
+   }
+
+   Vector filtered(top_recession_velocity_true.Size());
+   filtered = 0.0;
+
+   double local_sum = 0.0;
+   double local_count = 0.0;
+   for (int i = 0; i < top_tdofs.Size(); ++i)
+   {
+      const int tdof = top_tdofs[i];
+      double v = top_recession_velocity_true(tdof);
+      if (!std::isfinite(v) || v <= 0.0)
+      {
+         v = 0.0;
+      }
+      if (std::isfinite(max_velocity))
+      {
+         v = std::min(v, max_velocity);
+      }
+      filtered(tdof) = v;
+      local_sum += v;
+      local_count += 1.0;
+   }
+   top_recession_velocity_true = filtered;
+
+   double local_data[2] = {local_sum, local_count};
+   double global_data[2] = {0.0, 0.0};
+   MPI_Allreduce(local_data, global_data, 2, MPI_DOUBLE, MPI_SUM, comm);
+   if (global_data[1] <= 0.0)
+   {
+      return 0.0;
+   }
+   return global_data[0] / global_data[1];
+}
+
 double SampleFieldAtPoint(ParMesh &pmesh, const ParGridFunction &gf,
                           const double x, const double y)
 {
@@ -4446,9 +4932,23 @@ int main(int argc, char *argv[])
       jac_check_opts.rel_tol = params.jacobian_check_rel_tol;
 
       unique_ptr<MeshRecessionHandler> recession_handler;
-      unique_ptr<VectorGridFunctionCoefficient> mesh_velocity_coeff;
       Vector top_recession_velocity_true;
-      Array<int> amaryllis_recession_top_tdofs;
+      Array<int> top_recession_tdofs;
+      unique_ptr<ParGridFunction> ale_displacement;
+      unique_ptr<ParGridFunction> ale_displacement_old;
+      unique_ptr<ParGridFunction> ale_jacobian_gf;
+      unique_ptr<ParGridFunction> recession_gf;
+      unique_ptr<ParMesh> diagnostic_pmesh;
+      unique_ptr<ParFiniteElementSpace> fes_T_diag;
+      unique_ptr<ParFiniteElementSpace> fes_p_diag;
+      unique_ptr<ParFiniteElementSpace> fes_diag_live;
+      unique_ptr<ParGridFunction> reference_nodes_diag;
+      unique_ptr<ParGridFunction> T_diag;
+      unique_ptr<ParGridFunction> p_diag;
+      unique_ptr<ParGridFunction> tau_diag;
+      unique_ptr<ParGridFunction> mesh_velocity_diag;
+      unique_ptr<ParGridFunction> ale_displacement_diag;
+      double diagnostic_initial_min_quality = 1.0;
       const bool ale_mass_active =
          (params.ale_enabled && params.ale_mass_enabled && params.moving_mesh);
       const bool ale_energy_solid_active =
@@ -4469,21 +4969,69 @@ int main(int argc, char *argv[])
          recession_handler = make_unique<MeshRecessionHandler>(*pmesh, rec_cfg);
          top_recession_velocity_true.SetSize(recession_handler->ScalarSpace().TrueVSize());
          top_recession_velocity_true = 0.0;
-         if (use_amaryllis_recession_history)
+         Array<int> top_marker(pmesh->bdr_attributes.Max());
+         top_marker = 0;
+         if (params.bdr_attr_top >= 1 && params.bdr_attr_top <= top_marker.Size())
          {
-            Array<int> top_marker(pmesh->bdr_attributes.Max());
-            top_marker = 0;
-            if (params.bdr_attr_top >= 1 && params.bdr_attr_top <= top_marker.Size())
-            {
-               top_marker[params.bdr_attr_top - 1] = 1;
-            }
-            recession_handler->ScalarSpace().GetEssentialTrueDofs(
-               top_marker, amaryllis_recession_top_tdofs);
+            top_marker[params.bdr_attr_top - 1] = 1;
          }
-         auto *mesh_vel =
-            const_cast<ParGridFunction *>(&recession_handler->MeshVelocity());
-         mesh_velocity_coeff =
-            make_unique<VectorGridFunctionCoefficient>(mesh_vel);
+         recession_handler->ScalarSpace().GetEssentialTrueDofs(
+            top_marker, top_recession_tdofs);
+
+         auto *ale_vector_fes =
+            dynamic_cast<ParFiniteElementSpace *>(pmesh->GetNodes()->FESpace());
+         MFEM_VERIFY(ale_vector_fes != nullptr,
+                     "Moving-mesh ALE output requires nodal ParFiniteElementSpace.");
+         ale_displacement = make_unique<ParGridFunction>(ale_vector_fes);
+         ale_displacement_old = make_unique<ParGridFunction>(ale_vector_fes);
+         *ale_displacement = 0.0;
+         *ale_displacement_old = 0.0;
+
+         ale_jacobian_gf =
+            make_unique<ParGridFunction>(
+               const_cast<ParFiniteElementSpace *>(&recession_handler->ScalarSpace()));
+         recession_gf =
+            make_unique<ParGridFunction>(
+               const_cast<ParFiniteElementSpace *>(&recession_handler->ScalarSpace()));
+         *ale_jacobian_gf = 1.0;
+         *recession_gf = 0.0;
+
+         diagnostic_pmesh = make_unique<ParMesh>(*pmesh, true);
+         diagnostic_initial_min_quality = ComputeMinElementQuality(*diagnostic_pmesh);
+         if (!(diagnostic_initial_min_quality > 0.0))
+         {
+            throw runtime_error(
+               "Invalid initial diagnostic mesh quality for ALE output.");
+         }
+
+         auto *diag_nodes =
+            dynamic_cast<ParGridFunction *>(diagnostic_pmesh->GetNodes());
+         auto *diag_nodes_fes =
+            diag_nodes ?
+               dynamic_cast<ParFiniteElementSpace *>(diag_nodes->FESpace()) :
+               nullptr;
+         MFEM_VERIFY(diag_nodes != nullptr && diag_nodes_fes != nullptr,
+                     "Diagnostic ALE mesh requires nodal ParGridFunction coordinates.");
+
+         reference_nodes_diag = make_unique<ParGridFunction>(diag_nodes_fes);
+         *reference_nodes_diag = *diag_nodes;
+         ale_displacement_diag = make_unique<ParGridFunction>(diag_nodes_fes);
+         mesh_velocity_diag = make_unique<ParGridFunction>(diag_nodes_fes);
+         *ale_displacement_diag = 0.0;
+         *mesh_velocity_diag = 0.0;
+
+         fes_T_diag = make_unique<ParFiniteElementSpace>(diagnostic_pmesh.get(), &fec);
+         fes_p_diag = make_unique<ParFiniteElementSpace>(diagnostic_pmesh.get(), &fec);
+         fes_diag_live = make_unique<ParFiniteElementSpace>(diagnostic_pmesh.get(), &l2_fec);
+         T_diag = make_unique<ParGridFunction>(fes_T_diag.get());
+         p_diag = make_unique<ParGridFunction>(fes_p_diag.get());
+         tau_diag = make_unique<ParGridFunction>(fes_diag_live.get());
+         CopyParGridFunctionByTrueDofs(T, *T_diag);
+         CopyParGridFunctionByTrueDofs(p, *p_diag);
+         ApplyElementScalar(*fes_diag_live, state_manager.TauElement(), *tau_diag);
+         UpdateDiagnosticMeshGeometry(*reference_nodes_diag,
+                                      *ale_displacement_diag,
+                                      *diagnostic_pmesh);
       }
 
       auto *tp_integrator =
@@ -4493,13 +5041,15 @@ int main(int argc, char *argv[])
                                   p_old,
                                   quad_order,
                                   gravity,
-                                  mesh_velocity_coeff.get(),
                                   ale_mass_active,
                                   ale_energy_solid_active,
                                   ale_energy_gas_active,
                                   jac_check_opts);
-      vector<vector<double>> solid_ale_J_old_qp;
-      tp_integrator->SetSolidAleOldJacobians(&solid_ale_J_old_qp);
+      tp_integrator->SetAleFields(ale_displacement_old.get(),
+                                  ale_displacement.get(),
+                                  recession_handler ?
+                                     &recession_handler->MeshVelocity() :
+                                     nullptr);
       // The workshop variant prescribes both T and p on the top boundary, so
       // it never attaches the surface energy-balance operator.
       SurfaceEnergyBalanceIntegrator *surf_integrator = nullptr;
@@ -4654,10 +5204,15 @@ int main(int argc, char *argv[])
          timing_step_csv << setprecision(16);
       }
 
+      unique_ptr<AleJacobianCoefficient> ale_jacobian_coeff;
+      if (ale_displacement)
+      {
+         ale_jacobian_coeff =
+            make_unique<AleJacobianCoefficient>(*ale_displacement);
+      }
+
       ParaViewDataCollection paraview_dc(params.collection_name.c_str(), pmesh.get());
-      double recession_total = recession_handler ?
-                                  recession_handler->TotalRecession() :
-                                  0.0;
+      double recession_total = 0.0;
       if (params.save_paraview)
       {
          paraview_dc.SetPrefixPath(params.output_path.c_str());
@@ -4676,10 +5231,13 @@ int main(int argc, char *argv[])
          {
             auto *mesh_vel =
                const_cast<ParGridFunction *>(&recession_handler->MeshVelocity());
-            auto *recession_diag =
-               const_cast<ParGridFunction *>(&recession_handler->RecessionField());
             paraview_dc.RegisterField("mesh_velocity", mesh_vel);
-            paraview_dc.RegisterField("recession", recession_diag);
+         }
+         if (ale_displacement && ale_jacobian_gf && recession_gf)
+         {
+            paraview_dc.RegisterField("ale_displacement", ale_displacement.get());
+            paraview_dc.RegisterField("ale_jacobian", ale_jacobian_gf.get());
+            paraview_dc.RegisterField("recession", recession_gf.get());
          }
          for (int r = 0; r < state_manager.NumReactions(); ++r)
          {
@@ -4700,7 +5258,35 @@ int main(int argc, char *argv[])
             ApplyElementScalar(fes_diag, state_manager.ExtentElement(r), *extent_gf[r]);
          }
 
-         const Bounds live_bounds = GetGlobalBounds(*pmesh);
+         if (ale_displacement && ale_jacobian_gf && recession_gf)
+         {
+            ale_jacobian_gf->ProjectCoefficient(*ale_jacobian_coeff);
+            *recession_gf = recession_total;
+         }
+
+         if (diagnostic_pmesh)
+         {
+            CopyParGridFunctionByTrueDofs(T, *T_diag);
+            CopyParGridFunctionByTrueDofs(p, *p_diag);
+            CopyParGridFunctionByTrueDofs(recession_handler->MeshVelocity(),
+                                          *mesh_velocity_diag);
+            CopyParGridFunctionByTrueDofs(*ale_displacement,
+                                          *ale_displacement_diag);
+            ApplyElementScalar(*fes_diag_live, state_manager.TauElement(), *tau_diag);
+            UpdateDiagnosticMeshGeometry(*reference_nodes_diag,
+                                         *ale_displacement_diag,
+                                         *diagnostic_pmesh);
+         }
+
+         ParMesh &sample_mesh = diagnostic_pmesh ? *diagnostic_pmesh : *pmesh;
+         const ParGridFunction &sample_T = diagnostic_pmesh ? *T_diag : T;
+         const ParGridFunction &sample_p = diagnostic_pmesh ? *p_diag : p;
+         const ParGridFunction &sample_tau = diagnostic_pmesh ? *tau_diag : tau_gf;
+         const ParGridFunction *sample_mesh_velocity =
+            diagnostic_pmesh ? mesh_velocity_diag.get() :
+            (recession_handler ? &recession_handler->MeshVelocity() : nullptr);
+
+         const Bounds live_bounds = GetGlobalBounds(sample_mesh);
          const double y_top_live = live_bounds.ymax;
          const double y_bottom_live = live_bounds.ymin;
          const double y_span = std::max(1.0e-12, y_top_live - y_bottom_live);
@@ -4709,15 +5295,15 @@ int main(int argc, char *argv[])
          const double y_max_sample = y_top_live - y_inset;
          const auto sample_temperature_at_y = [&](const double y_query)
          {
-            return SampleFieldAtPoint(*pmesh, T, params.probe_x, y_query);
+            return SampleFieldAtPoint(sample_mesh, sample_T, params.probe_x, y_query);
          };
          const auto sample_pressure_at_y = [&](const double y_query)
          {
-            return SampleFieldAtPoint(*pmesh, p, params.probe_x, y_query);
+            return SampleFieldAtPoint(sample_mesh, sample_p, params.probe_x, y_query);
          };
          const auto sample_mesh_diag_at_y = [&](const double y_query)
          {
-            if (!recession_handler)
+            if (sample_mesh_velocity == nullptr)
             {
                VectorDivSample zero;
                zero.wx = 0.0;
@@ -4726,15 +5312,15 @@ int main(int argc, char *argv[])
                return zero;
             }
             return SampleVectorFieldAndDivergenceAtPoint(
-               *pmesh, recession_handler->MeshVelocity(), params.probe_x, y_query);
+               sample_mesh, *sample_mesh_velocity, params.probe_x, y_query);
          };
          const auto sample_mass_eq_diag_at_y = [&](const double y_query)
          {
-            return SampleMassEqProbeAtPoint(*pmesh,
-                                           fes_T,
-                                           fes_p,
-                                           T,
-                                           p,
+            return SampleMassEqProbeAtPoint(sample_mesh,
+                                           diagnostic_pmesh ? *fes_T_diag : fes_T,
+                                           diagnostic_pmesh ? *fes_p_diag : fes_p,
+                                           sample_T,
+                                           sample_p,
                                            material,
                                            state_manager,
                                            gravity,
@@ -4850,11 +5436,11 @@ int main(int argc, char *argv[])
          }
 
          const SurfaceBoundaryDiagnostics bdiag =
-            ComputeTopBoundaryDiagnostics(*pmesh,
-                                          fes_T,
-                                          fes_p,
-                                          T,
-                                          p,
+            ComputeTopBoundaryDiagnostics(sample_mesh,
+                                          diagnostic_pmesh ? *fes_T_diag : fes_T,
+                                          diagnostic_pmesh ? *fes_p_diag : fes_p,
+                                          sample_T,
+                                          sample_p,
                                           material,
                                           state_manager,
                                           bprime_table,
@@ -4866,9 +5452,9 @@ int main(int argc, char *argv[])
                                           time,
                                           true);
          const double mdot_surf = bdiag.m_dot_g_surf;
-         const double front98 = ComputeFrontDepth(*pmesh, tau_gf, xmid,
+         const double front98 = ComputeFrontDepth(sample_mesh, sample_tau, xmid,
                                                   y_top_live, y_bottom_live, 0.98);
-         const double front2 = ComputeFrontDepth(*pmesh, tau_gf, xmid,
+         const double front2 = ComputeFrontDepth(sample_mesh, sample_tau, xmid,
                                                  y_top_live, y_bottom_live, 0.02);
 
          if (myid == 0)
@@ -5013,17 +5599,16 @@ int main(int argc, char *argv[])
 
          if (recession_handler)
          {
-            // PATO-like ordering: compute and apply mesh motion before the PDE
-            // solve, using the previous-step state/solution to define the
-            // current-step mesh velocity.
+            *ale_displacement_old = *ale_displacement;
+
             if (use_amaryllis_recession_history)
             {
                const double v_rec_amaryllis =
                   amaryllis_recession_history.AverageRate(time_prev, time);
                top_recession_velocity_true = 0.0;
-               for (int i = 0; i < amaryllis_recession_top_tdofs.Size(); ++i)
+               for (int i = 0; i < top_recession_tdofs.Size(); ++i)
                {
-                  const int tdof = amaryllis_recession_top_tdofs[i];
+                  const int tdof = top_recession_tdofs[i];
                   if (tdof >= 0 && tdof < top_recession_velocity_true.Size())
                   {
                      top_recession_velocity_true(tdof) = v_rec_amaryllis;
@@ -5051,33 +5636,50 @@ int main(int argc, char *argv[])
                                                     top_recession_velocity_true);
             }
 
+            const double applied_top_mean_velocity =
+               ClampAndAverageTopRecessionVelocity(top_recession_tdofs,
+                                                   dt_step,
+                                                   params.max_step_recession,
+                                                   top_recession_velocity_true,
+                                                   pmesh->GetComm());
+
             RecessionStepInput rec_input;
             rec_input.dt = dt_step;
             rec_input.top_recession_velocity_true = &top_recession_velocity_true;
-
-            // Compute mesh velocity via Laplacian smoothing but do NOT move
-            // the mesh yet. The velocity is also used by the ALE remap below.
             recession_handler->PrepareAdvance(rec_input);
 
-            // ALE-remap the stored pyrolysis extents onto the post-move QP
-            // locations before committing the mesh motion.
-            RemapExtentsALE(state_manager,
-                            *pmesh,
-                            fes_T,
-                            recession_handler->MeshVelocity(),
-                            quad_order,
-                            dt_step);
+            *ale_displacement = *ale_displacement_old;
+            ale_displacement->Add(dt_step, recession_handler->MeshVelocity());
+            recession_total += applied_top_mean_velocity * dt_step;
 
-            if (ale_mass_active || ale_energy_solid_active || ale_energy_gas_active)
+            tp_integrator->SetAleFields(ale_displacement_old.get(),
+                                        ale_displacement.get(),
+                                        &recession_handler->MeshVelocity());
+
+            if (diagnostic_pmesh)
             {
-               CaptureElementQPJacobians(fes_T, quad_order, solid_ale_J_old_qp);
-            }
+               CopyParGridFunctionByTrueDofs(*ale_displacement,
+                                             *ale_displacement_diag);
+               UpdateDiagnosticMeshGeometry(*reference_nodes_diag,
+                                            *ale_displacement_diag,
+                                            *diagnostic_pmesh);
 
-            // Now move the mesh and finalise recession bookkeeping. The mesh
-            // velocity remains available to the PDE residual through the
-            // wrapped coefficient for this time step.
-            const RecessionStepOutput rec_output = recession_handler->CommitAdvance();
-            recession_total = rec_output.total_recession;
+               const double diagnostic_min_quality =
+                  ComputeMinElementQuality(*diagnostic_pmesh);
+               if (!(diagnostic_min_quality > 0.0))
+               {
+                  throw runtime_error(
+                     "Mesh quality failure: non-positive element Jacobian detected.");
+               }
+
+               const double diagnostic_quality_ratio =
+                  diagnostic_min_quality / diagnostic_initial_min_quality;
+               if (diagnostic_quality_ratio < params.min_quality_ratio)
+               {
+                  throw runtime_error(
+                     "Mesh quality ratio below configured minimum threshold.");
+               }
+            }
          }
 
          T_old = T;
