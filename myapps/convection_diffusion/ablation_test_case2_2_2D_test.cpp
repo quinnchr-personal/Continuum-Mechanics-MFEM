@@ -1721,6 +1721,35 @@ private:
    vector<double> char_density_fraction_elem_;
 };
 
+int FindNearestVolumeQuadraturePoint(const IntegrationRule &ir,
+                                     const ReactionStateManager &state_manager,
+                                     const int elem,
+                                     const IntegrationPoint &ip,
+                                     const char *context)
+{
+   MFEM_VERIFY(ir.GetNPoints() == state_manager.NumQPoints(elem),
+               string(context) + ": quadrature mismatch while locating face state.");
+   MFEM_VERIFY(ir.GetNPoints() > 0,
+               string(context) + ": empty element integration rule.");
+
+   int nearest_q = 0;
+   double min_d2 = numeric_limits<double>::max();
+   for (int q = 0; q < ir.GetNPoints(); ++q)
+   {
+      const IntegrationPoint &iq = ir.IntPoint(q);
+      const double dx = ip.x - iq.x;
+      const double dy = ip.y - iq.y;
+      const double dz = ip.z - iq.z;
+      const double d2 = dx * dx + dy * dy + dz * dz;
+      if (d2 < min_d2)
+      {
+         min_d2 = d2;
+         nearest_q = q;
+      }
+   }
+   return nearest_q;
+}
+
 class AblationTPIntegrator : public BlockNonlinearFormIntegrator
 {
 public:
@@ -1813,6 +1842,9 @@ private:
       double value = 0.0;
       double dT = 0.0;
       double dp = 0.0;
+      double dTT = 0.0;
+      double dTp = 0.0;
+      double dpp = 0.0;
    };
 
    struct AleStorageEvaluation
@@ -1827,6 +1859,14 @@ private:
       TACOTMaterial::InternalState state;
       TACOTMaterial::SolidProperties solid;
       TACOTMaterial::GasProperties gas;
+   };
+
+   struct MaterialDerivativeEvaluation
+   {
+      vector<double> dextent_dT;
+      vector<double> d2extent_dT2;
+      TACOTMaterial::SolidBulkDerivatives solid_bulk;
+      TACOTMaterial::GasSurfaceDerivatives gas_surface;
    };
 
    struct QPCoeffs
@@ -1845,6 +1885,32 @@ private:
       double solid_heatcap = 0.0; // rho_s * c_ps
       double gas_energy_dT = 0.0; // d(phi(rho_g h_g - p))/dT
       double gas_energy_dp = 0.0; // d(phi(rho_g h_g - p))/dp
+   };
+
+   struct QPCoeffDerivatives
+   {
+      double A_T = 0.0;
+      double A_p = 0.0;
+      double B_T = 0.0;
+      double B_p = 0.0;
+      double C_T = 0.0;
+      double C_p = 0.0;
+      double D_T = 0.0;
+      double D_p = 0.0;
+      double E_T = 0.0;
+      double E_p = 0.0;
+      double F_T = 0.0;
+      double F_p = 0.0;
+      double G_T = 0.0;
+      double G_p = 0.0;
+      double H_T = 0.0;
+      double H_p = 0.0;
+      double I_T = 0.0;
+      double I_p = 0.0;
+      double solid_heatcap_T = 0.0;
+      double solid_heatcap_p = 0.0;
+      double gas_energy_T = 0.0;
+      double gas_energy_p = 0.0;
    };
 
    bool UseReferenceAleGeometry() const
@@ -2021,13 +2087,32 @@ private:
       }
    }
 
+   MaterialDerivativeEvaluation EvaluateMaterialDerivatives(
+      const double T,
+      const double p,
+      const TACOTMaterial::InternalState &new_state) const
+   {
+      MaterialDerivativeEvaluation out;
+      out.dextent_dT = material_.EvaluateExtentTemperatureDerivative(T, new_state);
+      out.d2extent_dT2 =
+         material_.EvaluateExtentTemperatureSecondDerivative(
+            T, new_state, out.dextent_dT);
+      out.solid_bulk =
+         material_.EvaluateSolidBulkDerivatives(
+            T, p, new_state, out.dextent_dT, out.d2extent_dT2);
+      out.gas_surface =
+         material_.EvaluateGasSurfaceDerivatives(T, p, new_state);
+      return out;
+   }
+
    AleStorageEvaluation EvaluateAleStorageData(
       const double T,
       const double p,
       const TACOTMaterial::InternalState &old_state,
       const TACOTMaterial::InternalState &new_state,
       const TACOTMaterial::SolidProperties &solid,
-      const TACOTMaterial::GasProperties &gas) const
+      const TACOTMaterial::GasProperties &gas,
+      const MaterialDerivativeEvaluation *material_derivs = nullptr) const
    {
       (void)old_state;
       AleStorageEvaluation out;
@@ -2043,20 +2128,38 @@ private:
          return out;
       }
 
-      const std::vector<double> dextent_dT =
-         material_.EvaluateExtentTemperatureDerivative(T, new_state);
-
-      const TACOTMaterial::SolidBulkDerivatives solid_bulk_deriv =
-         material_.EvaluateSolidBulkDerivatives(T, p, new_state, dextent_dT);
-      const TACOTMaterial::GasSurfaceDerivatives gas_deriv =
-         material_.EvaluateGasSurfaceDerivatives(T, p, new_state);
+      MaterialDerivativeEvaluation local_derivs;
+      if (!material_derivs)
+      {
+         local_derivs = EvaluateMaterialDerivatives(T, p, new_state);
+         material_derivs = &local_derivs;
+      }
+      const TACOTMaterial::SolidBulkDerivatives &solid_bulk_deriv =
+         material_derivs->solid_bulk;
+      const TACOTMaterial::GasSurfaceDerivatives &gas_deriv =
+         material_derivs->gas_surface;
 
       if (need_mass)
       {
          out.mass.dT =
             solid_bulk_deriv.eps_g.dT * gas.rho +
             solid.eps_g * gas_deriv.rho.dT;
-         out.mass.dp = solid.eps_g * gas_deriv.rho.dp;
+         out.mass.dp =
+            solid_bulk_deriv.eps_g.dp * gas.rho +
+            solid.eps_g * gas_deriv.rho.dp;
+         out.mass.dTT =
+            solid_bulk_deriv.eps_g.dTT * gas.rho +
+            2.0 * solid_bulk_deriv.eps_g.dT * gas_deriv.rho.dT +
+            solid.eps_g * gas_deriv.rho.dTT;
+         out.mass.dTp =
+            solid_bulk_deriv.eps_g.dTp * gas.rho +
+            solid_bulk_deriv.eps_g.dT * gas_deriv.rho.dp +
+            solid_bulk_deriv.eps_g.dp * gas_deriv.rho.dT +
+            solid.eps_g * gas_deriv.rho.dTp;
+         out.mass.dpp =
+            solid_bulk_deriv.eps_g.dpp * gas.rho +
+            2.0 * solid_bulk_deriv.eps_g.dp * gas_deriv.rho.dp +
+            solid.eps_g * gas_deriv.rho.dpp;
       }
 
       if (need_energy)
@@ -2064,13 +2167,61 @@ private:
          out.solid_heatcap.dT =
             solid_bulk_deriv.rho_s.dT * solid.cp +
             solid.rho_s * solid_bulk_deriv.cp.dT;
-         out.solid_heatcap.dp = solid.rho_s * solid_bulk_deriv.cp.dp;
+         out.solid_heatcap.dp =
+            solid_bulk_deriv.rho_s.dp * solid.cp +
+            solid.rho_s * solid_bulk_deriv.cp.dp;
+         out.solid_heatcap.dTT =
+            solid_bulk_deriv.rho_s.dTT * solid.cp +
+            2.0 * solid_bulk_deriv.rho_s.dT * solid_bulk_deriv.cp.dT +
+            solid.rho_s * solid_bulk_deriv.cp.dTT;
+         out.solid_heatcap.dTp =
+            solid_bulk_deriv.rho_s.dTp * solid.cp +
+            solid_bulk_deriv.rho_s.dT * solid_bulk_deriv.cp.dp +
+            solid_bulk_deriv.rho_s.dp * solid_bulk_deriv.cp.dT +
+            solid.rho_s * solid_bulk_deriv.cp.dTp;
+         out.solid_heatcap.dpp =
+            solid_bulk_deriv.rho_s.dpp * solid.cp +
+            2.0 * solid_bulk_deriv.rho_s.dp * solid_bulk_deriv.cp.dp +
+            solid.rho_s * solid_bulk_deriv.cp.dpp;
+
+         const double gas_enthalpy_density = gas.rho * gas.h - p;
+         const double gas_enthalpy_density_dT =
+            gas.h * gas_deriv.rho.dT + gas.rho * gas_deriv.h.dT;
+         const double gas_enthalpy_density_dp =
+            gas.h * gas_deriv.rho.dp + gas.rho * gas_deriv.h.dp - 1.0;
+         const double gas_enthalpy_density_dTT =
+            gas_deriv.rho.dTT * gas.h +
+            2.0 * gas_deriv.rho.dT * gas_deriv.h.dT +
+            gas.rho * gas_deriv.h.dTT;
+         const double gas_enthalpy_density_dTp =
+            gas_deriv.rho.dTp * gas.h +
+            gas_deriv.rho.dT * gas_deriv.h.dp +
+            gas_deriv.rho.dp * gas_deriv.h.dT +
+            gas.rho * gas_deriv.h.dTp;
+         const double gas_enthalpy_density_dpp =
+            gas_deriv.rho.dpp * gas.h +
+            2.0 * gas_deriv.rho.dp * gas_deriv.h.dp +
+            gas.rho * gas_deriv.h.dpp;
 
          out.gas_energy.dT =
-            solid_bulk_deriv.eps_g.dT * (gas.rho * gas.h - p) +
-            solid.eps_g * (gas.h * gas_deriv.rho.dT + gas.rho * gas_deriv.h.dT);
+            solid_bulk_deriv.eps_g.dT * gas_enthalpy_density +
+            solid.eps_g * gas_enthalpy_density_dT;
          out.gas_energy.dp =
-            solid.eps_g * (gas.h * gas_deriv.rho.dp + gas.rho * gas_deriv.h.dp - 1.0);
+            solid_bulk_deriv.eps_g.dp * gas_enthalpy_density +
+            solid.eps_g * gas_enthalpy_density_dp;
+         out.gas_energy.dTT =
+            solid_bulk_deriv.eps_g.dTT * gas_enthalpy_density +
+            2.0 * solid_bulk_deriv.eps_g.dT * gas_enthalpy_density_dT +
+            solid.eps_g * gas_enthalpy_density_dTT;
+         out.gas_energy.dTp =
+            solid_bulk_deriv.eps_g.dTp * gas_enthalpy_density +
+            solid_bulk_deriv.eps_g.dT * gas_enthalpy_density_dp +
+            solid_bulk_deriv.eps_g.dp * gas_enthalpy_density_dT +
+            solid.eps_g * gas_enthalpy_density_dTp;
+         out.gas_energy.dpp =
+            solid_bulk_deriv.eps_g.dpp * gas_enthalpy_density +
+            2.0 * solid_bulk_deriv.eps_g.dp * gas_enthalpy_density_dp +
+            solid.eps_g * gas_enthalpy_density_dpp;
       }
 
       return out;
@@ -2108,7 +2259,8 @@ private:
                              const TACOTMaterial::SolidProperties &solid_old,
                              const TACOTMaterial::GasProperties &gas_old,
                              const AleGeometry &geom,
-                             const MaterialPointEvaluation &eval) const
+                             const MaterialPointEvaluation &eval,
+                             const MaterialDerivativeEvaluation *material_derivs = nullptr) const
    {
       QPCoeffs out;
       const TACOTMaterial::InternalState &new_state = eval.state;
@@ -2123,7 +2275,7 @@ private:
       const double h_rho2_darcy = gas.h * rho2_darcy;
 
       const AleStorageEvaluation ale_storage =
-         EvaluateAleStorageData(T, p, old_state, new_state, solid, gas);
+         EvaluateAleStorageData(T, p, old_state, new_state, solid, gas, material_derivs);
       const MassStorageData &mass_storage = ale_storage.mass;
       const MassStorageData &solid_heatcap_data = ale_storage.solid_heatcap;
       const MassStorageData &gas_energy_data = ale_storage.gas_energy;
@@ -2195,6 +2347,107 @@ private:
       return out;
    }
 
+   QPCoeffDerivatives EvaluateQPCoeffDerivatives(
+      const double T,
+      const double p,
+      const double T_old,
+      const double T_old_weighted,
+      const AleGeometry &geom,
+      const MaterialPointEvaluation &eval,
+      const MaterialDerivativeEvaluation &material_derivs,
+      const AleStorageEvaluation &ale_storage) const
+   {
+      (void)p;
+      (void)T_old;
+      QPCoeffDerivatives out;
+      const TACOTMaterial::SolidProperties &solid = eval.solid;
+      const TACOTMaterial::GasProperties &gas = eval.gas;
+      const TACOTMaterial::SolidBulkDerivatives &solid_deriv =
+         material_derivs.solid_bulk;
+      const TACOTMaterial::GasSurfaceDerivatives &gas_deriv =
+         material_derivs.gas_surface;
+
+      const double mu_eff = max(gas.mu, 1.0e-12);
+      const double dmu_eff_dT = (gas.mu > 1.0e-12) ? gas_deriv.mu.dT : 0.0;
+      const double dmu_eff_dp = (gas.mu > 1.0e-12) ? gas_deriv.mu.dp : 0.0;
+
+      const double darcy = solid.K / mu_eff;
+      const double darcy_T =
+         solid_deriv.K.dT / mu_eff -
+         solid.K / (mu_eff * mu_eff) * dmu_eff_dT;
+      const double darcy_p =
+         solid_deriv.K.dp / mu_eff -
+         solid.K / (mu_eff * mu_eff) * dmu_eff_dp;
+
+      const double rho_darcy = gas.rho * darcy;
+      out.B_T = gas_deriv.rho.dT * darcy + gas.rho * darcy_T;
+      out.B_p = gas_deriv.rho.dp * darcy + gas.rho * darcy_p;
+
+      const double rho2_darcy = gas.rho * rho_darcy;
+      out.C_T = gas_deriv.rho.dT * rho_darcy + gas.rho * out.B_T;
+      out.C_p = gas_deriv.rho.dp * rho_darcy + gas.rho * out.B_p;
+
+      out.E_T = solid_deriv.k.dT;
+      out.E_p = solid_deriv.k.dp;
+
+      out.F_T = gas_deriv.h.dT * rho_darcy + gas.h * out.B_T;
+      out.F_p = gas_deriv.h.dp * rho_darcy + gas.h * out.B_p;
+
+      out.G_T = gas_deriv.h.dT * rho2_darcy + gas.h * out.C_T;
+      out.G_p = gas_deriv.h.dp * rho2_darcy + gas.h * out.C_p;
+
+      out.H_T = ale_storage.mass.dT;
+      out.H_p = ale_storage.mass.dp;
+      out.solid_heatcap_T = ale_storage.solid_heatcap.dT;
+      out.solid_heatcap_p = ale_storage.solid_heatcap.dp;
+      out.gas_energy_T = ale_storage.gas_energy.dT;
+      out.gas_energy_p = ale_storage.gas_energy.dp;
+
+      const double mass_storage_factor =
+         UseReferenceAleGeometry() ? (geom.J_new / dt_) : (1.0 / dt_);
+      const double source_factor =
+         UseReferenceAleGeometry() ? geom.J_new : 1.0;
+      out.A_T = mass_storage_factor * out.H_T - source_factor * solid_deriv.pi_total.dT;
+      out.A_p = mass_storage_factor * out.H_p - source_factor * solid_deriv.pi_total.dp;
+
+      const double solid_storage_factor =
+         UseReferenceAleGeometry() ?
+            (ale_energy_solid_enabled_ ?
+               ((geom.J_new * T - geom.J_old * T_old_weighted) / dt_) :
+               (geom.J_new * (T - T_old_weighted) / dt_)) :
+            ((T - T_old_weighted) / dt_);
+      const double solid_storage_direct_T =
+         UseReferenceAleGeometry() ? (geom.J_new / dt_) : (1.0 / dt_);
+      out.D_T = out.solid_heatcap_T * solid_storage_factor +
+                ale_storage.solid_heatcap.value * solid_storage_direct_T;
+      out.D_p = out.solid_heatcap_p * solid_storage_factor;
+
+      const double gas_storage_factor =
+         UseReferenceAleGeometry() ? (geom.J_new / dt_) : (1.0 / dt_);
+      out.D_T += gas_storage_factor * out.gas_energy_T;
+      out.D_p += gas_storage_factor * out.gas_energy_p;
+
+      const double pyro_factor =
+         UseReferenceAleGeometry() ? geom.J_new : 1.0;
+      out.D_T -= pyro_factor * solid_deriv.pyrolysis_heat_sink.dT;
+      out.D_p -= pyro_factor * solid_deriv.pyrolysis_heat_sink.dp;
+
+      out.I_T = 0.0;
+      out.I_p = 0.0;
+      if (ale_energy_solid_enabled_)
+      {
+         out.I_T += out.solid_heatcap_T * T + ale_storage.solid_heatcap.value;
+         out.I_p += out.solid_heatcap_p * T;
+      }
+      if (ale_energy_gas_enabled_)
+      {
+         out.I_T += out.gas_energy_T;
+         out.I_p += out.gas_energy_p;
+      }
+
+      return out;
+   }
+
    void ComputeElementGradAnalytic(const FiniteElement &fe_T,
                                    const FiniteElement &fe_p,
                                    ElementTransformation &Tr,
@@ -2229,8 +2482,6 @@ private:
       MFEM_VERIFY(Tr.ElementNo >= 0, "Invalid element number while assembling gradient.");
       MFEM_VERIFY(ir.GetNPoints() <= state_manager_.NumQPoints(Tr.ElementNo),
                   "Reaction state manager quadrature size mismatch.");
-
-      const double coeff_fd_eps = 1.0e-7;
 
       for (int q = 0; q < ir.GetNPoints(); ++q)
       {
@@ -2277,59 +2528,43 @@ private:
 
          AleGeometry geom;
          EvaluateAleGeometry(Tr, ip, geom);
-         const double hT = coeff_fd_eps * std::max(1.0, std::abs(T));
-         const double hp = coeff_fd_eps * std::max(1.0, std::abs(p));
          const MaterialPointEvaluation base_eval =
             EvaluateMaterialPoint(T, p, old_state);
-         const MaterialPointEvaluation T_pert_eval =
-            EvaluateMaterialPoint(T + hT, p, old_state);
-         const MaterialPointEvaluation p_pert_eval =
-            EvaluateMaterialPointWithState(T, p + hp, base_eval.state);
+         const MaterialDerivativeEvaluation base_material_derivs =
+            EvaluateMaterialDerivatives(T, p, base_eval.state);
+         const AleStorageEvaluation base_ale_storage =
+            EvaluateAleStorageData(T, p, old_state, base_eval.state,
+                                   base_eval.solid, base_eval.gas,
+                                   &base_material_derivs);
          const QPCoeffs base =
             EvaluateQPCoeffs(T, p, old_state, T_old, p_old, solid_old, gas_old,
-                             geom, base_eval);
-         const QPCoeffs T_pert =
-            EvaluateQPCoeffs(T + hT, p, old_state, T_old, p_old, solid_old, gas_old,
-                             geom, T_pert_eval);
-         const QPCoeffs p_pert =
-            EvaluateQPCoeffs(T, p + hp, old_state, T_old, p_old, solid_old, gas_old,
-                             geom, p_pert_eval);
+                             geom, base_eval, &base_material_derivs);
+         const QPCoeffDerivatives coeff_derivs =
+            EvaluateQPCoeffDerivatives(T, p, T_old, T_old, geom,
+                                       base_eval, base_material_derivs,
+                                       base_ale_storage);
 
-         const double A_T = (T_pert.A - base.A) / hT;
-         const double B_T = (T_pert.B - base.B) / hT;
-         const double C_T = (T_pert.C - base.C) / hT;
-         const double D_T = (T_pert.D - base.D) / hT;
-         const double E_T = (T_pert.E - base.E) / hT;
-         const double F_T = (T_pert.F - base.F) / hT;
-         const double G_T = (T_pert.G - base.G) / hT;
-         const double H_T = (T_pert.H - base.H) / hT;
-         const double I_T = (T_pert.I - base.I) / hT;
-         const double M_T_T = (T_pert.M_T - base.M_T) / hT;
-         const double M_p_T = (T_pert.M_p - base.M_p) / hT;
-         const double solid_heatcap_T =
-            (T_pert.solid_heatcap - base.solid_heatcap) / hT;
-         const double gas_energy_dT_T =
-            (T_pert.gas_energy_dT - base.gas_energy_dT) / hT;
-         const double gas_energy_dp_T =
-            (T_pert.gas_energy_dp - base.gas_energy_dp) / hT;
+         const double A_T = coeff_derivs.A_T;
+         const double B_T = coeff_derivs.B_T;
+         const double C_T = coeff_derivs.C_T;
+         const double D_T = coeff_derivs.D_T;
+         const double E_T = coeff_derivs.E_T;
+         const double F_T = coeff_derivs.F_T;
+         const double G_T = coeff_derivs.G_T;
+         const double H_T = coeff_derivs.H_T;
+         const double I_T = coeff_derivs.I_T;
+         const double solid_heatcap_T = coeff_derivs.solid_heatcap_T;
 
-         const double A_p = (p_pert.A - base.A) / hp;
-         const double B_p = (p_pert.B - base.B) / hp;
-         const double C_p = (p_pert.C - base.C) / hp;
-         const double D_p = (p_pert.D - base.D) / hp;
-         const double E_p = (p_pert.E - base.E) / hp;
-         const double F_p = (p_pert.F - base.F) / hp;
-         const double G_p = (p_pert.G - base.G) / hp;
-         const double H_p = (p_pert.H - base.H) / hp;
-         const double I_p = (p_pert.I - base.I) / hp;
-         const double M_T_p = (p_pert.M_T - base.M_T) / hp;
-         const double M_p_p = (p_pert.M_p - base.M_p) / hp;
-         const double solid_heatcap_p =
-            (p_pert.solid_heatcap - base.solid_heatcap) / hp;
-         const double gas_energy_dT_p =
-            (p_pert.gas_energy_dT - base.gas_energy_dT) / hp;
-         const double gas_energy_dp_p =
-            (p_pert.gas_energy_dp - base.gas_energy_dp) / hp;
+         const double A_p = coeff_derivs.A_p;
+         const double B_p = coeff_derivs.B_p;
+         const double C_p = coeff_derivs.C_p;
+         const double D_p = coeff_derivs.D_p;
+         const double E_p = coeff_derivs.E_p;
+         const double F_p = coeff_derivs.F_p;
+         const double G_p = coeff_derivs.G_p;
+         const double H_p = coeff_derivs.H_p;
+         const double I_p = coeff_derivs.I_p;
+         const double solid_heatcap_p = coeff_derivs.solid_heatcap_p;
 
          const double w = ip.weight * Tr.Weight();
          const bool use_exact_ale_mass_form =
@@ -2337,6 +2572,26 @@ private:
          const bool use_exact_ale_energy_form = UseExactAleEnergyForm();
          const double Fw_gradT = VectorDot(geom.Fw, gradT_);
          const double Fw_gradp = VectorDot(geom.Fw, gradp_);
+
+         double M_T_T = 0.0;
+         double M_p_T = 0.0;
+         double M_T_p = 0.0;
+         double M_p_p = 0.0;
+         double gas_energy_dT_T = 0.0;
+         double gas_energy_dp_T = 0.0;
+         double gas_energy_dT_p = 0.0;
+         double gas_energy_dp_p = 0.0;
+         if (use_exact_ale_mass_form || use_exact_ale_energy_form)
+         {
+            M_T_T = base_ale_storage.mass.dTT;
+            M_p_T = base_ale_storage.mass.dTp;
+            M_T_p = base_ale_storage.mass.dTp;
+            M_p_p = base_ale_storage.mass.dpp;
+            gas_energy_dT_T = base_ale_storage.gas_energy.dTT;
+            gas_energy_dp_T = base_ale_storage.gas_energy.dTp;
+            gas_energy_dT_p = base_ale_storage.gas_energy.dTp;
+            gas_energy_dp_p = base_ale_storage.gas_energy.dpp;
+         }
 
          for (int i = 0; i < dof_p; ++i)
          {
@@ -2893,6 +3148,8 @@ private:
                                      2 * max(fe_T.GetOrder(), fe_p.GetOrder()) + 2);
       const IntegrationRule &ir_face =
          IntRules.Get(Tr.GetGeometryType(), face_int_order);
+      const IntegrationRule &ir_elem =
+         IntRules.Get(fe_T.GetGeomType(), quad_order_);
 
       for (int q = 0; q < ir_face.GetNPoints(); ++q)
       {
@@ -2917,7 +3174,11 @@ private:
             }
          }
 
-         const TACOTMaterial::InternalState &state = state_manager_.GetState(Tr.Elem1No, 0);
+         const int nearest_q =
+            FindNearestVolumeQuadraturePoint(ir_elem, state_manager_, Tr.Elem1No,
+                                            eip, "ComputeFaceGradAnalytic");
+         const TACOTMaterial::InternalState &state =
+            state_manager_.GetState(Tr.Elem1No, nearest_q);
          const TACOTMaterial::SolidSurfaceDerivatives solid_deriv =
             material_.EvaluateSolidSurfaceDerivatives(T_w, p_w, state);
          const TACOTMaterial::GasSurfaceDerivatives gas_deriv =
@@ -3158,6 +3419,8 @@ private:
                                      2 * max(fe_T.GetOrder(), fe_p.GetOrder()) + 2);
       const IntegrationRule &ir_face =
          IntRules.Get(Tr.GetGeometryType(), face_int_order);
+      const IntegrationRule &ir_elem =
+         IntRules.Get(fe_T.GetGeomType(), quad_order_);
 
       for (int q = 0; q < ir_face.GetNPoints(); ++q)
       {
@@ -3182,7 +3445,11 @@ private:
             }
          }
 
-         const TACOTMaterial::InternalState &state = state_manager_.GetState(Tr.Elem1No, 0);
+         const int nearest_q =
+            FindNearestVolumeQuadraturePoint(ir_elem, state_manager_, Tr.Elem1No,
+                                            eip, "ComputeFaceResidual");
+         const TACOTMaterial::InternalState &state =
+            state_manager_.GetState(Tr.Elem1No, nearest_q);
          const TACOTMaterial::SolidProperties solid =
             material_.EvaluateSolid(T_w, p_w, state);
          const TACOTMaterial::GasProperties gas =
@@ -3339,6 +3606,7 @@ SurfaceBoundaryDiagnostics ComputeTopBoundaryDiagnostics(
    const SurfaceBCSchedule &schedule,
    const SurfaceFluxModelParams &surface_model,
    const Vector &gravity,
+   const int quad_order,
    const int top_bdr_attr,
    const double x_target,
    const double time,
@@ -3377,8 +3645,6 @@ SurfaceBoundaryDiagnostics ComputeTopBoundaryDiagnostics(
       const int elem = FT->Elem1No;
       const FiniteElement *fe_T = fes_T.GetFE(elem);
       const FiniteElement *fe_p = fes_p.GetFE(elem);
-      const TACOTMaterial::InternalState representative_state =
-         ComputeElementRepresentativeState(state_manager, elem);
 
       fes_T.GetElementDofs(elem, dofs_T);
       fes_p.GetElementDofs(elem, dofs_p);
@@ -3393,6 +3659,7 @@ SurfaceBoundaryDiagnostics ComputeTopBoundaryDiagnostics(
 
       const int face_int_order = max(2, 2 * max(fe_T->GetOrder(), fe_p->GetOrder()) + 2);
       const IntegrationRule &ir_face = IntRules.Get(FT->GetGeometryType(), face_int_order);
+      const IntegrationRule &ir_elem = IntRules.Get(fe_T->GetGeomType(), quad_order);
 
       Vector face_pos(dim);
       for (int q = 0; q < ir_face.GetNPoints(); ++q)
@@ -3418,10 +3685,15 @@ SurfaceBoundaryDiagnostics ComputeTopBoundaryDiagnostics(
             }
          }
 
+         const int nearest_q =
+            FindNearestVolumeQuadraturePoint(ir_elem, state_manager, elem, eip,
+                                            "ComputeTopBoundaryDiagnostics");
+         const TACOTMaterial::InternalState &state =
+            state_manager.GetState(elem, nearest_q);
          const TACOTMaterial::SolidProperties solid =
-            material.EvaluateSolid(Tq, pq, representative_state);
+            material.EvaluateSolid(Tq, pq, state);
          const TACOTMaterial::GasProperties gas =
-            material.EvaluateGas(Tq, pq, representative_state);
+            material.EvaluateGas(Tq, pq, state);
 
          const double mu = max(gas.mu, 1.0e-12);
          const double rho_darcy = gas.rho * solid.K / mu;
@@ -3676,6 +3948,7 @@ void AssembleTopBoundaryRecessionVelocity(
    const SurfaceBCSchedule &schedule,
    const SurfaceFluxModelParams &surface_model,
    const Vector &gravity,
+   const int quad_order,
    const int top_bdr_attr,
    const double time,
    const string &recession_density_mode,
@@ -3711,8 +3984,6 @@ void AssembleTopBoundaryRecessionVelocity(
       const FiniteElement *fe_T = fes_T.GetFE(elem);
       const FiniteElement *fe_p = fes_p.GetFE(elem);
       const FiniteElement *fe_scalar = fes_scalar.GetFE(elem);
-      const TACOTMaterial::InternalState representative_state =
-         ComputeElementRepresentativeState(state_manager, elem);
 
       fes_T.GetElementDofs(elem, dofs_T);
       fes_p.GetElementDofs(elem, dofs_p);
@@ -3732,6 +4003,7 @@ void AssembleTopBoundaryRecessionVelocity(
              max(2 * max(fe_T->GetOrder(), fe_p->GetOrder()) + 2,
                  2 * fe_scalar->GetOrder() + 2));
       const IntegrationRule &ir_face = IntRules.Get(FT->GetGeometryType(), face_int_order);
+      const IntegrationRule &ir_elem = IntRules.Get(fe_T->GetGeomType(), quad_order);
 
       for (int q = 0; q < ir_face.GetNPoints(); ++q)
       {
@@ -3757,10 +4029,15 @@ void AssembleTopBoundaryRecessionVelocity(
             }
          }
 
+         const int nearest_q =
+            FindNearestVolumeQuadraturePoint(ir_elem, state_manager, elem, eip,
+                                            "AssembleTopBoundaryRecessionVelocity");
+         const TACOTMaterial::InternalState &state =
+            state_manager.GetState(elem, nearest_q);
          const TACOTMaterial::SolidProperties solid =
-            material.EvaluateSolid(Tq, pq, representative_state);
+            material.EvaluateSolid(Tq, pq, state);
          const TACOTMaterial::GasProperties gas =
-            material.EvaluateGas(Tq, pq, representative_state);
+            material.EvaluateGas(Tq, pq, state);
 
          const double mu = max(gas.mu, 1.0e-12);
          const double rho_darcy = gas.rho * solid.K / mu;
@@ -5356,6 +5633,7 @@ int main(int argc, char *argv[])
                                           bc_schedule,
                                           surface_model,
                                           gravity,
+                                          quad_order,
                                           params.bdr_attr_top,
                                           xmid,
                                           time,
@@ -5466,6 +5744,7 @@ int main(int argc, char *argv[])
                                                     bc_schedule,
                                                     surface_model,
                                                     gravity,
+                                                    quad_order,
                                                     params.bdr_attr_top,
                                                     time,
                                                     params.recession_density_mode,

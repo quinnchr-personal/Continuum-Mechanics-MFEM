@@ -58,6 +58,9 @@ public:
       double value = 0.0;
       double dT = 0.0;
       double dp = 0.0;
+      double dTT = 0.0;
+      double dTp = 0.0;
+      double dpp = 0.0;
    };
 
    struct SolidSurfaceDerivatives
@@ -77,6 +80,8 @@ public:
       ScalarDerivatives eps_g;
       ScalarDerivatives rho_s;
       ScalarDerivatives tau;
+      ScalarDerivatives pi_total;
+      ScalarDerivatives pyrolysis_heat_sink;
    };
 
    struct GasSurfaceDerivatives
@@ -94,6 +99,9 @@ public:
                                       const InternalState &old_state) const;
    std::vector<double> EvaluateExtentTemperatureDerivative(
       double T, const InternalState &internal_state) const;
+   std::vector<double> EvaluateExtentTemperatureSecondDerivative(
+      double T, const InternalState &internal_state,
+      const std::vector<double> &dextent_dT) const;
    SolidProperties EvaluateSolid(double T, double p,
                                  const InternalState &internal_state) const;
    GasProperties EvaluateGas(double T, double p,
@@ -103,6 +111,10 @@ public:
    SolidBulkDerivatives EvaluateSolidBulkDerivatives(
       double T, double p, const InternalState &internal_state,
       const std::vector<double> &dextent_dT) const;
+   SolidBulkDerivatives EvaluateSolidBulkDerivatives(
+      double T, double p, const InternalState &internal_state,
+      const std::vector<double> &dextent_dT,
+      const std::vector<double> &d2extent_dT2) const;
    SolidSurfaceDerivatives EvaluateSolidSurfaceDerivatives(
       double T, double p, const InternalState &internal_state) const;
    GasSurfaceDerivatives EvaluateGasSurfaceDerivatives(
@@ -122,6 +134,7 @@ private:
       {
          double value = 0.0;
          double deriv = 0.0;
+         double second_deriv = 0.0;
          bool clamped = false;
       };
 
@@ -151,6 +164,9 @@ private:
          double value = 0.0;
          double dp = 0.0;
          double dT = 0.0;
+         double dpp = 0.0;
+         double dTp = 0.0;
+         double dTT = 0.0;
          bool clamped_p = false;
          bool clamped_T = false;
       };

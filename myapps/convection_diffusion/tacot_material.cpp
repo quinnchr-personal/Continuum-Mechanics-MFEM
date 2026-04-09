@@ -341,6 +341,86 @@ std::vector<double> TACOTMaterial::EvaluateExtentTemperatureDerivative(
    return out;
 }
 
+std::vector<double> TACOTMaterial::EvaluateExtentTemperatureSecondDerivative(
+   const double T,
+   const InternalState &internal_state,
+   const std::vector<double> &dextent_dT) const
+{
+   if (internal_state.extent.size() != reactions_.size())
+   {
+      throw std::runtime_error("InternalState.extent size does not match reaction count.");
+   }
+   if (dextent_dT.size() != reactions_.size())
+   {
+      throw std::runtime_error("dextent_dT size does not match reaction count.");
+   }
+
+   std::vector<double> out(reactions_.size(), 0.0);
+   if (internal_state.extent_old.size() != reactions_.size() ||
+       internal_state.dt <= 0.0)
+   {
+      return out;
+   }
+
+   const double T_clamped = std::max(T, 1.0);
+   const double dT_clamped_dT = (T > 1.0) ? 1.0 : 0.0;
+   if (dT_clamped_dT == 0.0)
+   {
+      return out;
+   }
+
+   for (int i = 0; i < static_cast<int>(reactions_.size()); ++i)
+   {
+      const Reaction &r = reactions_[i];
+      const double x_old = Clamp(internal_state.extent_old[i], 0.0, 1.0);
+      const double x = Clamp(internal_state.extent[i], x_old, 1.0);
+
+      if (T_clamped < r.T_threshold ||
+          x <= x_old + 1.0e-14 ||
+          x >= 1.0 - 1.0e-12)
+      {
+         continue;
+      }
+
+      const double arrhenius = r.A * std::exp(-r.E / (R_ * T_clamped));
+      if (arrhenius <= 0.0)
+      {
+         continue;
+      }
+
+      const double tpow = SafePow(T_clamped, r.n);
+      const double rate_prefactor = arrhenius * tpow;
+      const double one_minus_x = std::max(1.0 - x, 1.0e-14);
+      const double dfdx = 1.0 + internal_state.dt * rate_prefactor * r.m *
+                          SafePow(one_minus_x, r.m - 1.0);
+      if (std::abs(dfdx) < 1.0e-14)
+      {
+         continue;
+      }
+
+      const double dlog_rate_dT =
+         (r.E / (R_ * T_clamped * T_clamped) + r.n / T_clamped) * dT_clamped_dT;
+      const double d2log_rate_dT2 =
+         (-2.0 * r.E / (R_ * T_clamped * T_clamped * T_clamped) -
+          r.n / (T_clamped * T_clamped)) * dT_clamped_dT;
+      const double drate_prefactor_dT = rate_prefactor * dlog_rate_dT;
+      const double d2rate_prefactor_dT2 =
+         rate_prefactor * (dlog_rate_dT * dlog_rate_dT + d2log_rate_dT2);
+
+      const double dx_dT = dextent_dT[i];
+      const double fx_T = internal_state.dt * drate_prefactor_dT * r.m *
+                          SafePow(one_minus_x, r.m - 1.0);
+      const double fxx = -internal_state.dt * rate_prefactor * r.m * (r.m - 1.0) *
+                         SafePow(one_minus_x, r.m - 2.0);
+      const double fTT = -internal_state.dt * d2rate_prefactor_dT2 *
+                         SafePow(one_minus_x, r.m);
+
+      out[i] = -(fxx * dx_dT * dx_dT + 2.0 * fx_T * dx_dT + fTT) / dfdx;
+   }
+
+   return out;
+}
+
 TACOTMaterial::SolidProperties TACOTMaterial::EvaluateSolid(
    const double T,
    const double p,
@@ -486,7 +566,8 @@ TACOTMaterial::SolidBulkDerivatives TACOTMaterial::EvaluateSolidBulkDerivatives(
    const InternalState &internal_state) const
 {
    std::vector<double> dextent_dT(reactions_.size(), 0.0);
-   return EvaluateSolidBulkDerivatives(T, p, internal_state, dextent_dT);
+   std::vector<double> d2extent_dT2(reactions_.size(), 0.0);
+   return EvaluateSolidBulkDerivatives(T, p, internal_state, dextent_dT, d2extent_dT2);
 }
 
 TACOTMaterial::SolidBulkDerivatives TACOTMaterial::EvaluateSolidBulkDerivatives(
@@ -495,6 +576,18 @@ TACOTMaterial::SolidBulkDerivatives TACOTMaterial::EvaluateSolidBulkDerivatives(
    const InternalState &internal_state,
    const std::vector<double> &dextent_dT) const
 {
+   std::vector<double> d2extent_dT2(reactions_.size(), 0.0);
+   return EvaluateSolidBulkDerivatives(
+      T, p, internal_state, dextent_dT, d2extent_dT2);
+}
+
+TACOTMaterial::SolidBulkDerivatives TACOTMaterial::EvaluateSolidBulkDerivatives(
+   const double T,
+   const double p,
+   const InternalState &internal_state,
+   const std::vector<double> &dextent_dT,
+   const std::vector<double> &d2extent_dT2) const
+{
    if (internal_state.extent.size() != reactions_.size())
    {
       throw std::runtime_error("InternalState.extent size does not match reaction count.");
@@ -502,6 +595,10 @@ TACOTMaterial::SolidBulkDerivatives TACOTMaterial::EvaluateSolidBulkDerivatives(
    if (dextent_dT.size() != reactions_.size())
    {
       throw std::runtime_error("dextent_dT size does not match reaction count.");
+   }
+   if (d2extent_dT2.size() != reactions_.size())
+   {
+      throw std::runtime_error("d2extent_dT2 size does not match reaction count.");
    }
 
    SolidBulkDerivatives out;
@@ -533,13 +630,15 @@ TACOTMaterial::SolidBulkDerivatives TACOTMaterial::EvaluateSolidBulkDerivatives(
    rho_c = std::max(rho_c, 1.0e-14);
 
    std::vector<double> phase_factor(nph, 1.0);
-    std::vector<double> phase_factor_dT(nph, 0.0);
+   std::vector<double> phase_factor_dT(nph, 0.0);
+   std::vector<double> phase_factor_dTT(nph, 0.0);
    for (int i = 0; i < static_cast<int>(reactions_.size()); ++i)
    {
       const int ph = static_cast<int>(Clamp(reactions_[i].phase_index, 0, nph - 1));
       const double x = Clamp(internal_state.extent[i], 0.0, 1.0);
       phase_factor[ph] -= reactions_[i].F * x;
       phase_factor_dT[ph] -= reactions_[i].F * dextent_dT[i];
+      phase_factor_dTT[ph] -= reactions_[i].F * d2extent_dT2[i];
    }
    for (int ph = 0; ph < nph; ++ph)
    {
@@ -547,18 +646,22 @@ TACOTMaterial::SolidBulkDerivatives TACOTMaterial::EvaluateSolidBulkDerivatives(
       {
          phase_factor[ph] = 0.0;
          phase_factor_dT[ph] = 0.0;
+         phase_factor_dTT[ph] = 0.0;
       }
    }
 
    out.rho_s.value = 0.0;
    out.rho_s.dT = 0.0;
+   out.rho_s.dTT = 0.0;
    for (int ph = 0; ph < nph; ++ph)
    {
       out.rho_s.value += rho_eps0[ph] * phase_factor[ph];
       out.rho_s.dT += rho_eps0[ph] * phase_factor_dT[ph];
+      out.rho_s.dTT += rho_eps0[ph] * phase_factor_dTT[ph];
    }
 
    double tau_dT = 0.0;
+   double tau_dTT = 0.0;
    const double norm_sum = std::max(rho_v - rho_c, 0.0);
    if (norm_sum > 0.0)
    {
@@ -567,23 +670,36 @@ TACOTMaterial::SolidBulkDerivatives TACOTMaterial::EvaluateSolidBulkDerivatives(
          const int ph = static_cast<int>(Clamp(reactions_[i].phase_index, 0, nph - 1));
          const double w = reactions_[i].F * rho_eps0[ph] / norm_sum;
          tau_dT -= w * dextent_dT[i];
+         tau_dTT -= w * d2extent_dT2[i];
       }
    }
    out.tau.dT = tau_dT;
+   out.tau.dTT = tau_dTT;
    out.K.dT = (K_v_ - K_c_) * tau_dT;
+   out.K.dTT = (K_v_ - K_c_) * tau_dTT;
    out.eps_g.dT = (eps_g_v_ - eps_g_c_) * tau_dT;
+   out.eps_g.dTT = (eps_g_v_ - eps_g_c_) * tau_dTT;
 
    const double rho_ref = std::max(out.rho_s.value, rho_c);
    const double rho_ref_dT =
       (out.rho_s.value > rho_c) ? out.rho_s.dT : 0.0;
+   const double rho_ref_dTT =
+      (out.rho_s.value > rho_c) ? out.rho_s.dTT : 0.0;
    const double virgin_weight =
       (rho_ref > 0.0) ? (out.tau.value * rho_v / rho_ref) : out.tau.value;
    double virgin_weight_dT = out.tau.dT;
+    double virgin_weight_dTT = out.tau.dTT;
    if (rho_ref > 0.0)
    {
       virgin_weight_dT =
          rho_v * (out.tau.dT * rho_ref - out.tau.value * rho_ref_dT) /
          (rho_ref * rho_ref);
+      virgin_weight_dTT =
+         rho_v * (out.tau.dTT / rho_ref
+                  - 2.0 * out.tau.dT * rho_ref_dT / (rho_ref * rho_ref)
+                  - out.tau.value * rho_ref_dTT / (rho_ref * rho_ref)
+                  + 2.0 * out.tau.value * rho_ref_dT * rho_ref_dT /
+                       (rho_ref * rho_ref * rho_ref));
    }
 
    const MultiTable2D::EvalResult cp_v = virgin_.EvalWithDerivatives(0, p, T);
@@ -594,20 +710,90 @@ TACOTMaterial::SolidBulkDerivatives TACOTMaterial::EvaluateSolidBulkDerivatives(
    const MultiTable2D::EvalResult h_c = char_.EvalWithDerivatives(1, p, T);
    const MultiTable2D::EvalResult k_c = char_.EvalWithDerivatives(2, p, T);
 
-   out.cp.value = cp_v.value * virgin_weight + cp_c.value * (1.0 - virgin_weight);
-   out.cp.dT = cp_v.dT * virgin_weight + cp_c.dT * (1.0 - virgin_weight) +
-               (cp_v.value - cp_c.value) * virgin_weight_dT;
-   out.cp.dp = cp_v.dp * virgin_weight + cp_c.dp * (1.0 - virgin_weight);
+   auto blend_table_derivs =
+      [&](const MultiTable2D::EvalResult &virgin,
+          const MultiTable2D::EvalResult &ch,
+          ScalarDerivatives &dst)
+   {
+      const double delta = virgin.value - ch.value;
+      const double delta_T = virgin.dT - ch.dT;
+      const double delta_p = virgin.dp - ch.dp;
+      const double delta_TT = virgin.dTT - ch.dTT;
+      const double delta_Tp = virgin.dTp - ch.dTp;
+      const double delta_pp = virgin.dpp - ch.dpp;
 
-   out.h.value = h_v.value * virgin_weight + h_c.value * (1.0 - virgin_weight);
-   out.h.dT = h_v.dT * virgin_weight + h_c.dT * (1.0 - virgin_weight) +
-              (h_v.value - h_c.value) * virgin_weight_dT;
-   out.h.dp = h_v.dp * virgin_weight + h_c.dp * (1.0 - virgin_weight);
+      dst.value = ch.value + virgin_weight * delta;
+      dst.dT = ch.dT + virgin_weight_dT * delta + virgin_weight * delta_T;
+      dst.dp = ch.dp + virgin_weight * delta_p;
+      dst.dTT = ch.dTT + virgin_weight_dTT * delta +
+                2.0 * virgin_weight_dT * delta_T +
+                virgin_weight * delta_TT;
+      dst.dTp = ch.dTp + virgin_weight_dT * delta_p +
+                virgin_weight * delta_Tp;
+      dst.dpp = ch.dpp + virgin_weight * delta_pp;
+   };
 
-   out.k.value = k_v.value * virgin_weight + k_c.value * (1.0 - virgin_weight);
-   out.k.dT = k_v.dT * virgin_weight + k_c.dT * (1.0 - virgin_weight) +
-              (k_v.value - k_c.value) * virgin_weight_dT;
-   out.k.dp = k_v.dp * virgin_weight + k_c.dp * (1.0 - virgin_weight);
+   blend_table_derivs(cp_v, cp_c, out.cp);
+   blend_table_derivs(h_v, h_c, out.h);
+   blend_table_derivs(k_v, k_c, out.k);
+
+   if (internal_state.extent_old.size() == reactions_.size() && internal_state.dt > 0.0)
+   {
+      for (int i = 0; i < static_cast<int>(reactions_.size()); ++i)
+      {
+         const double x = Clamp(internal_state.extent[i], 0.0, 1.0);
+         const double x_old = Clamp(internal_state.extent_old[i], 0.0, 1.0);
+         const double dX = std::max(0.0, x - x_old);
+         const int ph = static_cast<int>(Clamp(reactions_[i].phase_index, 0, nph - 1));
+         const double prefactor =
+            rho_eps0[ph] * reactions_[i].F / internal_state.dt;
+         double pi = prefactor * dX;
+         pi = std::max(0.0, pi);
+         if (pi < min_pi_pyro_)
+         {
+            pi = 0.0;
+         }
+
+         out.pi_total.value += pi;
+         if (pi > 0.0 && dX > 0.0)
+         {
+            out.pi_total.dT += prefactor * dextent_dT[i];
+            out.pi_total.dTT += prefactor * d2extent_dT2[i];
+         }
+      }
+   }
+
+   double h_bar = h_v.value;
+   double h_bar_dT = h_v.dT;
+   double h_bar_dp = h_v.dp;
+   double h_bar_dTT = h_v.dTT;
+   double h_bar_dTp = h_v.dTp;
+   double h_bar_dpp = h_v.dpp;
+   if (std::abs(rho_v - rho_c) > 1.0e-14)
+   {
+      const double denom = rho_v - rho_c;
+      h_bar = (rho_v * h_v.value - rho_c * h_c.value) / denom;
+      h_bar_dT = (rho_v * h_v.dT - rho_c * h_c.dT) / denom;
+      h_bar_dp = (rho_v * h_v.dp - rho_c * h_c.dp) / denom;
+      h_bar_dTT = (rho_v * h_v.dTT - rho_c * h_c.dTT) / denom;
+      h_bar_dTp = (rho_v * h_v.dTp - rho_c * h_c.dTp) / denom;
+      h_bar_dpp = (rho_v * h_v.dpp - rho_c * h_c.dpp) / denom;
+   }
+
+   out.pyrolysis_heat_sink.value = h_bar * out.pi_total.value;
+   out.pyrolysis_heat_sink.dT =
+      h_bar_dT * out.pi_total.value + h_bar * out.pi_total.dT;
+   out.pyrolysis_heat_sink.dp =
+      h_bar_dp * out.pi_total.value;
+   out.pyrolysis_heat_sink.dTT =
+      h_bar_dTT * out.pi_total.value +
+      2.0 * h_bar_dT * out.pi_total.dT +
+      h_bar * out.pi_total.dTT;
+   out.pyrolysis_heat_sink.dTp =
+      h_bar_dTp * out.pi_total.value +
+      h_bar_dp * out.pi_total.dT;
+   out.pyrolysis_heat_sink.dpp =
+      h_bar_dpp * out.pi_total.value;
 
    return out;
 }
@@ -730,23 +916,46 @@ TACOTMaterial::GasSurfaceDerivatives TACOTMaterial::EvaluateGasSurfaceDerivative
    out.M.value = M_eval.value;
    out.M.dT = M_eval.dT;
    out.M.dp = M_eval.dp;
+   out.M.dTT = M_eval.dTT;
+   out.M.dTp = M_eval.dTp;
+   out.M.dpp = M_eval.dpp;
 
    out.h.value = h_eval.value;
    out.h.dT = h_eval.dT;
    out.h.dp = h_eval.dp;
+   out.h.dTT = h_eval.dTT;
+   out.h.dTp = h_eval.dTp;
+   out.h.dpp = h_eval.dpp;
 
    out.mu.value = mu_eval.value;
    out.mu.dT = mu_eval.dT;
    out.mu.dp = mu_eval.dp;
+   out.mu.dTT = mu_eval.dTT;
+   out.mu.dTp = mu_eval.dTp;
+   out.mu.dpp = mu_eval.dpp;
 
    const double T_eff = std::max(T, 1.0);
    const double dT_eff_dT = (T > 1.0) ? 1.0 : 0.0;
    const double rho_scale = p / (R_ * T_eff);
+   const double scale_T = -(p / (R_ * T_eff * T_eff)) * dT_eff_dT;
+   const double scale_p = 1.0 / (R_ * T_eff);
+   const double scale_TT =
+      (T > 1.0) ? (2.0 * p / (R_ * T_eff * T_eff * T_eff)) : 0.0;
+   const double scale_Tp =
+      -(1.0 / (R_ * T_eff * T_eff)) * dT_eff_dT;
 
    out.rho.value = rho_scale * out.M.value;
-   out.rho.dT = rho_scale * out.M.dT -
-                (p * out.M.value / (R_ * T_eff * T_eff)) * dT_eff_dT;
-   out.rho.dp = (out.M.value + p * out.M.dp) / (R_ * T_eff);
+   out.rho.dT = scale_T * out.M.value + rho_scale * out.M.dT;
+   out.rho.dp = scale_p * out.M.value + rho_scale * out.M.dp;
+   out.rho.dTT = scale_TT * out.M.value +
+                 2.0 * scale_T * out.M.dT +
+                 rho_scale * out.M.dTT;
+   out.rho.dTp = scale_Tp * out.M.value +
+                 scale_T * out.M.dp +
+                 scale_p * out.M.dT +
+                 rho_scale * out.M.dTp;
+   out.rho.dpp = 2.0 * scale_p * out.M.dp +
+                 rho_scale * out.M.dpp;
 
    return out;
 }
@@ -863,6 +1072,7 @@ TACOTMaterial::CubicSpline1D::EvalResult TACOTMaterial::CubicSpline1D::EvalClamp
    out.deriv = (y_[khi] - y_[klo]) / h +
                (h / 6.0) *
                   (-(3.0 * a * a - 1.0) * y2_[klo] + (3.0 * b * b - 1.0) * y2_[khi]);
+   out.second_deriv = a * y2_[klo] + b * y2_[khi];
    return out;
 }
 
@@ -977,6 +1187,7 @@ TACOTMaterial::MultiTable2D::EvalResult TACOTMaterial::MultiTable2D::EvalWithDer
       const CubicSpline1D::EvalResult s = levels_[0].props[prop_idx].EvalClampWithDerivative(T);
       out.value = s.value;
       out.dT = s.deriv;
+      out.dTT = s.second_deriv;
       out.clamped_T = s.clamped;
       return out;
    }
@@ -1003,6 +1214,7 @@ TACOTMaterial::MultiTable2D::EvalResult TACOTMaterial::MultiTable2D::EvalWithDer
          levels_.front().props[prop_idx].EvalClampWithDerivative(T);
       out.value = s.value;
       out.dT = s.deriv;
+      out.dTT = s.second_deriv;
       out.clamped_T = s.clamped;
       out.dp = 0.0;
       return out;
@@ -1013,6 +1225,7 @@ TACOTMaterial::MultiTable2D::EvalResult TACOTMaterial::MultiTable2D::EvalWithDer
          levels_.back().props[prop_idx].EvalClampWithDerivative(T);
       out.value = s.value;
       out.dT = s.deriv;
+      out.dTT = s.second_deriv;
       out.clamped_T = s.clamped;
       out.dp = 0.0;
       return out;
@@ -1041,6 +1254,7 @@ TACOTMaterial::MultiTable2D::EvalResult TACOTMaterial::MultiTable2D::EvalWithDer
          levels_[lo].props[prop_idx].EvalClampWithDerivative(T);
       out.value = s.value;
       out.dT = s.deriv;
+      out.dTT = s.second_deriv;
       out.clamped_T = s.clamped;
       out.dp = 0.0;
       return out;
@@ -1053,7 +1267,9 @@ TACOTMaterial::MultiTable2D::EvalResult TACOTMaterial::MultiTable2D::EvalWithDer
    const double w = (p_clamped - p0) / (p1 - p0);
    out.value = (1.0 - w) * v0.value + w * v1.value;
    out.dT = (1.0 - w) * v0.deriv + w * v1.deriv;
+   out.dTT = (1.0 - w) * v0.second_deriv + w * v1.second_deriv;
    out.dp = out.clamped_p ? 0.0 : (v1.value - v0.value) / (p1 - p0);
+   out.dTp = out.clamped_p ? 0.0 : (v1.deriv - v0.deriv) / (p1 - p0);
    out.clamped_T = (v0.clamped || v1.clamped);
    return out;
 }

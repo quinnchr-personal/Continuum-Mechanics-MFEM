@@ -1390,6 +1390,35 @@ private:
    vector<double> char_density_fraction_elem_;
 };
 
+int FindNearestVolumeQuadraturePoint(const IntegrationRule &ir,
+                                     const ReactionStateManager &state_manager,
+                                     const int elem,
+                                     const IntegrationPoint &ip,
+                                     const char *context)
+{
+   MFEM_VERIFY(ir.GetNPoints() == state_manager.NumQPoints(elem),
+               string(context) + ": quadrature mismatch while locating face state.");
+   MFEM_VERIFY(ir.GetNPoints() > 0,
+               string(context) + ": empty element integration rule.");
+
+   int nearest_q = 0;
+   double min_d2 = numeric_limits<double>::max();
+   for (int q = 0; q < ir.GetNPoints(); ++q)
+   {
+      const IntegrationPoint &iq = ir.IntPoint(q);
+      const double dx = ip.x - iq.x;
+      const double dy = ip.y - iq.y;
+      const double dz = ip.z - iq.z;
+      const double d2 = dx * dx + dy * dy + dz * dz;
+      if (d2 < min_d2)
+      {
+         min_d2 = d2;
+         nearest_q = q;
+      }
+   }
+   return nearest_q;
+}
+
 class AblationTPIntegrator : public BlockNonlinearFormIntegrator
 {
 public:
@@ -2072,6 +2101,8 @@ private:
                                      2 * max(fe_T.GetOrder(), fe_p.GetOrder()) + 2);
       const IntegrationRule &ir_face =
          IntRules.Get(Tr.GetGeometryType(), face_int_order);
+      const IntegrationRule &ir_elem =
+         IntRules.Get(fe_T.GetGeomType(), quad_order_);
 
       for (int q = 0; q < ir_face.GetNPoints(); ++q)
       {
@@ -2096,7 +2127,11 @@ private:
             }
          }
 
-         const TACOTMaterial::InternalState &state = state_manager_.GetState(Tr.Elem1No, 0);
+         const int nearest_q =
+            FindNearestVolumeQuadraturePoint(ir_elem, state_manager_, Tr.Elem1No,
+                                            eip, "ComputeFaceGradAnalytic");
+         const TACOTMaterial::InternalState &state =
+            state_manager_.GetState(Tr.Elem1No, nearest_q);
          const TACOTMaterial::SolidSurfaceDerivatives solid_deriv =
             material_.EvaluateSolidSurfaceDerivatives(T_w, p_w, state);
          const TACOTMaterial::GasSurfaceDerivatives gas_deriv =
@@ -2337,6 +2372,8 @@ private:
                                      2 * max(fe_T.GetOrder(), fe_p.GetOrder()) + 2);
       const IntegrationRule &ir_face =
          IntRules.Get(Tr.GetGeometryType(), face_int_order);
+      const IntegrationRule &ir_elem =
+         IntRules.Get(fe_T.GetGeomType(), quad_order_);
 
       for (int q = 0; q < ir_face.GetNPoints(); ++q)
       {
@@ -2361,7 +2398,11 @@ private:
             }
          }
 
-         const TACOTMaterial::InternalState &state = state_manager_.GetState(Tr.Elem1No, 0);
+         const int nearest_q =
+            FindNearestVolumeQuadraturePoint(ir_elem, state_manager_, Tr.Elem1No,
+                                            eip, "ComputeFaceResidual");
+         const TACOTMaterial::InternalState &state =
+            state_manager_.GetState(Tr.Elem1No, nearest_q);
          const TACOTMaterial::SolidProperties solid =
             material_.EvaluateSolid(T_w, p_w, state);
          const TACOTMaterial::GasProperties gas =
@@ -2518,6 +2559,7 @@ SurfaceBoundaryDiagnostics ComputeTopBoundaryDiagnostics(
    const SurfaceBCSchedule &schedule,
    const SurfaceFluxModelParams &surface_model,
    const Vector &gravity,
+   const int quad_order,
    const int top_bdr_attr,
    const double time,
    const bool compute_surface_terms)
@@ -2548,8 +2590,6 @@ SurfaceBoundaryDiagnostics ComputeTopBoundaryDiagnostics(
       const int elem = FT->Elem1No;
       const FiniteElement *fe_T = fes_T.GetFE(elem);
       const FiniteElement *fe_p = fes_p.GetFE(elem);
-      const TACOTMaterial::InternalState representative_state =
-         ComputeElementRepresentativeState(state_manager, elem);
 
       fes_T.GetElementDofs(elem, dofs_T);
       fes_p.GetElementDofs(elem, dofs_p);
@@ -2564,6 +2604,7 @@ SurfaceBoundaryDiagnostics ComputeTopBoundaryDiagnostics(
 
       const int face_int_order = max(2, 2 * max(fe_T->GetOrder(), fe_p->GetOrder()) + 2);
       const IntegrationRule &ir_face = IntRules.Get(FT->GetGeometryType(), face_int_order);
+      const IntegrationRule &ir_elem = IntRules.Get(fe_T->GetGeomType(), quad_order);
 
       for (int q = 0; q < ir_face.GetNPoints(); ++q)
       {
@@ -2588,10 +2629,15 @@ SurfaceBoundaryDiagnostics ComputeTopBoundaryDiagnostics(
             }
          }
 
+         const int nearest_q =
+            FindNearestVolumeQuadraturePoint(ir_elem, state_manager, elem, eip,
+                                            "ComputeTopBoundaryDiagnostics");
+         const TACOTMaterial::InternalState &state =
+            state_manager.GetState(elem, nearest_q);
          const TACOTMaterial::SolidProperties solid =
-            material.EvaluateSolid(Tq, pq, representative_state);
+            material.EvaluateSolid(Tq, pq, state);
          const TACOTMaterial::GasProperties gas =
-            material.EvaluateGas(Tq, pq, representative_state);
+            material.EvaluateGas(Tq, pq, state);
 
          const double mu = max(gas.mu, 1.0e-12);
          const double rho_darcy = gas.rho * solid.K / mu;
@@ -2750,6 +2796,7 @@ void AssembleTopBoundaryRecessionVelocity(
    const SurfaceBCSchedule &schedule,
    const SurfaceFluxModelParams &surface_model,
    const Vector &gravity,
+   const int quad_order,
    const int top_bdr_attr,
    const double time,
    const string &recession_density_mode,
@@ -2785,8 +2832,6 @@ void AssembleTopBoundaryRecessionVelocity(
       const FiniteElement *fe_T = fes_T.GetFE(elem);
       const FiniteElement *fe_p = fes_p.GetFE(elem);
       const FiniteElement *fe_scalar = fes_scalar.GetFE(elem);
-      const TACOTMaterial::InternalState representative_state =
-         ComputeElementRepresentativeState(state_manager, elem);
 
       fes_T.GetElementDofs(elem, dofs_T);
       fes_p.GetElementDofs(elem, dofs_p);
@@ -2806,6 +2851,7 @@ void AssembleTopBoundaryRecessionVelocity(
              max(2 * max(fe_T->GetOrder(), fe_p->GetOrder()) + 2,
                  2 * fe_scalar->GetOrder() + 2));
       const IntegrationRule &ir_face = IntRules.Get(FT->GetGeometryType(), face_int_order);
+      const IntegrationRule &ir_elem = IntRules.Get(fe_T->GetGeomType(), quad_order);
 
       for (int q = 0; q < ir_face.GetNPoints(); ++q)
       {
@@ -2831,10 +2877,15 @@ void AssembleTopBoundaryRecessionVelocity(
             }
          }
 
+         const int nearest_q =
+            FindNearestVolumeQuadraturePoint(ir_elem, state_manager, elem, eip,
+                                            "AssembleTopBoundaryRecessionVelocity");
+         const TACOTMaterial::InternalState &state =
+            state_manager.GetState(elem, nearest_q);
          const TACOTMaterial::SolidProperties solid =
-            material.EvaluateSolid(Tq, pq, representative_state);
+            material.EvaluateSolid(Tq, pq, state);
          const TACOTMaterial::GasProperties gas =
-            material.EvaluateGas(Tq, pq, representative_state);
+            material.EvaluateGas(Tq, pq, state);
 
          const double mu = max(gas.mu, 1.0e-12);
          const double rho_darcy = gas.rho * solid.K / mu;
@@ -3967,6 +4018,7 @@ int main(int argc, char *argv[])
                                           bc_schedule,
                                           surface_model,
                                           gravity,
+                                          quad_order,
                                           params.bdr_attr_top,
                                           time,
                                           true);
@@ -4084,6 +4136,7 @@ int main(int argc, char *argv[])
                                                  bc_schedule,
                                                  surface_model,
                                                  gravity,
+                                                 quad_order,
                                                  params.bdr_attr_top,
                                                  time,
                                                  params.recession_density_mode,

@@ -1,11 +1,11 @@
-mesh_file: Mesh/ablation_strip_tri_uniform.msh
+mesh_file: Mesh/ablation_strip.msh
 material_file: Input/material_tacot_case2_1.yaml
 
 order: 2
 serial_ref_levels: 0
 par_ref_levels: 0
 
-dt: 0.1
+dt: 0.01
 t_final: 120.0
 
 newton_abs_tol: 1.0e-8
@@ -58,7 +58,7 @@ pato_compat_mode: cooling_exact
 gravity_x: 0.0
 gravity_y: 0.0
 
-probe_x: 0.005
+probe_x: 0.00025
 probe_y:
   - 0.05
   - 0.049

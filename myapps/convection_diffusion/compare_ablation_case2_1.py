@@ -29,6 +29,33 @@ DEFAULT_TOL = {
 }
 
 
+def load_probe_y_from_yaml(path: Path) -> List[float]:
+    if not path.exists():
+        return []
+
+    probe_y: List[float] = []
+    in_probe_y = False
+    for raw in path.read_text().splitlines():
+        line = raw.rstrip()
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if stripped == "probe_y:":
+            in_probe_y = True
+            continue
+        if in_probe_y:
+            if line.startswith("  -"):
+                try:
+                    probe_y.append(float(line.split("-", 1)[1].strip()))
+                except ValueError:
+                    pass
+                continue
+            if not line.startswith(" "):
+                break
+
+    return probe_y
+
+
 def load_acceptance_from_yaml(path: Path) -> Dict[str, float]:
     vals = dict(DEFAULT_TOL)
     if not path.exists():
@@ -54,30 +81,31 @@ def load_acceptance_from_yaml(path: Path) -> Dict[str, float]:
     return vals
 
 
-def load_probe_depths_from_yaml(path: Path) -> List[float]:
+def load_top_level_value_from_yaml(path: Path, key: str) -> str | None:
     if not path.exists():
-        return []
-
-    probe_y: List[float] = []
-    in_probe_y = False
+        return None
+    key_prefix = f"{key}:"
     for raw in path.read_text().splitlines():
         line = raw.rstrip()
         stripped = line.strip()
         if not stripped or stripped.startswith("#"):
             continue
-        if stripped == "probe_y:":
-            in_probe_y = True
+        if line.startswith(" "):
             continue
-        if in_probe_y:
-            if line.startswith("  -"):
-                try:
-                    probe_y.append(float(line.split("-", 1)[1].strip()))
-                except ValueError:
-                    pass
-                continue
-            if not line.startswith(" "):
-                break
+        if stripped.startswith(key_prefix):
+            return stripped.split(":", 1)[1].strip()
+    return None
 
+
+def load_probe_x_from_yaml(path: Path) -> float:
+    raw = load_top_level_value_from_yaml(path, "probe_x")
+    if raw is None:
+        raise RuntimeError(f"probe_x not found in {path}")
+    return float(raw)
+
+
+def load_probe_depths_from_yaml(path: Path) -> List[float]:
+    probe_y = load_probe_y_from_yaml(path)
     if not probe_y:
         return []
     y_wall = probe_y[0]
@@ -146,6 +174,169 @@ def ensure_2d(a: np.ndarray) -> np.ndarray:
     return a
 
 
+def load_named_csv(
+    path: Path, *, required: bool, description: str
+) -> np.ndarray | None:
+    if not path.exists():
+        if required:
+            raise FileNotFoundError(f"{description} not found: {path}")
+        return None
+
+    if path.stat().st_size == 0:
+        if required:
+            raise RuntimeError(f"{description} is empty: {path}")
+        return None
+
+    data = np.genfromtxt(path, delimiter=",", names=True)
+    if getattr(data, "dtype", None) is None or data.dtype.names is None:
+        if required:
+            raise RuntimeError(f"{description} has no readable header: {path}")
+        return None
+
+    data = np.atleast_1d(data)
+    if data.size == 0:
+        if required:
+            raise RuntimeError(f"{description} has a header but no data rows: {path}")
+        return None
+
+    return data
+
+
+def temperature_probes_need_resample(probes: np.ndarray | None) -> bool:
+    if probes is None or probes.dtype.names is None:
+        return True
+
+    temp_names = [name for name in probes.dtype.names if name != "time"]
+    if not temp_names:
+        return True
+
+    return any(
+        not np.all(np.isfinite(np.asarray(probes[name], dtype=float)))
+        for name in temp_names
+    )
+
+
+def find_mfem_collection_pvd(output_dir: Path, input_yaml: Path) -> Path | None:
+    collection_name = load_top_level_value_from_yaml(input_yaml, "collection_name")
+    if collection_name:
+        candidate = output_dir / collection_name / f"{collection_name}.pvd"
+        if candidate.exists():
+            return candidate
+
+    pvd_files = sorted(output_dir.rglob("*.pvd"))
+    if not pvd_files:
+        return None
+    return pvd_files[0]
+
+
+def sample_temperature_probes_from_paraview(
+    output_dir: Path, input_yaml: Path
+) -> np.ndarray:
+    try:
+        import pyvista as pv
+    except ImportError as exc:
+        raise RuntimeError(
+            "temperature_probes.csv is missing or invalid and pyvista is not "
+            "available for ParaView post-processing."
+        ) from exc
+
+    pvd_path = find_mfem_collection_pvd(output_dir, input_yaml)
+    if pvd_path is None:
+        raise FileNotFoundError(
+            "temperature_probes.csv is missing or invalid and no MFEM "
+            f"ParaView .pvd collection was found under {output_dir}"
+        )
+
+    probe_y = load_probe_y_from_yaml(input_yaml)
+    if not probe_y:
+        raise RuntimeError(f"No probe_y entries found in {input_yaml}")
+    probe_x = load_probe_x_from_yaml(input_yaml)
+
+    reader = pv.get_reader(str(pvd_path))
+    time_values = np.asarray(getattr(reader, "time_values", []), dtype=float)
+    if time_values.size == 0:
+        time_values = np.array([0.0], dtype=float)
+    has_time_values = len(getattr(reader, "time_values", [])) > 0
+
+    dtype = [("time", float), ("wall", float)]
+    dtype.extend((f"TC{i}", float) for i in range(1, len(probe_y)))
+    probes = np.zeros(time_values.size, dtype=dtype)
+    probes["time"] = time_values
+
+    def read_dataset_at_time(time_value: float):
+        if has_time_values:
+            reader.set_active_time_value(float(time_value))
+        ds = reader.read()
+        if hasattr(ds, "n_blocks"):
+            ds = ds.combine()
+        if "temperature" not in ds.point_data:
+            raise RuntimeError(f"Missing temperature field in {pvd_path}")
+
+        warped = ds.copy(deep=True)
+        if "ale_displacement" in warped.point_data:
+            disp = np.asarray(warped.point_data["ale_displacement"], dtype=float)
+            pts = np.asarray(warped.points, dtype=float).copy()
+            ncomp = min(pts.shape[1], disp.shape[1])
+            pts[:, :ncomp] += disp[:, :ncomp]
+            warped.points = pts
+        return warped
+
+    def sample_temperature_at(mesh, x: float, y: float) -> float:
+        query = np.array([[x, y, 0.0]], dtype=float)
+        sampled = pv.PolyData(query).sample(mesh)
+        mask = np.asarray(sampled.point_data.get("vtkValidPointMask", [1]), dtype=int)
+        if mask.size == 0 or int(mask[0]) == 0:
+            return float("nan")
+        vals = np.asarray(sampled.point_data["temperature"], dtype=float)
+        if vals.size == 0:
+            return float("nan")
+        return float(vals.reshape(-1)[0])
+
+    warned_probe_x = False
+    for i_time, time_value in enumerate(time_values):
+        mesh = read_dataset_at_time(float(time_value))
+        x_min, x_max, y_bottom_live, y_top_live, _, _ = mesh.bounds
+        x_span = max(1.0e-12, float(x_max - x_min))
+        y_span = max(1.0e-12, float(y_top_live - y_bottom_live))
+        x_inset = 1.0e-6 * x_span
+        y_inset = 1.0e-6 * y_span
+        y_min_sample = float(y_bottom_live + y_inset)
+        y_max_sample = float(y_top_live - y_inset)
+
+        if float(x_min) <= probe_x <= float(x_max):
+            x_query = max(float(x_min + x_inset), min(float(x_max - x_inset), probe_x))
+        else:
+            x_query = 0.5 * (float(x_min) + float(x_max))
+            if not warned_probe_x:
+                print(
+                    "Configured probe_x="
+                    f"{probe_x:.6g} lies outside ParaView x-bounds "
+                    f"[{float(x_min):.6g}, {float(x_max):.6g}]; "
+                    f"sampling along centerline x={x_query:.6g} instead."
+                )
+                warned_probe_x = True
+
+        wall_val = sample_temperature_at(mesh, x_query, y_max_sample)
+        if not np.isfinite(wall_val):
+            wall_val = sample_temperature_at(
+                mesh, x_query, float(y_top_live - 10.0 * y_inset)
+            )
+        if not np.isfinite(wall_val):
+            wall_val = 0.0
+        probes["wall"][i_time] = wall_val
+
+        for i_probe in range(1, len(probe_y)):
+            y_fixed = float(probe_y[i_probe])
+            if y_fixed < y_bottom_live or y_fixed > y_top_live:
+                probes[f"TC{i_probe}"][i_time] = 0.0
+                continue
+            y_query = max(y_min_sample, min(y_max_sample, y_fixed))
+            val = sample_temperature_at(mesh, x_query, y_query)
+            probes[f"TC{i_probe}"][i_time] = val if np.isfinite(val) else 0.0
+
+    return probes
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -180,15 +371,23 @@ def main() -> None:
     mass_csv = out_dir / "mass_metrics.csv"
     clamp_csv = out_dir / "bprime_clamp_stats.csv"
 
-    if not probes_csv.exists() or not mass_csv.exists():
+    if not mass_csv.exists():
         raise FileNotFoundError(
-            f"Expected MFEM outputs not found: {probes_csv} and {mass_csv}"
+            f"Expected MFEM output not found: {mass_csv}"
         )
 
     tol = load_acceptance_from_yaml(Path(args.input))
 
-    probes = np.genfromtxt(probes_csv, delimiter=",", names=True)
-    mass = np.genfromtxt(mass_csv, delimiter=",", names=True)
+    probes = load_named_csv(
+        probes_csv, required=False, description="temperature probe CSV"
+    )
+    if temperature_probes_need_resample(probes):
+        print(
+            "Resampling temperature probes from ParaView because "
+            f"{probes_csv} is missing or contains invalid samples."
+        )
+        probes = sample_temperature_probes_from_paraview(out_dir, Path(args.input))
+    mass = load_named_csv(mass_csv, required=True, description="mass metrics CSV")
 
     am_energy = ensure_2d(np.loadtxt(args.amaryllis_energy, skiprows=1))
     am_mass = ensure_2d(np.loadtxt(args.amaryllis_mass, skiprows=1))

@@ -1,6 +1,6 @@
 SetFactory("OpenCASCADE");
 
-Lx = 0.0025;
+Lx = 0.0005;
 Ly = 0.05;
 
 Point(1) = {0.0, 0.0, 0.0, 1.0};
@@ -16,8 +16,8 @@ Line(4) = {4, 1}; // left
 Curve Loop(1) = {1, 2, 3, 4};
 Plane Surface(1) = {1};
 
-nx = 2;
-ny = 100;
+nx = 3;
+ny = 200;
 grade = 1.03;
 
 Transfinite Curve {1, 3} = nx Using Progression 1.0;
