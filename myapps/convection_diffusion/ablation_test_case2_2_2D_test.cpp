@@ -1750,6 +1750,125 @@ int FindNearestVolumeQuadraturePoint(const IntegrationRule &ir,
    return nearest_q;
 }
 
+static void ProjectElementQPointExtentsToL2Coefficients(
+   const ReactionStateManager &state_manager,
+   const FiniteElement &fe_state,
+   const FiniteElement &fe_l2,
+   ElementTransformation &Tr_state,
+   const int elem,
+   const int quad_order,
+   const char *context,
+   vector<Vector> &extent_coeffs)
+{
+   const IntegrationRule &ir = IntRules.Get(fe_state.GetGeomType(), quad_order);
+   MFEM_VERIFY(ir.GetNPoints() == state_manager.NumQPoints(elem),
+               string(context) + ": quadrature mismatch during face-state projection.");
+
+   const int nr = state_manager.NumReactions();
+   const int ndof = fe_l2.GetDof();
+   DenseMatrix mass(ndof);
+   mass = 0.0;
+
+   Vector shape(ndof);
+   vector<Vector> rhs(static_cast<size_t>(nr));
+   for (auto &rhs_r : rhs)
+   {
+      rhs_r.SetSize(ndof);
+      rhs_r = 0.0;
+   }
+
+   for (int q = 0; q < ir.GetNPoints(); ++q)
+   {
+      const IntegrationPoint &ip = ir.IntPoint(q);
+      Tr_state.SetIntPoint(&ip);
+      fe_l2.CalcShape(ip, shape);
+      const double weight = ip.weight * Tr_state.Weight();
+
+      for (int i = 0; i < ndof; ++i)
+      {
+         for (int j = 0; j < ndof; ++j)
+         {
+            mass(i, j) += weight * shape(i) * shape(j);
+         }
+      }
+
+      const TACOTMaterial::InternalState &st = state_manager.GetState(elem, q);
+      for (int r = 0; r < nr; ++r)
+      {
+         const double xi =
+            (r < static_cast<int>(st.extent.size())) ? st.extent[r] : 0.0;
+         for (int i = 0; i < ndof; ++i)
+         {
+            rhs[static_cast<size_t>(r)](i) += weight * shape(i) * xi;
+         }
+      }
+   }
+
+   extent_coeffs.assign(static_cast<size_t>(nr), Vector());
+   DenseMatrixInverse mass_inv(mass);
+   for (int r = 0; r < nr; ++r)
+   {
+      extent_coeffs[static_cast<size_t>(r)].SetSize(ndof);
+      mass_inv.Mult(rhs[static_cast<size_t>(r)],
+                    extent_coeffs[static_cast<size_t>(r)]);
+   }
+}
+
+class ElementFaceStateReconstruction
+{
+public:
+   explicit ElementFaceStateReconstruction(const int dim)
+      : l2_fec_(1, dim)
+   {}
+
+   void Build(const ReactionStateManager &state_manager,
+              const FiniteElement &fe_state,
+              ElementTransformation &Tr_state,
+              const int elem,
+              const int quad_order,
+              const char *context)
+   {
+      fe_l2_ = l2_fec_.FiniteElementForGeometry(fe_state.GetGeomType());
+      MFEM_VERIFY(fe_l2_ != nullptr,
+                  string(context) + ": missing L2 element for face-state reconstruction.");
+      ProjectElementQPointExtentsToL2Coefficients(state_manager,
+                                                  fe_state,
+                                                  *fe_l2_,
+                                                  Tr_state,
+                                                  elem,
+                                                  quad_order,
+                                                  context,
+                                                  extent_coeffs_);
+      state_.extent.assign(static_cast<size_t>(state_manager.NumReactions()), 0.0);
+      state_.extent_old.assign(static_cast<size_t>(state_manager.NumReactions()), 0.0);
+      state_.dt = 0.0;
+      shape_.SetSize(fe_l2_->GetDof());
+   }
+
+   const TACOTMaterial::InternalState &Evaluate(const IntegrationPoint &ip)
+   {
+      MFEM_VERIFY(fe_l2_ != nullptr,
+                  "Face-state reconstruction used before Build().");
+      fe_l2_->CalcShape(ip, shape_);
+      for (int r = 0; r < static_cast<int>(extent_coeffs_.size()); ++r)
+      {
+         const double xi = max(0.0,
+                               min(1.0,
+                                   shape_ * extent_coeffs_[static_cast<size_t>(r)]));
+         state_.extent[static_cast<size_t>(r)] = xi;
+         state_.extent_old[static_cast<size_t>(r)] = xi;
+      }
+      return state_;
+   }
+
+private:
+   L2_FECollection l2_fec_;
+   const FiniteElement *fe_l2_ = nullptr;
+   vector<Vector> extent_coeffs_;
+   Vector shape_;
+   TACOTMaterial::InternalState state_;
+};
+
 class AblationTPIntegrator : public BlockNonlinearFormIntegrator
 {
 public:
@@ -3148,8 +3267,13 @@ private:
                                      2 * max(fe_T.GetOrder(), fe_p.GetOrder()) + 2);
       const IntegrationRule &ir_face =
          IntRules.Get(Tr.GetGeometryType(), face_int_order);
-      const IntegrationRule &ir_elem =
-         IntRules.Get(fe_T.GetGeomType(), quad_order_);
+      ElementFaceStateReconstruction face_state_recon(dim);
+      face_state_recon.Build(state_manager_,
+                             fe_T,
+                             *Tr.Elem1,
+                             Tr.Elem1No,
+                             quad_order_,
+                             "ComputeFaceGradAnalytic");
 
       for (int q = 0; q < ir_face.GetNPoints(); ++q)
       {
@@ -3174,11 +3298,7 @@ private:
             }
          }
 
-         const int nearest_q =
-            FindNearestVolumeQuadraturePoint(ir_elem, state_manager_, Tr.Elem1No,
-                                            eip, "ComputeFaceGradAnalytic");
-         const TACOTMaterial::InternalState &state =
-            state_manager_.GetState(Tr.Elem1No, nearest_q);
+         const TACOTMaterial::InternalState &state = face_state_recon.Evaluate(eip);
          const TACOTMaterial::SolidSurfaceDerivatives solid_deriv =
             material_.EvaluateSolidSurfaceDerivatives(T_w, p_w, state);
          const TACOTMaterial::GasSurfaceDerivatives gas_deriv =
@@ -3419,8 +3539,13 @@ private:
                                      2 * max(fe_T.GetOrder(), fe_p.GetOrder()) + 2);
       const IntegrationRule &ir_face =
          IntRules.Get(Tr.GetGeometryType(), face_int_order);
-      const IntegrationRule &ir_elem =
-         IntRules.Get(fe_T.GetGeomType(), quad_order_);
+      ElementFaceStateReconstruction face_state_recon(dim);
+      face_state_recon.Build(state_manager_,
+                             fe_T,
+                             *Tr.Elem1,
+                             Tr.Elem1No,
+                             quad_order_,
+                             "ComputeFaceResidual");
 
       for (int q = 0; q < ir_face.GetNPoints(); ++q)
       {
@@ -3445,11 +3570,7 @@ private:
             }
          }
 
-         const int nearest_q =
-            FindNearestVolumeQuadraturePoint(ir_elem, state_manager_, Tr.Elem1No,
-                                            eip, "ComputeFaceResidual");
-         const TACOTMaterial::InternalState &state =
-            state_manager_.GetState(Tr.Elem1No, nearest_q);
+         const TACOTMaterial::InternalState &state = face_state_recon.Evaluate(eip);
          const TACOTMaterial::SolidProperties solid =
             material_.EvaluateSolid(T_w, p_w, state);
          const TACOTMaterial::GasProperties gas =
@@ -3628,6 +3749,8 @@ SurfaceBoundaryDiagnostics ComputeTopBoundaryDiagnostics(
    double local_centerline_mu_g = 0.0;
    double local_centerline_K = 0.0;
    double local_centerline_mobility = 0.0;
+   double local_max_face_state_diff = 0.0;
+   static bool face_state_difference_logged = false;
 
    for (int be = 0; be < pmesh.GetNBE(); ++be)
    {
@@ -3660,6 +3783,13 @@ SurfaceBoundaryDiagnostics ComputeTopBoundaryDiagnostics(
       const int face_int_order = max(2, 2 * max(fe_T->GetOrder(), fe_p->GetOrder()) + 2);
       const IntegrationRule &ir_face = IntRules.Get(FT->GetGeometryType(), face_int_order);
       const IntegrationRule &ir_elem = IntRules.Get(fe_T->GetGeomType(), quad_order);
+      ElementFaceStateReconstruction face_state_recon(dim);
+      face_state_recon.Build(state_manager,
+                             *fe_T,
+                             *FT->Elem1,
+                             elem,
+                             quad_order,
+                             "ComputeTopBoundaryDiagnostics");
 
       Vector face_pos(dim);
       for (int q = 0; q < ir_face.GetNPoints(); ++q)
@@ -3685,15 +3815,30 @@ SurfaceBoundaryDiagnostics ComputeTopBoundaryDiagnostics(
             }
          }
 
-         const int nearest_q =
-            FindNearestVolumeQuadraturePoint(ir_elem, state_manager, elem, eip,
-                                            "ComputeTopBoundaryDiagnostics");
-         const TACOTMaterial::InternalState &state =
-            state_manager.GetState(elem, nearest_q);
+         const TACOTMaterial::InternalState &state = face_state_recon.Evaluate(eip);
          const TACOTMaterial::SolidProperties solid =
             material.EvaluateSolid(Tq, pq, state);
          const TACOTMaterial::GasProperties gas =
             material.EvaluateGas(Tq, pq, state);
+
+         if (!face_state_difference_logged)
+         {
+            const int nearest_q =
+               FindNearestVolumeQuadraturePoint(ir_elem, state_manager, elem, eip,
+                                               "ComputeTopBoundaryDiagnostics");
+            const TACOTMaterial::InternalState &nearest_state =
+               state_manager.GetState(elem, nearest_q);
+            const int nr =
+               min(static_cast<int>(state.extent.size()),
+                   static_cast<int>(nearest_state.extent.size()));
+            for (int r = 0; r < nr; ++r)
+            {
+               local_max_face_state_diff =
+                  max(local_max_face_state_diff,
+                      abs(state.extent[static_cast<size_t>(r)] -
+                          nearest_state.extent[static_cast<size_t>(r)]));
+            }
+         }
 
          const double mu = max(gas.mu, 1.0e-12);
          const double rho_darcy = gas.rho * solid.K / mu;
@@ -3845,6 +3990,28 @@ SurfaceBoundaryDiagnostics ComputeTopBoundaryDiagnostics(
                   MPI_DOUBLE, MPI_SUM, pmesh.GetComm());
     MPI_Allreduce(&centerline_flux_count_local, &centerline_flux_count_global, 1,
                   MPI_INT, MPI_SUM, pmesh.GetComm());
+
+   if (!face_state_difference_logged)
+   {
+      double global_max_face_state_diff = 0.0;
+      MPI_Allreduce(&local_max_face_state_diff,
+                    &global_max_face_state_diff,
+                    1,
+                    MPI_DOUBLE,
+                    MPI_MAX,
+                    pmesh.GetComm());
+      if (global_max_face_state_diff > 1.0e-10)
+      {
+         int myid = 0;
+         MPI_Comm_rank(pmesh.GetComm(), &myid);
+         if (myid == 0)
+         {
+            cout << "Face-state reconstruction check: max |extent_face - extent_nearest_qp| = "
+                 << global_max_face_state_diff << endl;
+         }
+         face_state_difference_logged = true;
+      }
+   }
 
    SurfaceBoundaryDiagnostics out;
    if (centerline_flux_count_global > 0)
@@ -4003,7 +4170,13 @@ void AssembleTopBoundaryRecessionVelocity(
              max(2 * max(fe_T->GetOrder(), fe_p->GetOrder()) + 2,
                  2 * fe_scalar->GetOrder() + 2));
       const IntegrationRule &ir_face = IntRules.Get(FT->GetGeometryType(), face_int_order);
-      const IntegrationRule &ir_elem = IntRules.Get(fe_T->GetGeomType(), quad_order);
+      ElementFaceStateReconstruction face_state_recon(dim);
+      face_state_recon.Build(state_manager,
+                             *fe_T,
+                             *FT->Elem1,
+                             elem,
+                             quad_order,
+                             "AssembleTopBoundaryRecessionVelocity");
 
       for (int q = 0; q < ir_face.GetNPoints(); ++q)
       {
@@ -4029,11 +4202,7 @@ void AssembleTopBoundaryRecessionVelocity(
             }
          }
 
-         const int nearest_q =
-            FindNearestVolumeQuadraturePoint(ir_elem, state_manager, elem, eip,
-                                            "AssembleTopBoundaryRecessionVelocity");
-         const TACOTMaterial::InternalState &state =
-            state_manager.GetState(elem, nearest_q);
+         const TACOTMaterial::InternalState &state = face_state_recon.Evaluate(eip);
          const TACOTMaterial::SolidProperties solid =
             material.EvaluateSolid(Tq, pq, state);
          const TACOTMaterial::GasProperties gas =

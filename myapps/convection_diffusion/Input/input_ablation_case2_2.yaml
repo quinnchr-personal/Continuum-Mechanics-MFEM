@@ -63,7 +63,7 @@ pato_compat_mode: cooling_exact
 gravity_x: 0.0
 gravity_y: 0.0
 
-probe_x: 0.0025
+probe_x: 0.00025
 probe_y:
   - 0.05
   - 0.049

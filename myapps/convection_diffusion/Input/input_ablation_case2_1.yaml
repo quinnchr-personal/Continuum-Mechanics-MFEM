@@ -1,7 +1,7 @@
 mesh_file: Mesh/ablation_strip.msh
 material_file: Input/material_tacot_case2_1.yaml
 
-order: 2
+order: 1
 serial_ref_levels: 0
 par_ref_levels: 0
 
