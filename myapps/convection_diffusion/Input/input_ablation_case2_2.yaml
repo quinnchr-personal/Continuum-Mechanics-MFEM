@@ -21,7 +21,7 @@ petsc_options_file: Input/petsc_ablation_case2_2.opts
 ksp_prefix: ablation22_ls_
 petsc_ksp_print_level: 0
 
-output_every: 10
+output_every: 1
 output_path: ParaView/ablation_case2_2
 collection_name: ablation_test_case2_2_2D
 probes_csv: temperature_probes.csv
@@ -63,7 +63,7 @@ pato_compat_mode: cooling_exact
 gravity_x: 0.0
 gravity_y: 0.0
 
-probe_x: 0.00025
+probe_x: 0.005
 probe_y:
   - 0.05
   - 0.049

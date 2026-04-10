@@ -1,6 +1,6 @@
 SetFactory("OpenCASCADE");
 
-Lx = 0.0005;
+Lx = 0.01;
 Ly = 0.05;
 
 Point(1) = {0.0, 0.0, 0.0, 1.0};
@@ -16,13 +16,13 @@ Line(4) = {4, 1}; // left
 Curve Loop(1) = {1, 2, 3, 4};
 Plane Surface(1) = {1};
 
-nx = 3;
+nx = 2;
 ny = 200;
-grade = 1.03;
+rY = 0.9767781100894890; // blockMesh-style y grading, preserving current 99 y-cells
 
 Transfinite Curve {1, 3} = nx Using Progression 1.0;
-Transfinite Curve {2} = ny Using Progression (1.0 / grade); // refined near top
-Transfinite Curve {4} = ny Using Progression grade;         // refined near top
+Transfinite Curve {2} = ny Using Progression rY;            // refined near top
+Transfinite Curve {4} = ny Using Progression (1.0 / rY);   // refined near top
 Transfinite Surface {1};
 Recombine Surface {1};
 

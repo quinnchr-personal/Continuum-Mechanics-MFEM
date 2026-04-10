@@ -9,6 +9,7 @@ import re
 import sys
 from pathlib import Path
 from typing import Dict, List, Tuple
+from xml.etree import ElementTree as ET
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -162,6 +163,223 @@ def find_mfem_collection_pvd(output_dir: Path, input_yaml: Path) -> Path | None:
     return pvd_files[0]
 
 
+def iter_leaf_datasets(ds, path: Tuple[str, ...] = ()):
+    if hasattr(ds, "n_blocks"):
+        for i in range(ds.n_blocks):
+            block = ds[i]
+            if block is None:
+                continue
+            name = ""
+            try:
+                name = ds.get_block_name(i) or ""
+            except Exception:
+                name = ""
+            yield from iter_leaf_datasets(block, path + (name,))
+        return
+    yield path, ds
+
+
+def select_dataset_with_point_fields(ds, *fields: str):
+    candidates = []
+    for path, leaf in iter_leaf_datasets(ds):
+        point_data = getattr(leaf, "point_data", None)
+        if point_data is None:
+            continue
+        if all(field in point_data for field in fields):
+            candidates.append((path, leaf))
+
+    if not candidates:
+        return None
+
+    for path, leaf in candidates:
+        if any(name == "mesh" for name in path):
+            return leaf
+
+    if len(candidates) == 1:
+        return candidates[0][1]
+
+    try:
+        import pyvista as pv
+
+        return pv.MultiBlock([leaf for _, leaf in candidates]).combine()
+    except Exception:
+        return candidates[0][1]
+
+
+def resolve_input_relative_path(input_yaml: Path, raw_path: str) -> Path:
+    path = Path(raw_path).expanduser()
+    if path.is_absolute():
+        return path
+    if path.exists():
+        return path.resolve()
+    return (input_yaml.parent / path).resolve()
+
+
+def parse_inline_yaml_list(raw: str) -> List[float]:
+    text = raw.strip()
+    if text.startswith("[") and text.endswith("]"):
+        text = text[1:-1]
+    vals: List[float] = []
+    for tok in text.split(","):
+        s = tok.strip()
+        if not s:
+            continue
+        vals.append(float(s))
+    return vals
+
+
+def load_material_density_limits(input_yaml: Path) -> Tuple[float, float]:
+    raw_material_path = load_top_level_value_from_yaml(input_yaml, "material_file")
+    if raw_material_path is None:
+        raise RuntimeError(f"material_file not found in {input_yaml}")
+
+    material_path = resolve_input_relative_path(input_yaml, raw_material_path)
+    if not material_path.exists():
+        raise FileNotFoundError(f"Material YAML not found: {material_path}")
+
+    rhoI: List[float] = []
+    epsI: List[float] = []
+    reactions: List[Dict[str, float]] = []
+    current_reaction: Dict[str, float] | None = None
+    in_reactions = False
+
+    for raw in material_path.read_text().splitlines():
+        line = raw.rstrip()
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+
+        if stripped.startswith("rhoI:"):
+            rhoI = parse_inline_yaml_list(stripped.split(":", 1)[1])
+            continue
+        if stripped.startswith("epsI:"):
+            epsI = parse_inline_yaml_list(stripped.split(":", 1)[1])
+            continue
+
+        if stripped == "reactions:":
+            if current_reaction is not None:
+                reactions.append(current_reaction)
+                current_reaction = None
+            in_reactions = True
+            continue
+
+        if not line.startswith(" "):
+            if in_reactions and current_reaction is not None:
+                reactions.append(current_reaction)
+                current_reaction = None
+            in_reactions = False
+            continue
+
+        if not in_reactions:
+            continue
+
+        if stripped.startswith("- "):
+            if current_reaction is not None:
+                reactions.append(current_reaction)
+            current_reaction = {"F": 0.0, "phase_index": 1.0}
+            stripped = stripped[2:].strip()
+            if not stripped:
+                continue
+
+        if current_reaction is None or ":" not in stripped:
+            continue
+
+        key, value = stripped.split(":", 1)
+        key = key.strip()
+        value = value.strip()
+        if key == "F":
+            current_reaction["F"] = float(value)
+        elif key == "phase_index":
+            current_reaction["phase_index"] = float(value)
+
+    if in_reactions and current_reaction is not None:
+        reactions.append(current_reaction)
+
+    if not rhoI or not epsI:
+        raise RuntimeError(
+            f"Could not parse rhoI/epsI from material file {material_path}"
+        )
+    if len(rhoI) != len(epsI):
+        raise RuntimeError(
+            f"rhoI/epsI length mismatch in material file {material_path}"
+        )
+
+    rho_eps0 = [rho * eps for rho, eps in zip(rhoI, epsI)]
+    rho_v = float(sum(rho_eps0))
+    nph = len(rho_eps0)
+    rho_c = rho_v
+    for reaction in reactions:
+        phase_index = int(reaction.get("phase_index", 1.0))
+        phase_index = max(0, min(nph - 1, phase_index))
+        rho_c -= float(reaction.get("F", 0.0)) * rho_eps0[phase_index]
+
+    return rho_v, max(rho_c, 1.0e-14)
+
+
+def load_pvd_time_entries(pvd_path: Path) -> List[Tuple[float, Dict[str, Path]]]:
+    try:
+        root = ET.parse(pvd_path).getroot()
+    except ET.ParseError as exc:
+        raise RuntimeError(f"Failed to parse ParaView collection {pvd_path}") from exc
+
+    collection = root.find("Collection")
+    if collection is None:
+        raise RuntimeError(f"Missing Collection node in {pvd_path}")
+
+    time_map: Dict[float, Dict[str, Path]] = {}
+    for dataset in collection.findall("DataSet"):
+        file_attr = dataset.attrib.get("file", "").strip()
+        if not file_attr:
+            continue
+        time_value = float(dataset.attrib.get("timestep", "0"))
+        name = dataset.attrib.get("name", "").strip()
+        path = (pvd_path.parent / file_attr).resolve()
+        entry = time_map.setdefault(time_value, {})
+        if name:
+            entry[name] = path
+        if name == "mesh" or Path(file_attr).name == "data.pvtu":
+            entry["mesh"] = path
+
+    return [(time_value, time_map[time_value]) for time_value in sorted(time_map)]
+
+
+def filter_available_time_entries(
+    time_entries: List[Tuple[float, Dict[str, Path]]],
+    required_key: str,
+    context: str,
+) -> List[Tuple[float, Dict[str, Path]]]:
+    available: List[Tuple[float, Dict[str, Path]]] = []
+    skipped = 0
+    for time_value, entry in time_entries:
+        path = entry.get(required_key)
+        if path is None or not path.exists():
+            skipped += 1
+            continue
+        available.append((time_value, entry))
+
+    if not available:
+        raise FileNotFoundError(
+            f"No readable ParaView timesteps with {required_key!r} were found in {context}"
+        )
+
+    if skipped:
+        print(
+            f"Skipping {skipped} ParaView time steps with missing {required_key} files "
+            f"while sampling from {context}."
+        )
+
+    return available
+
+
+def print_progress(label: str, current: int, total: int) -> None:
+    if total <= 0:
+        return
+    stride = max(1, total // 20)
+    if current == 1 or current == total or current % stride == 0:
+        pct = 100.0 * float(current) / float(total)
+        print(f"{label}: {current}/{total} ({pct:.1f}%)", flush=True)
+
+
 def sample_temperature_probes_from_paraview(
     output_dir: Path, input_yaml: Path
 ) -> np.ndarray:
@@ -185,25 +403,25 @@ def sample_temperature_probes_from_paraview(
         raise RuntimeError(f"No probe_y entries found in {input_yaml}")
     probe_x = load_probe_x_from_yaml(input_yaml)
 
-    reader = pv.get_reader(str(pvd_path))
-    time_values = np.asarray(getattr(reader, "time_values", []), dtype=float)
-    if time_values.size == 0:
-        time_values = np.array([0.0], dtype=float)
-    has_time_values = len(getattr(reader, "time_values", [])) > 0
+    time_entries = filter_available_time_entries(
+        load_pvd_time_entries(pvd_path), "mesh", str(pvd_path)
+    )
+    time_values = np.asarray([time_value for time_value, _ in time_entries], dtype=float)
 
     dtype = [("time", float), ("wall", float)]
     dtype.extend((f"TC{i}", float) for i in range(1, len(probe_y)))
     probes = np.zeros(time_values.size, dtype=dtype)
     probes["time"] = time_values
+    print(
+        f"Sampling temperature probes from ParaView over {len(time_entries)} time steps...",
+        flush=True,
+    )
 
-    def read_dataset_at_time(time_value: float):
-        if has_time_values:
-            reader.set_active_time_value(float(time_value))
-        ds = reader.read()
-        if hasattr(ds, "n_blocks"):
-            ds = ds.combine()
-        if "temperature" not in ds.point_data:
-            raise RuntimeError(f"Missing temperature field in {pvd_path}")
+    def read_dataset_at_path(mesh_path: Path):
+        ds = pv.read(mesh_path)
+        ds = select_dataset_with_point_fields(ds, "temperature")
+        if ds is None:
+            raise RuntimeError(f"Missing temperature field in {mesh_path}")
 
         warped = ds.copy(deep=True)
         if "ale_displacement" in warped.point_data:
@@ -225,17 +443,36 @@ def sample_temperature_probes_from_paraview(
             return float("nan")
         return float(vals.reshape(-1)[0])
 
-    for i_time, time_value in enumerate(time_values):
-        mesh = read_dataset_at_time(float(time_value))
-        xmin, xmax, y_bottom_live, y_top_live, _, _ = mesh.bounds
+    warned_probe_x = False
+    for i_time, (_, entry) in enumerate(time_entries):
+        print_progress("Temperature probe sampling", i_time + 1, len(time_entries))
+        mesh = read_dataset_at_path(entry["mesh"])
+        x_min, x_max, y_bottom_live, y_top_live, _, _ = mesh.bounds
+        x_span = max(1.0e-12, float(x_max - x_min))
         y_span = max(1.0e-12, float(y_top_live - y_bottom_live))
+        x_inset = 1.0e-6 * x_span
         y_inset = 1.0e-6 * y_span
         y_min_sample = float(y_bottom_live + y_inset)
         y_max_sample = float(y_top_live - y_inset)
 
-        wall_val = sample_temperature_at(mesh, probe_x, y_max_sample)
+        if float(x_min) <= probe_x <= float(x_max):
+            x_query = max(float(x_min + x_inset), min(float(x_max - x_inset), probe_x))
+        else:
+            x_query = 0.5 * (float(x_min) + float(x_max))
+            if not warned_probe_x:
+                print(
+                    "Configured probe_x="
+                    f"{probe_x:.6g} lies outside ParaView x-bounds "
+                    f"[{float(x_min):.6g}, {float(x_max):.6g}]; "
+                    f"sampling along centerline x={x_query:.6g} instead."
+                )
+                warned_probe_x = True
+
+        wall_val = sample_temperature_at(mesh, x_query, y_max_sample)
         if not np.isfinite(wall_val):
-            wall_val = sample_temperature_at(mesh, probe_x, float(y_top_live - 10.0 * y_inset))
+            wall_val = sample_temperature_at(
+                mesh, x_query, float(y_top_live - 10.0 * y_inset)
+            )
         if not np.isfinite(wall_val):
             wall_val = 0.0
         probes["wall"][i_time] = wall_val
@@ -246,7 +483,7 @@ def sample_temperature_probes_from_paraview(
                 probes[f"TC{i_probe}"][i_time] = 0.0
                 continue
             y_query = max(y_min_sample, min(y_max_sample, y_fixed))
-            val = sample_temperature_at(mesh, probe_x, y_query)
+            val = sample_temperature_at(mesh, x_query, y_query)
             probes[f"TC{i_probe}"][i_time] = val if np.isfinite(val) else 0.0
 
     return probes
@@ -270,31 +507,32 @@ def sample_fronts_from_paraview(
             f"ParaView .pvd collection was found under {output_dir}"
         )
 
-    reader = pv.get_reader(str(pvd_path))
-    time_values = np.asarray(getattr(reader, "time_values", []), dtype=float)
-    if time_values.size == 0:
-        time_values = np.array([0.0], dtype=float)
-    has_time_values = len(getattr(reader, "time_values", [])) > 0
+    time_entries = filter_available_time_entries(
+        load_pvd_time_entries(pvd_path), "mesh", str(pvd_path)
+    )
+    time_values = np.asarray([time_value for time_value, _ in time_entries], dtype=float)
+    print(
+        f"Sampling fronts from ParaView over {len(time_entries)} time steps...",
+        flush=True,
+    )
 
-    def read_dataset_at_time(time_value: float):
-        if has_time_values:
-            reader.set_active_time_value(float(time_value))
-        ds = reader.read()
-        if hasattr(ds, "n_blocks"):
-            ds = ds.combine()
-        if "tau" not in ds.point_data:
-            raise RuntimeError(f"Missing tau field in {pvd_path}")
+    def read_datasets_for_entry(entry: Dict[str, Path]):
+        mesh = select_dataset_with_point_fields(pv.read(entry["mesh"]), "tau")
+        if mesh is None:
+            raise RuntimeError(f"Missing tau field in {entry['mesh']}")
 
-        warped = ds.copy(deep=True)
-        if "ale_displacement" in warped.point_data:
-            disp = np.asarray(warped.point_data["ale_displacement"], dtype=float)
-            pts = np.asarray(warped.points, dtype=float).copy()
-            ncomp = min(pts.shape[1], disp.shape[1])
-            pts[:, :ncomp] += disp[:, :ncomp]
-            warped.points = pts
-        return warped
+        qcloud = None
+        tau_qp_path = entry.get("tau_qp")
+        if tau_qp_path is not None and tau_qp_path.exists():
+            try:
+                qcloud = select_dataset_with_point_fields(pv.read(tau_qp_path), "tau_qp")
+            except Exception:
+                qcloud = None
+        return mesh, qcloud
 
-    def compute_front_depth_from_mesh(mesh, x: float, threshold: float) -> float:
+    def compute_front_crossing_y_from_mesh(
+        mesh, x: float, threshold: float
+    ) -> Tuple[float | None, float]:
         ns = 250
         eps = 1.0e-9
         _, _, y_bottom, y_top, _, _ = mesh.bounds
@@ -311,33 +549,108 @@ def sample_fronts_from_paraview(
             dtype=int,
         ).reshape(-1)
         if vals.size != ys.size:
-            return 0.0
+            return None, float("nan")
 
         vals = np.where(mask > 0, vals, np.nan)
+        surf_val = float(vals[0]) if vals.size else float("nan")
         for k in range(1, ys.size):
             vp = vals[k - 1]
             vc = vals[k]
-            if np.isfinite(vp) and np.isfinite(vc) and vp > threshold and vc <= threshold:
-                denom = vp - vc
+            if np.isfinite(vp) and np.isfinite(vc) and vp < threshold and vc >= threshold:
+                denom = vc - vp
                 frac = 0.0
                 if abs(denom) > 1.0e-14:
-                    frac = (vp - threshold) / denom
+                    frac = (threshold - vp) / denom
                     frac = max(0.0, min(1.0, frac))
-                y_cross = ys[k - 1] - frac * (ys[k - 1] - ys[k])
-                return max(0.0, float(y_top - y_cross))
-        return 0.0
+                y_cross = ys[k - 1] + frac * (ys[k] - ys[k - 1])
+                return float(y_cross), surf_val
+        return None, surf_val
+
+    def compute_front_crossing_y_from_qcloud(
+        qcloud,
+        x: float,
+        threshold: float,
+    ) -> Tuple[float | None, float]:
+        pts = np.asarray(qcloud.points, dtype=float)
+        vals = np.asarray(qcloud.point_data.get("tau_qp", []), dtype=float).reshape(-1)
+        if pts.ndim != 2 or pts.shape[1] < 2 or vals.size != pts.shape[0]:
+            return None, float("nan")
+
+        unique_x = np.unique(np.round(pts[:, 0], decimals=12))
+        if unique_x.size == 0:
+            return None, float("nan")
+
+        x_sel = float(unique_x[np.argmin(np.abs(unique_x - x))])
+        x_tol = max(1.0e-11, 1.0e-9 * max(1.0, abs(x_sel)))
+        mask = np.isclose(pts[:, 0], x_sel, atol=x_tol, rtol=0.0)
+        if not np.any(mask):
+            return None, float("nan")
+
+        ys = pts[mask, 1]
+        line_vals = vals[mask]
+        order = np.argsort(-ys)
+        ys = ys[order]
+        line_vals = line_vals[order]
+
+        surf_val = float(line_vals[0]) if line_vals.size else float("nan")
+        for k in range(1, ys.size):
+            vp = line_vals[k - 1]
+            vc = line_vals[k]
+            if np.isfinite(vp) and np.isfinite(vc) and vp < threshold and vc >= threshold:
+                denom = vc - vp
+                frac = 0.0
+                if abs(denom) > 1.0e-14:
+                    frac = (threshold - vp) / denom
+                    frac = max(0.0, min(1.0, frac))
+                y_cross = ys[k - 1] + frac * (ys[k] - ys[k - 1])
+                return float(y_cross), surf_val
+        return None, surf_val
 
     front98 = np.zeros(time_values.size, dtype=float)
     front2 = np.zeros(time_values.size, dtype=float)
 
+    initial_mesh, _ = read_datasets_for_entry(time_entries[0][1])
+    _, _, _, initial_y_top, _, _ = initial_mesh.bounds
     xmid: float | None = None
-    for i_time, time_value in enumerate(time_values):
-        mesh = read_dataset_at_time(float(time_value))
+    for i_time, (_, entry) in enumerate(time_entries):
+        print_progress("Front sampling", i_time + 1, len(time_entries))
+        mesh, qcloud = read_datasets_for_entry(entry)
         if xmid is None:
             xmin, xmax, _, _, _, _ = mesh.bounds
             xmid = 0.5 * (float(xmin) + float(xmax))
-        front98[i_time] = compute_front_depth_from_mesh(mesh, xmid, 0.98)
-        front2[i_time] = compute_front_depth_from_mesh(mesh, xmid, 0.02)
+        xmin, xmax, y_bottom_live, y_top_live, _, _ = mesh.bounds
+        recession = max(0.0, float(initial_y_top - y_top_live))
+        if qcloud is not None:
+            y98, tau_surface = compute_front_crossing_y_from_qcloud(
+                qcloud, xmid, 0.98
+            )
+        else:
+            y98, tau_surface = compute_front_crossing_y_from_mesh(
+                mesh, xmid, 0.98
+            )
+        if np.isfinite(tau_surface) and tau_surface < 0.98:
+            if y98 is None:
+                front98[i_time] = max(0.0, float(initial_y_top - y_bottom_live))
+            else:
+                front98[i_time] = max(0.0, float(initial_y_top - y98))
+        else:
+            front98[i_time] = 0.0
+
+        if np.isfinite(tau_surface) and tau_surface < 0.02:
+            if qcloud is not None:
+                y2, _ = compute_front_crossing_y_from_qcloud(
+                    qcloud, xmid, 0.02
+                )
+            else:
+                y2, _ = compute_front_crossing_y_from_mesh(
+                    mesh, xmid, 0.02
+                )
+            if y2 is None:
+                front2[i_time] = max(0.0, float(initial_y_top - y_bottom_live))
+            else:
+                front2[i_time] = max(0.0, float(initial_y_top - y2))
+        else:
+            front2[i_time] = 0.0
 
     return time_values, front98, front2
 
@@ -703,6 +1016,7 @@ def main() -> None:
     mfem_mdot_centerline = (
         mass["m_dot_g_centerline"] if "m_dot_g_centerline" in mass.dtype.names else None
     )
+    mfem_front_source = "mass_metrics.csv"
     if (
         "front_98_virgin" in mass.dtype.names
         and "front_2_char" in mass.dtype.names
@@ -711,6 +1025,7 @@ def main() -> None:
         mfem_front98 = mass["front_98_virgin"]
         mfem_front2 = mass["front_2_char"]
     else:
+        mfem_front_source = "ParaView fallback"
         print(
             "front columns not found in mass_metrics.csv; "
             "sampling fronts from ParaView output instead."
@@ -855,6 +1170,41 @@ def main() -> None:
         w.writerow(["signal", "tolerance"])
         for k, v in DEFAULT_TOL.items():
             w.writerow([k, tol.get(k, v)])
+
+    fronts_csv = out_dir / "amaryllis_front_comparison.csv"
+    with fronts_csv.open("w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(
+            [
+                "time",
+                "mfem_front_98_virgin",
+                "amaryllis_front_98_virgin",
+                "front_98_virgin_error",
+                "mfem_front_2_char",
+                "amaryllis_front_2_char",
+                "front_2_char_error",
+                "mfem_front_source",
+            ]
+        )
+        for (
+            t_val,
+            mfem_98,
+            ref_98,
+            mfem_2,
+            ref_2,
+        ) in zip(t_ref, mfem_front98_i, ref_front98, mfem_front2_i, ref_front2):
+            w.writerow(
+                [
+                    t_val,
+                    mfem_98,
+                    ref_98,
+                    mfem_98 - ref_98,
+                    mfem_2,
+                    ref_2,
+                    mfem_2 - ref_2,
+                    mfem_front_source,
+                ]
+            )
 
     # Plot 1: temperature history.
     plt.figure(figsize=(14, 5))
@@ -1669,6 +2019,7 @@ def main() -> None:
 
     print(f"Wrote: {metrics_csv}")
     print(f"Wrote: {tol_csv}")
+    print(f"Wrote: {fronts_csv}")
     print(f"Wrote: {out_dir / f'{args.out_prefix}_recession_comparison.png'}")
     if pato_diag_plot is not None:
         print(f"Wrote: {pato_diag_plot}")

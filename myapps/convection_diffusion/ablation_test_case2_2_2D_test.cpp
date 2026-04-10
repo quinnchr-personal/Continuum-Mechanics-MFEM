@@ -3660,6 +3660,148 @@ void ApplyElementScalar(const ParFiniteElementSpace &fes,
    }
 }
 
+struct QuadratureDiagnosticFields
+{
+   unique_ptr<QuadratureSpace> qspace;
+   unique_ptr<QuadratureFunction> tau_qf;
+   unique_ptr<QuadratureFunction> rho_s_qf;
+   unique_ptr<QuadratureFunction> pi_total_qf;
+   unique_ptr<QuadratureFunction> m_dot_g_qf;
+   unique_ptr<QuadratureFunction> degree_char_qf;
+   unique_ptr<QuadratureFunction> char_density_fraction_qf;
+   vector<unique_ptr<QuadratureFunction>> extent_qf;
+   vector<string> extent_field_names;
+
+   bool Enabled() const { return static_cast<bool>(qspace); }
+};
+
+static void InitializeQuadratureDiagnosticFields(
+   ParMesh &mesh,
+   const int quad_order,
+   const int num_reactions,
+   QuadratureDiagnosticFields &qdiag)
+{
+   qdiag.qspace = make_unique<QuadratureSpace>(&mesh, quad_order);
+   qdiag.tau_qf = make_unique<QuadratureFunction>(*qdiag.qspace);
+   qdiag.rho_s_qf = make_unique<QuadratureFunction>(*qdiag.qspace);
+   qdiag.pi_total_qf = make_unique<QuadratureFunction>(*qdiag.qspace);
+   qdiag.m_dot_g_qf = make_unique<QuadratureFunction>(*qdiag.qspace);
+   qdiag.degree_char_qf = make_unique<QuadratureFunction>(*qdiag.qspace);
+   qdiag.char_density_fraction_qf =
+      make_unique<QuadratureFunction>(*qdiag.qspace);
+   qdiag.extent_qf.clear();
+   qdiag.extent_field_names.clear();
+   qdiag.extent_qf.reserve(num_reactions);
+   qdiag.extent_field_names.reserve(num_reactions);
+   for (int r = 0; r < num_reactions; ++r)
+   {
+      qdiag.extent_qf.emplace_back(make_unique<QuadratureFunction>(*qdiag.qspace));
+      qdiag.extent_field_names.push_back("X" + to_string(r + 1) + "_qp");
+   }
+}
+
+static void UpdateQuadratureDiagnosticFields(
+   const ParFiniteElementSpace &fes_T,
+   const ParFiniteElementSpace &fes_p,
+   const ParGridFunction &T,
+   const ParGridFunction &p,
+   const TACOTMaterial &material,
+   const ReactionStateManager &state_manager,
+   const int quad_order,
+   QuadratureDiagnosticFields &qdiag)
+{
+   if (!qdiag.Enabled()) { return; }
+
+   const int nr = state_manager.NumReactions();
+   MFEM_VERIFY(static_cast<int>(qdiag.extent_qf.size()) == nr,
+               "Quadrature diagnostic reaction count mismatch.");
+
+   Array<int> dofs_T, dofs_p;
+   Vector elT, elp;
+   Vector shape_T, shape_p;
+
+   real_t *tau_data = qdiag.tau_qf->HostWrite();
+   real_t *rho_s_data = qdiag.rho_s_qf->HostWrite();
+   real_t *pi_total_data = qdiag.pi_total_qf->HostWrite();
+   real_t *m_dot_g_data = qdiag.m_dot_g_qf->HostWrite();
+   real_t *degree_char_data = qdiag.degree_char_qf->HostWrite();
+   real_t *char_density_fraction_data =
+      qdiag.char_density_fraction_qf->HostWrite();
+   vector<real_t *> extent_data(static_cast<size_t>(nr), nullptr);
+   for (int r = 0; r < nr; ++r)
+   {
+      extent_data[static_cast<size_t>(r)] = qdiag.extent_qf[static_cast<size_t>(r)]->HostWrite();
+   }
+
+   const double rho_v = material.InitialSolidDensity();
+   const double rho_c = material.CharSolidDensity();
+   const double rho_den = rho_v - rho_c;
+
+   for (int e = 0; e < fes_T.GetNE(); ++e)
+   {
+      const FiniteElement *fe_T = fes_T.GetFE(e);
+      const FiniteElement *fe_p = fes_p.GetFE(e);
+      ElementTransformation *Tr = fes_T.GetElementTransformation(e);
+      const IntegrationRule &ir = IntRules.Get(fe_T->GetGeomType(), quad_order);
+      const int qoffset = qdiag.qspace->Offset(e);
+      const int qcount = qdiag.qspace->Offset(e + 1) - qoffset;
+
+      MFEM_VERIFY(ir.GetNPoints() == state_manager.NumQPoints(e),
+                  "Quadrature diagnostic state size mismatch.");
+      MFEM_VERIFY(qcount == ir.GetNPoints(),
+                  "Quadrature diagnostic space mismatch.");
+
+      fes_T.GetElementDofs(e, dofs_T);
+      fes_p.GetElementDofs(e, dofs_p);
+      T.GetSubVector(dofs_T, elT);
+      p.GetSubVector(dofs_p, elp);
+
+      shape_T.SetSize(fe_T->GetDof());
+      shape_p.SetSize(fe_p->GetDof());
+
+      for (int q = 0; q < ir.GetNPoints(); ++q)
+      {
+         const IntegrationPoint &ip = ir.IntPoint(q);
+         Tr->SetIntPoint(&ip);
+
+         fe_T->CalcPhysShape(*Tr, shape_T);
+         fe_p->CalcPhysShape(*Tr, shape_p);
+
+         const double Tq = shape_T * elT;
+         const double pq = shape_p * elp;
+         const TACOTMaterial::InternalState &state = state_manager.GetState(e, q);
+         const TACOTMaterial::SolidProperties solid =
+            material.EvaluateSolid(Tq, pq, state);
+         const double pi_total_q = state_manager.GetQPointPiTotal(e, q);
+
+         tau_data[qoffset + q] = solid.tau;
+         rho_s_data[qoffset + q] = solid.rho_s;
+         pi_total_data[qoffset + q] = pi_total_q;
+         // m_dot_g is defined by the material model as pi_total.
+         m_dot_g_data[qoffset + q] = pi_total_q;
+         degree_char_data[qoffset + q] =
+            std::max(0.0, std::min(1.0, 1.0 - solid.tau));
+
+         double char_density_fraction = 0.0;
+         if (std::abs(rho_den) > 1.0e-14)
+         {
+            char_density_fraction = (rho_v - solid.rho_s) / rho_den;
+            char_density_fraction =
+               std::max(0.0, std::min(1.0, char_density_fraction));
+         }
+         char_density_fraction_data[qoffset + q] = char_density_fraction;
+
+         for (int r = 0; r < nr; ++r)
+         {
+            const double xi =
+               (r < static_cast<int>(state.extent.size())) ? state.extent[r] : 0.0;
+            extent_data[static_cast<size_t>(r)][qoffset + q] =
+               std::max(0.0, std::min(1.0, xi));
+         }
+      }
+   }
+}
+
 TACOTMaterial::InternalState ComputeElementRepresentativeState(
    const ReactionStateManager &state_manager,
    const int elem)
@@ -5662,6 +5804,7 @@ int main(int argc, char *argv[])
 
       ParGridFunction tau_gf(&fes_diag), rho_s_gf(&fes_diag), pi_total_gf(&fes_diag), mdot_g_gf(&fes_diag);
       ParGridFunction degree_char_gf(&fes_diag), char_density_fraction_gf(&fes_diag);
+      QuadratureDiagnosticFields qdiag_fields;
       vector<unique_ptr<ParGridFunction>> extent_gf;
       vector<string> extent_field_names;
       extent_gf.reserve(state_manager.NumReactions());
@@ -5718,6 +5861,11 @@ int main(int argc, char *argv[])
       double recession_total = 0.0;
       if (params.save_paraview)
       {
+         InitializeQuadratureDiagnosticFields(*pmesh,
+                                              quad_order,
+                                              state_manager.NumReactions(),
+                                              qdiag_fields);
+
          paraview_dc.SetPrefixPath(params.output_path.c_str());
          paraview_dc.SetLevelsOfDetail(params.order);
          paraview_dc.SetDataFormat(VTKFormat::BINARY);
@@ -5746,6 +5894,20 @@ int main(int argc, char *argv[])
          {
             paraview_dc.RegisterField(extent_field_names[r].c_str(), extent_gf[r].get());
          }
+         paraview_dc.RegisterQField("tau_qp", qdiag_fields.tau_qf.get());
+         paraview_dc.RegisterQField("rho_s_qp", qdiag_fields.rho_s_qf.get());
+         paraview_dc.RegisterQField("pi_total_qp", qdiag_fields.pi_total_qf.get());
+         paraview_dc.RegisterQField("m_dot_g_qp", qdiag_fields.m_dot_g_qf.get());
+         paraview_dc.RegisterQField("degree_char_qp",
+                                    qdiag_fields.degree_char_qf.get());
+         paraview_dc.RegisterQField("char_density_fraction_qp",
+                                    qdiag_fields.char_density_fraction_qf.get());
+         for (int r = 0; r < state_manager.NumReactions(); ++r)
+         {
+            paraview_dc.RegisterQField(
+               qdiag_fields.extent_field_names[static_cast<size_t>(r)].c_str(),
+               qdiag_fields.extent_qf[static_cast<size_t>(r)].get());
+         }
       }
 
       auto write_outputs = [&](const int step, const double time)
@@ -5766,6 +5928,14 @@ int main(int argc, char *argv[])
             {
                ApplyElementScalar(fes_diag, state_manager.ExtentElement(r), *extent_gf[r]);
             }
+            UpdateQuadratureDiagnosticFields(fes_T,
+                                             fes_p,
+                                             T,
+                                             p,
+                                             material,
+                                             state_manager,
+                                             quad_order,
+                                             qdiag_fields);
 
             if (ale_displacement && ale_jacobian_gf && recession_gf)
             {
