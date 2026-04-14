@@ -17,8 +17,8 @@ Curve Loop(1) = {1, 2, 3, 4};
 Plane Surface(1) = {1};
 
 nx = 2;
-ny = 200;
-rY = 0.9767781100894890; // blockMesh-style y grading, preserving current 99 y-cells
+ny = 101;
+rY = 0.9770099572992252; // blockMesh-style y grading, matching 100 y-cells and 0.1 last/first ratio
 
 Transfinite Curve {1, 3} = nx Using Progression 1.0;
 Transfinite Curve {2} = ny Using Progression rY;            // refined near top
