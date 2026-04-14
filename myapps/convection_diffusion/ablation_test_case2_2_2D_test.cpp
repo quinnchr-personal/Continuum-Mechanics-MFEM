@@ -121,6 +121,7 @@ struct DriverParams
    bool ale_energy_enabled = true;
    bool ale_energy_solid_enabled = true;
    bool ale_energy_gas_enabled = true;
+   bool ale_remap_enabled = true;
    string mesh_smoothing_model = "laplacian";
    string recession_density_mode = "char_surface";
    double recession_density_constant = 1200.0;
@@ -598,6 +599,7 @@ void LoadParams(const string &path, DriverParams &p)
    if (n["ale_energy_enabled"]) { p.ale_energy_enabled = n["ale_energy_enabled"].as<bool>(); }
    if (n["ale_energy_solid_enabled"]) { p.ale_energy_solid_enabled = n["ale_energy_solid_enabled"].as<bool>(); }
    if (n["ale_energy_gas_enabled"]) { p.ale_energy_gas_enabled = n["ale_energy_gas_enabled"].as<bool>(); }
+   if (n["ale_remap_enabled"]) { p.ale_remap_enabled = n["ale_remap_enabled"].as<bool>(); }
    if (n["mesh_smoothing_model"])
    {
       p.mesh_smoothing_model = n["mesh_smoothing_model"].as<string>();
@@ -3669,6 +3671,7 @@ struct QuadratureDiagnosticFields
    unique_ptr<QuadratureFunction> m_dot_g_qf;
    unique_ptr<QuadratureFunction> degree_char_qf;
    unique_ptr<QuadratureFunction> char_density_fraction_qf;
+   unique_ptr<QuadratureFunction> ale_displacement_qf;
    vector<unique_ptr<QuadratureFunction>> extent_qf;
    vector<string> extent_field_names;
 
@@ -3689,6 +3692,8 @@ static void InitializeQuadratureDiagnosticFields(
    qdiag.degree_char_qf = make_unique<QuadratureFunction>(*qdiag.qspace);
    qdiag.char_density_fraction_qf =
       make_unique<QuadratureFunction>(*qdiag.qspace);
+   qdiag.ale_displacement_qf =
+      make_unique<QuadratureFunction>(*qdiag.qspace, mesh.SpaceDimension());
    qdiag.extent_qf.clear();
    qdiag.extent_field_names.clear();
    qdiag.extent_qf.reserve(num_reactions);
@@ -3705,6 +3710,7 @@ static void UpdateQuadratureDiagnosticFields(
    const ParFiniteElementSpace &fes_p,
    const ParGridFunction &T,
    const ParGridFunction &p,
+   const ParGridFunction *ale_displacement,
    const TACOTMaterial &material,
    const ReactionStateManager &state_manager,
    const int quad_order,
@@ -3727,6 +3733,18 @@ static void UpdateQuadratureDiagnosticFields(
    real_t *degree_char_data = qdiag.degree_char_qf->HostWrite();
    real_t *char_density_fraction_data =
       qdiag.char_density_fraction_qf->HostWrite();
+   if (qdiag.ale_displacement_qf)
+   {
+      if (ale_displacement)
+      {
+         VectorGridFunctionCoefficient ale_disp_coeff(ale_displacement);
+         ale_disp_coeff.Project(*qdiag.ale_displacement_qf);
+      }
+      else
+      {
+         *qdiag.ale_displacement_qf = 0.0;
+      }
+   }
    vector<real_t *> extent_data(static_cast<size_t>(nr), nullptr);
    for (int r = 0; r < nr; ++r)
    {
@@ -5373,6 +5391,7 @@ void PrintConfig(const DriverParams &p)
    cout << "  ale_energy_enabled: " << (p.ale_energy_enabled ? "true" : "false") << endl;
    cout << "  ale_energy_solid_enabled: " << (p.ale_energy_solid_enabled ? "true" : "false") << endl;
    cout << "  ale_energy_gas_enabled: " << (p.ale_energy_gas_enabled ? "true" : "false") << endl;
+   cout << "  ale_remap_enabled: " << (p.ale_remap_enabled ? "true" : "false") << endl;
    cout << "  mesh_smoothing_model: " << p.mesh_smoothing_model << endl;
    cout << "  recession_density_mode: " << p.recession_density_mode << endl;
    cout << "  recession_density_constant: " << p.recession_density_constant << endl;
@@ -5902,6 +5921,11 @@ int main(int argc, char *argv[])
                                     qdiag_fields.degree_char_qf.get());
          paraview_dc.RegisterQField("char_density_fraction_qp",
                                     qdiag_fields.char_density_fraction_qf.get());
+         if (ale_displacement)
+         {
+            paraview_dc.RegisterQField("ale_displacement_qp",
+                                       qdiag_fields.ale_displacement_qf.get());
+         }
          for (int r = 0; r < state_manager.NumReactions(); ++r)
          {
             paraview_dc.RegisterQField(
@@ -5932,6 +5956,7 @@ int main(int argc, char *argv[])
                                              fes_p,
                                              T,
                                              p,
+                                             ale_displacement.get(),
                                              material,
                                              state_manager,
                                              quad_order,
@@ -6111,7 +6136,7 @@ int main(int argc, char *argv[])
                                         ale_displacement.get(),
                                         &recession_handler->MeshVelocity());
 
-            if (diagnostic_pmesh)
+            if (diagnostic_pmesh && params.ale_remap_enabled)
             {
                RemapExtentsALE(state_manager,
                                *pmesh,

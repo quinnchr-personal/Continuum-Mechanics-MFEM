@@ -206,6 +206,26 @@ def select_dataset_with_point_fields(ds, *fields: str):
         return candidates[0][1]
 
 
+def warp_dataset_points_by_vector_field(ds, field_name: str):
+    point_data = getattr(ds, "point_data", None)
+    if point_data is None or field_name not in point_data:
+        return ds
+
+    warped = ds.copy(deep=True)
+    disp = np.asarray(warped.point_data[field_name], dtype=float)
+    pts = np.asarray(warped.points, dtype=float).copy()
+    if disp.ndim != 2 or pts.ndim != 2:
+        return warped
+
+    ncomp = min(pts.shape[1], disp.shape[1])
+    if ncomp <= 0:
+        return warped
+
+    pts[:, :ncomp] += disp[:, :ncomp]
+    warped.points = pts
+    return warped
+
+
 def resolve_input_relative_path(input_yaml: Path, raw_path: str) -> Path:
     path = Path(raw_path).expanduser()
     if path.is_absolute():
@@ -381,7 +401,7 @@ def print_progress(label: str, current: int, total: int) -> None:
 
 
 def sample_temperature_probes_from_paraview(
-    output_dir: Path, input_yaml: Path
+    output_dir: Path, input_yaml: Path, max_time_steps: int | None = None
 ) -> np.ndarray:
     try:
         import pyvista as pv
@@ -406,6 +426,12 @@ def sample_temperature_probes_from_paraview(
     time_entries = filter_available_time_entries(
         load_pvd_time_entries(pvd_path), "mesh", str(pvd_path)
     )
+    if max_time_steps is not None:
+        time_entries = time_entries[:max_time_steps]
+        if not time_entries:
+            raise RuntimeError(
+                "No ParaView time steps remain after applying --max-time-steps."
+            )
     time_values = np.asarray([time_value for time_value, _ in time_entries], dtype=float)
 
     dtype = [("time", float), ("wall", float)]
@@ -423,14 +449,7 @@ def sample_temperature_probes_from_paraview(
         if ds is None:
             raise RuntimeError(f"Missing temperature field in {mesh_path}")
 
-        warped = ds.copy(deep=True)
-        if "ale_displacement" in warped.point_data:
-            disp = np.asarray(warped.point_data["ale_displacement"], dtype=float)
-            pts = np.asarray(warped.points, dtype=float).copy()
-            ncomp = min(pts.shape[1], disp.shape[1])
-            pts[:, :ncomp] += disp[:, :ncomp]
-            warped.points = pts
-        return warped
+        return warp_dataset_points_by_vector_field(ds, "ale_displacement")
 
     def sample_temperature_at(mesh, x: float, y: float) -> float:
         query = np.array([[x, y, 0.0]], dtype=float)
@@ -490,7 +509,7 @@ def sample_temperature_probes_from_paraview(
 
 
 def sample_fronts_from_paraview(
-    output_dir: Path, input_yaml: Path
+    output_dir: Path, input_yaml: Path, max_time_steps: int | None = None
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     try:
         import pyvista as pv
@@ -510,6 +529,12 @@ def sample_fronts_from_paraview(
     time_entries = filter_available_time_entries(
         load_pvd_time_entries(pvd_path), "mesh", str(pvd_path)
     )
+    if max_time_steps is not None:
+        time_entries = time_entries[:max_time_steps]
+        if not time_entries:
+            raise RuntimeError(
+                "No ParaView time steps remain after applying --max-time-steps."
+            )
     time_values = np.asarray([time_value for time_value, _ in time_entries], dtype=float)
     print(
         f"Sampling fronts from ParaView over {len(time_entries)} time steps...",
@@ -520,12 +545,17 @@ def sample_fronts_from_paraview(
         mesh = select_dataset_with_point_fields(pv.read(entry["mesh"]), "tau")
         if mesh is None:
             raise RuntimeError(f"Missing tau field in {entry['mesh']}")
+        mesh = warp_dataset_points_by_vector_field(mesh, "ale_displacement")
 
         qcloud = None
         tau_qp_path = entry.get("tau_qp")
         if tau_qp_path is not None and tau_qp_path.exists():
             try:
                 qcloud = select_dataset_with_point_fields(pv.read(tau_qp_path), "tau_qp")
+                if qcloud is not None:
+                    qcloud = warp_dataset_points_by_vector_field(
+                        qcloud, "ale_displacement_qp"
+                    )
             except Exception:
                 qcloud = None
         return mesh, qcloud
@@ -827,12 +857,12 @@ def main() -> None:
     )
     parser.add_argument(
         "--amaryllis-energy",
-        default="/home/quinnchr/Downloads/pato-3.1/tutorials/1D/AblationTestCase_2.x/data/ref/Amaryllis/Amaryllis_Energy_TestCase_2.2.txt",
+        default="/home/quinnchr/Downloads/pato-3.1/tutorials/1D/AblationTestCase_2.x/data/ref/PATO/PATO_Energy_TestCase_2.2.txt",
         help="Amaryllis energy reference file",
     )
     parser.add_argument(
         "--amaryllis-mass",
-        default="/home/quinnchr/Downloads/pato-3.1/tutorials/1D/AblationTestCase_2.x/data/ref/Amaryllis/Amaryllis_Mass_TestCase_2.2.txt",
+        default="/home/quinnchr/Downloads/pato-3.1/tutorials/1D/AblationTestCase_2.x/data/ref/PATO/PATO_Mass_TestCase_2.2.txt",
         help="Amaryllis mass reference file",
     )
     parser.add_argument(
@@ -862,7 +892,18 @@ def main() -> None:
         default="0.1,1,10,60",
         help="Comma-separated snapshot times (s) for centerline pressure profile comparison",
     )
+    parser.add_argument(
+        "--max-time-steps",
+        type=int,
+        default=None,
+        help=(
+            "Maximum number of ParaView time steps to sample when falling back "
+            "to MFEM .pvd output for temperature probes or fronts."
+        ),
+    )
     args = parser.parse_args()
+    if args.max_time_steps is not None and args.max_time_steps < 1:
+        parser.error("--max-time-steps must be >= 1")
 
     out_dir = Path(args.output_dir)
     probes_csv = out_dir / "temperature_probes.csv"
@@ -888,7 +929,9 @@ def main() -> None:
             f"temperature_probes.csv not found or empty in {out_dir}; "
             "sampling temperature probes from ParaView output instead."
         )
-        probes = sample_temperature_probes_from_paraview(out_dir, Path(args.input))
+        probes = sample_temperature_probes_from_paraview(
+            out_dir, Path(args.input), max_time_steps=args.max_time_steps
+        )
 
     mass = load_named_csv(
         mass_csv, required=True, description="mass_metrics.csv"
@@ -1031,7 +1074,7 @@ def main() -> None:
             "sampling fronts from ParaView output instead."
         )
         mfem_front_t, mfem_front98, mfem_front2 = sample_fronts_from_paraview(
-            out_dir, Path(args.input)
+            out_dir, Path(args.input), max_time_steps=args.max_time_steps
         )
     mfem_mdot_c = mass["m_dot_c"]
     mfem_recession = mass["recession"]

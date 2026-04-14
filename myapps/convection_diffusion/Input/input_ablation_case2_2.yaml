@@ -40,6 +40,7 @@ ale_mass_enabled: true
 ale_energy_enabled: true
 ale_energy_solid_enabled: true
 ale_energy_gas_enabled: true
+ale_remap_enabled: true
 mesh_smoothing_model: laplacian
 recession_density_mode: char_surface
 recession_density_constant: 1200.0
@@ -75,8 +76,8 @@ probe_y:
   - 0.026
   - 0.0
 
-amaryllis_energy_file: /home/quinnchr/Downloads/pato-3.1/tutorials/1D/AblationTestCase_2.x/data/ref/Amaryllis/Amaryllis_Energy_TestCase_2.2.txt
-amaryllis_mass_file: /home/quinnchr/Downloads/pato-3.1/tutorials/1D/AblationTestCase_2.x/data/ref/Amaryllis/Amaryllis_Mass_TestCase_2.2.txt
+amaryllis_energy_file: /home/quinnchr/Downloads/pato-3.1/tutorials/1D/AblationTestCase_2.x/data/ref/PATO/PATO_Energy_TestCase_2.2.txt
+amaryllis_mass_file: /home/quinnchr/Downloads/pato-3.1/tutorials/1D/AblationTestCase_2.x/data/ref/PATO/PATO_Mass_TestCase_2.2.txt
 
 acceptance:
   temperature_rmse_max: 300.0
