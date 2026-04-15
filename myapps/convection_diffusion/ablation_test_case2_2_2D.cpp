@@ -2547,6 +2547,89 @@ TACOTMaterial::InternalState ComputeElementRepresentativeState(
    return representative;
 }
 
+struct QuadratureDiagnosticFields
+{
+   unique_ptr<QuadratureSpace> qspace;
+   unique_ptr<QuadratureFunction> gas_density_qf;
+   unique_ptr<QuadratureFunction> mobility_qf;
+
+   bool Enabled() const { return static_cast<bool>(qspace); }
+};
+
+static void InitializeQuadratureDiagnosticFields(
+   ParMesh &mesh,
+   const int quad_order,
+   QuadratureDiagnosticFields &qdiag)
+{
+   qdiag.qspace = make_unique<QuadratureSpace>(&mesh, quad_order);
+   qdiag.gas_density_qf = make_unique<QuadratureFunction>(*qdiag.qspace);
+   qdiag.mobility_qf = make_unique<QuadratureFunction>(*qdiag.qspace);
+}
+
+static void UpdateQuadratureDiagnosticFields(
+   const ParFiniteElementSpace &fes_T,
+   const ParFiniteElementSpace &fes_p,
+   const ParGridFunction &T,
+   const ParGridFunction &p,
+   const TACOTMaterial &material,
+   const ReactionStateManager &state_manager,
+   const int quad_order,
+   QuadratureDiagnosticFields &qdiag)
+{
+   if (!qdiag.Enabled()) { return; }
+
+   Array<int> dofs_T, dofs_p;
+   Vector elT, elp;
+   Vector shape_T, shape_p;
+
+   real_t *gas_density_data = qdiag.gas_density_qf->HostWrite();
+   real_t *mobility_data = qdiag.mobility_qf->HostWrite();
+
+   for (int e = 0; e < fes_T.GetNE(); ++e)
+   {
+      const FiniteElement *fe_T = fes_T.GetFE(e);
+      const FiniteElement *fe_p = fes_p.GetFE(e);
+      ElementTransformation *Tr = fes_T.GetElementTransformation(e);
+      const IntegrationRule &ir = IntRules.Get(fe_T->GetGeomType(), quad_order);
+      const int qoffset = qdiag.qspace->Offset(e);
+      const int qcount = qdiag.qspace->Offset(e + 1) - qoffset;
+
+      MFEM_VERIFY(ir.GetNPoints() == state_manager.NumQPoints(e),
+                  "Quadrature diagnostic state size mismatch.");
+      MFEM_VERIFY(qcount == ir.GetNPoints(),
+                  "Quadrature diagnostic space mismatch.");
+
+      fes_T.GetElementDofs(e, dofs_T);
+      fes_p.GetElementDofs(e, dofs_p);
+      T.GetSubVector(dofs_T, elT);
+      p.GetSubVector(dofs_p, elp);
+
+      shape_T.SetSize(fe_T->GetDof());
+      shape_p.SetSize(fe_p->GetDof());
+
+      for (int q = 0; q < ir.GetNPoints(); ++q)
+      {
+         const IntegrationPoint &ip = ir.IntPoint(q);
+         Tr->SetIntPoint(&ip);
+
+         fe_T->CalcPhysShape(*Tr, shape_T);
+         fe_p->CalcPhysShape(*Tr, shape_p);
+
+         const double Tq = shape_T * elT;
+         const double pq = shape_p * elp;
+         const TACOTMaterial::InternalState &state = state_manager.GetState(e, q);
+         const TACOTMaterial::SolidProperties solid =
+            material.EvaluateSolid(Tq, pq, state);
+         const TACOTMaterial::GasProperties gas =
+            material.EvaluateGas(Tq, pq, state);
+         const double mu_eff = max(gas.mu, 1.0e-12);
+
+         gas_density_data[qoffset + q] = gas.rho;
+         mobility_data[qoffset + q] = solid.K / mu_eff;
+      }
+   }
+}
+
 SurfaceBoundaryDiagnostics ComputeTopBoundaryDiagnostics(
    ParMesh &pmesh,
    const ParFiniteElementSpace &fes_T,
@@ -3845,6 +3928,7 @@ int main(int argc, char *argv[])
 
       ParGridFunction tau_gf(&fes_diag), rho_s_gf(&fes_diag), pi_total_gf(&fes_diag), mdot_g_gf(&fes_diag);
       ParGridFunction degree_char_gf(&fes_diag), char_density_fraction_gf(&fes_diag);
+      QuadratureDiagnosticFields qdiag_fields;
       vector<unique_ptr<ParGridFunction>> extent_gf;
       vector<string> extent_field_names;
       extent_gf.reserve(state_manager.NumReactions());
@@ -3923,6 +4007,7 @@ int main(int argc, char *argv[])
                                   0.0;
       if (params.save_paraview)
       {
+         InitializeQuadratureDiagnosticFields(*pmesh, quad_order, qdiag_fields);
          paraview_dc.SetPrefixPath(params.output_path.c_str());
          paraview_dc.SetLevelsOfDetail(params.order);
          paraview_dc.SetDataFormat(VTKFormat::BINARY);
@@ -3948,6 +4033,8 @@ int main(int argc, char *argv[])
          {
             paraview_dc.RegisterField(extent_field_names[r].c_str(), extent_gf[r].get());
          }
+         paraview_dc.RegisterQField("gas_density_qp", qdiag_fields.gas_density_qf.get());
+         paraview_dc.RegisterQField("mobility_qp", qdiag_fields.mobility_qf.get());
       }
 
       auto write_outputs = [&](const int step, const double time)
@@ -4065,6 +4152,14 @@ int main(int argc, char *argv[])
 
          if (params.save_paraview && (step % params.output_every == 0))
          {
+            UpdateQuadratureDiagnosticFields(fes_T,
+                                             fes_p,
+                                             T,
+                                             p,
+                                             material,
+                                             state_manager,
+                                             quad_order,
+                                             qdiag_fields);
             paraview_dc.SetCycle(step);
             paraview_dc.SetTime(time);
             paraview_dc.Save();

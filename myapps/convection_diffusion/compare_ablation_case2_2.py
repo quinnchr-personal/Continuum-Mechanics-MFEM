@@ -108,6 +108,14 @@ def load_probe_x_from_yaml(path: Path) -> float:
     return float(raw)
 
 
+def load_gravity_vector_from_yaml(path: Path) -> Tuple[float, float, float]:
+    vals = []
+    for key in ("gravity_x", "gravity_y", "gravity_z"):
+        raw = load_top_level_value_from_yaml(path, key)
+        vals.append(0.0 if raw is None else float(raw))
+    return float(vals[0]), float(vals[1]), float(vals[2])
+
+
 def load_probe_depths_from_yaml(path: Path) -> List[float]:
     probe_y = load_probe_y_from_yaml(path)
     if not probe_y:
@@ -783,6 +791,264 @@ def sample_fronts_from_paraview(
     return time_values, front98, front2, front_geometry
 
 
+def read_qpoint_dataset(entry, field_name: str, pv):
+    q_path = entry.get(field_name)
+    if q_path is None or not q_path.exists():
+        return None
+
+    qcloud = select_dataset_with_point_fields(pv.read(q_path), field_name)
+    if qcloud is None:
+        raise RuntimeError(f"Missing {field_name} field in {q_path}")
+
+    qdisp_path = entry.get("ale_displacement_qp")
+    if qdisp_path is not None and qdisp_path.exists():
+        qdisp = select_dataset_with_point_fields(
+            pv.read(qdisp_path), "ale_displacement_qp"
+        )
+        if qdisp is None:
+            raise RuntimeError(f"Missing ale_displacement_qp field in {qdisp_path}")
+        return warp_dataset_points_by_external_vector_field(
+            qcloud, qdisp, "ale_displacement_qp"
+        )
+
+    return warp_dataset_points_by_vector_field(qcloud, "ale_displacement_qp")
+
+
+def extract_top_line_profile_from_qcloud(
+    qcloud, field_name: str
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    pts = np.asarray(qcloud.points, dtype=float)
+    vals = np.asarray(qcloud.point_data.get(field_name, []), dtype=float).reshape(-1)
+    if pts.ndim != 2 or pts.shape[1] < 2 or vals.size != pts.shape[0]:
+        raise RuntimeError(f"Invalid point cloud shape for {field_name}")
+
+    x_round = np.round(pts[:, 0], decimals=12)
+    x_unique = np.unique(x_round)
+    x_top: List[float] = []
+    y_top: List[float] = []
+    v_top: List[float] = []
+    for x_val in x_unique:
+        idxs = np.where(x_round == x_val)[0]
+        if idxs.size == 0:
+            continue
+        top_local = idxs[np.argmax(pts[idxs, 1])]
+        x_top.append(float(pts[top_local, 0]))
+        y_top.append(float(pts[top_local, 1]))
+        v_top.append(float(vals[top_local]))
+
+    if not x_top:
+        raise RuntimeError(f"No top-line samples found in {field_name} point cloud")
+
+    x_arr = np.asarray(x_top, dtype=float)
+    y_arr = np.asarray(y_top, dtype=float)
+    v_arr = np.asarray(v_top, dtype=float)
+    order = np.argsort(x_arr)
+    return x_arr[order], y_arr[order], v_arr[order]
+
+
+def sample_mass_flux_from_paraview(
+    output_dir: Path, input_yaml: Path, max_time_steps: int | None = None
+) -> np.ndarray:
+    try:
+        import pyvista as pv
+    except ImportError as exc:
+        raise RuntimeError(
+            "pyvista is not available for ParaView-based mass-flux reconstruction."
+        ) from exc
+
+    pvd_path = find_mfem_collection_pvd(output_dir, input_yaml)
+    if pvd_path is None:
+        raise FileNotFoundError(
+            f"No MFEM ParaView .pvd collection was found under {output_dir}"
+        )
+
+    cache_path = output_dir / "mass_flux_paraview.csv"
+    if max_time_steps is None and cache_path.exists():
+        cache_mtime = cache_path.stat().st_mtime
+        input_mtime = input_yaml.stat().st_mtime if input_yaml.exists() else 0.0
+        if cache_mtime >= max(pvd_path.stat().st_mtime, input_mtime):
+            cached = load_named_csv(
+                cache_path,
+                required=False,
+                description="mass_flux_paraview.csv",
+            )
+            if cached is not None:
+                required_cols = {
+                    "time",
+                    "m_dot_g_surf",
+                    "m_dot_g_centerline",
+                    "gradp_n_centerline",
+                    "mobility_centerline",
+                    "rho_g_centerline",
+                }
+                cached_names = set(cached.dtype.names or ())
+                if required_cols.issubset(cached_names):
+                    print(
+                        f"Using cached ParaView mass flux from {cache_path}",
+                        flush=True,
+                    )
+                    return cached
+
+    time_entries = filter_available_time_entries(
+        load_pvd_time_entries(pvd_path), "mesh", str(pvd_path)
+    )
+    if max_time_steps is not None:
+        time_entries = time_entries[:max_time_steps]
+        if not time_entries:
+            raise RuntimeError(
+                "No ParaView time steps remain after applying --max-time-steps."
+            )
+
+    gx, gy, _ = load_gravity_vector_from_yaml(input_yaml)
+    if abs(gx) > 1.0e-14:
+        print(
+            "Warning: ParaView mass-flux reconstruction assumes the top-boundary "
+            "normal is aligned with +y; gravity_x is ignored.",
+            flush=True,
+        )
+
+    rows: List[Tuple[float, float, float, float, float, float]] = []
+    skipped = 0
+    for i_time, (time_value, entry) in enumerate(time_entries):
+        gas_path = entry.get("gas_density_qp")
+        mob_path = entry.get("mobility_qp")
+        if gas_path is None or mob_path is None or not gas_path.exists() or not mob_path.exists():
+            skipped += 1
+            continue
+
+        print_progress("Mass-flux reconstruction", i_time + 1, len(time_entries))
+        mesh = select_dataset_with_point_fields(pv.read(entry["mesh"]), "pressure")
+        if mesh is None:
+            raise RuntimeError(f"Missing pressure field in {entry['mesh']}")
+        mesh = warp_dataset_points_by_vector_field(mesh, "ale_displacement")
+        deriv = mesh.compute_derivative(scalars="pressure", gradient=True)
+
+        gas_qcloud = read_qpoint_dataset(entry, "gas_density_qp", pv)
+        mob_qcloud = read_qpoint_dataset(entry, "mobility_qp", pv)
+        if gas_qcloud is None or mob_qcloud is None:
+            skipped += 1
+            continue
+
+        gas_x, gas_y, gas_rho = extract_top_line_profile_from_qcloud(
+            gas_qcloud, "gas_density_qp"
+        )
+        mob_x, mob_y, mobility = extract_top_line_profile_from_qcloud(
+            mob_qcloud, "mobility_qp"
+        )
+
+        x_min, x_max, _, y_top_live, _, _ = mesh.bounds
+        x_min = float(x_min)
+        x_max = float(x_max)
+        y_top_live = float(y_top_live)
+        xmid = 0.5 * (x_min + x_max)
+
+        y_line = min(float(np.mean(gas_y)), float(np.mean(mob_y)))
+        y_eps = 1.0e-9 * max(1.0, abs(y_top_live))
+        y_line = min(y_line, y_top_live - y_eps)
+
+        n_line = max(41, 10 * max(len(gas_x), len(mob_x)) + 1)
+        x_line = np.linspace(x_min, x_max, n_line, dtype=float)
+        query_pts = np.column_stack(
+            [x_line, np.full_like(x_line, y_line), np.zeros_like(x_line)]
+        )
+        sampled = pv.PolyData(query_pts).sample(deriv)
+
+        valid = np.asarray(
+            sampled.point_data.get("vtkValidPointMask", np.ones(x_line.size)),
+            dtype=int,
+        ).reshape(-1)
+        grad = np.asarray(sampled.point_data.get("gradient", []), dtype=float)
+        if grad.ndim != 2 or grad.shape[0] != x_line.size or grad.shape[1] < 2:
+            raise RuntimeError(
+                f"Could not sample pressure gradient from {entry['mesh']}"
+            )
+
+        gradp_n = np.full(x_line.size, np.nan, dtype=float)
+        gradp_n[valid > 0] = grad[:, 1][valid > 0]
+
+        rho_line = np.interp(
+            x_line, gas_x, gas_rho, left=float(gas_rho[0]), right=float(gas_rho[-1])
+        )
+        mobility_line = np.interp(
+            x_line, mob_x, mobility, left=float(mobility[0]), right=float(mobility[-1])
+        )
+        rho_darcy_line = rho_line * mobility_line
+        flux_line = -rho_darcy_line * gradp_n + (rho_line * rho_darcy_line) * gy
+
+        flux_valid = np.isfinite(flux_line)
+        if np.count_nonzero(flux_valid) < 2:
+            skipped += 1
+            continue
+
+        x_valid = x_line[flux_valid]
+        flux_valid_vals = flux_line[flux_valid]
+        mdot_surf = float(np.trapz(flux_valid_vals, x_valid) / max(x_valid[-1] - x_valid[0], 1.0e-30))
+        mdot_centerline = float(np.interp(xmid, x_valid, flux_valid_vals))
+        grad_centerline = float(np.interp(xmid, x_valid, gradp_n[flux_valid]))
+        rho_darcy_centerline = float(np.interp(xmid, x_line, rho_darcy_line))
+        rho_centerline = float(np.interp(xmid, x_line, rho_line))
+        rows.append(
+            (
+                float(time_value),
+                mdot_surf,
+                mdot_centerline,
+                grad_centerline,
+                rho_darcy_centerline,
+                rho_centerline,
+            )
+        )
+
+    if not rows:
+        raise RuntimeError(
+            "No ParaView time steps with readable gas_density_qp and mobility_qp "
+            "datasets were found for mass-flux reconstruction."
+        )
+
+    if skipped:
+        print(
+            f"Skipping {skipped} ParaView time steps during mass-flux reconstruction "
+            "because required datasets were missing or unreadable.",
+            flush=True,
+        )
+
+    data = np.zeros(
+        len(rows),
+        dtype=[
+            ("time", float),
+            ("m_dot_g_surf", float),
+            ("m_dot_g_centerline", float),
+            ("gradp_n_centerline", float),
+            ("mobility_centerline", float),
+            ("rho_g_centerline", float),
+        ],
+    )
+    for i, row in enumerate(rows):
+        data["time"][i] = row[0]
+        data["m_dot_g_surf"][i] = row[1]
+        data["m_dot_g_centerline"][i] = row[2]
+        data["gradp_n_centerline"][i] = row[3]
+        data["mobility_centerline"][i] = row[4]
+        data["rho_g_centerline"][i] = row[5]
+
+    if max_time_steps is None:
+        with cache_path.open("w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(
+                [
+                    "time",
+                    "m_dot_g_surf",
+                    "m_dot_g_centerline",
+                    "gradp_n_centerline",
+                    "mobility_centerline",
+                    "rho_g_centerline",
+                ]
+            )
+            for row in rows:
+                writer.writerow(row)
+        print(f"Wrote cached ParaView mass flux: {cache_path}", flush=True)
+    return data
+
+
 def rmse(a: np.ndarray, b: np.ndarray) -> float:
     d = a - b
     return float(np.sqrt(np.mean(d * d)))
@@ -1200,6 +1466,23 @@ def main() -> None:
     mfem_mdot_centerline = (
         mass["m_dot_g_centerline"] if "m_dot_g_centerline" in mass.dtype.names else None
     )
+    try:
+        pv_flux = sample_mass_flux_from_paraview(out_dir, Path(args.input))
+        mfem_mdot = np.interp(
+            mfem_mass_t, pv_flux["time"], pv_flux["m_dot_g_surf"]
+        )
+        mfem_mdot_centerline = np.interp(
+            mfem_mass_t, pv_flux["time"], pv_flux["m_dot_g_centerline"]
+        )
+        print(
+            "Using ParaView-reconstructed MFEM m_dot_g from gas_density_qp, "
+            "mobility_qp, and pressure instead of mass_metrics.csv."
+        )
+    except Exception as exc:
+        print(
+            "Warning: falling back to mass_metrics.csv for MFEM m_dot_g because "
+            f"ParaView reconstruction failed: {exc}"
+        )
     mfem_front_source = "mass_metrics.csv"
     mfem_front_geometry: Dict[str, np.ndarray | float] | None = None
     if (

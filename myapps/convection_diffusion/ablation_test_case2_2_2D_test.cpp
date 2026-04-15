@@ -4642,6 +4642,8 @@ struct QuadratureDiagnosticFields
    unique_ptr<QuadratureSpace> qspace;
    unique_ptr<QuadratureFunction> tau_qf;
    unique_ptr<QuadratureFunction> rho_s_qf;
+   unique_ptr<QuadratureFunction> gas_density_qf;
+   unique_ptr<QuadratureFunction> mobility_qf;
    unique_ptr<QuadratureFunction> pi_total_qf;
    unique_ptr<QuadratureFunction> m_dot_g_qf;
    unique_ptr<QuadratureFunction> degree_char_qf;
@@ -4662,6 +4664,8 @@ static void InitializeQuadratureDiagnosticFields(
    qdiag.qspace = make_unique<QuadratureSpace>(&mesh, quad_order);
    qdiag.tau_qf = make_unique<QuadratureFunction>(*qdiag.qspace);
    qdiag.rho_s_qf = make_unique<QuadratureFunction>(*qdiag.qspace);
+   qdiag.gas_density_qf = make_unique<QuadratureFunction>(*qdiag.qspace);
+   qdiag.mobility_qf = make_unique<QuadratureFunction>(*qdiag.qspace);
    qdiag.pi_total_qf = make_unique<QuadratureFunction>(*qdiag.qspace);
    qdiag.m_dot_g_qf = make_unique<QuadratureFunction>(*qdiag.qspace);
    qdiag.degree_char_qf = make_unique<QuadratureFunction>(*qdiag.qspace);
@@ -4703,6 +4707,8 @@ static void UpdateQuadratureDiagnosticFields(
 
    real_t *tau_data = qdiag.tau_qf->HostWrite();
    real_t *rho_s_data = qdiag.rho_s_qf->HostWrite();
+   real_t *gas_density_data = qdiag.gas_density_qf->HostWrite();
+   real_t *mobility_data = qdiag.mobility_qf->HostWrite();
    real_t *pi_total_data = qdiag.pi_total_qf->HostWrite();
    real_t *m_dot_g_data = qdiag.m_dot_g_qf->HostWrite();
    real_t *degree_char_data = qdiag.degree_char_qf->HostWrite();
@@ -4765,10 +4771,15 @@ static void UpdateQuadratureDiagnosticFields(
          const TACOTMaterial::InternalState &state = state_manager.GetState(e, q);
          const TACOTMaterial::SolidProperties solid =
             material.EvaluateSolid(Tq, pq, state);
+         const TACOTMaterial::GasProperties gas =
+            material.EvaluateGas(Tq, pq, state);
+         const double mu_eff = max(gas.mu, 1.0e-12);
          const double pi_total_q = state_manager.GetQPointPiTotal(e, q);
 
          tau_data[qoffset + q] = solid.tau;
          rho_s_data[qoffset + q] = solid.rho_s;
+         gas_density_data[qoffset + q] = gas.rho;
+         mobility_data[qoffset + q] = solid.K / mu_eff;
          pi_total_data[qoffset + q] = pi_total_q;
          // m_dot_g is defined by the material model as pi_total.
          m_dot_g_data[qoffset + q] = pi_total_q;
@@ -8271,6 +8282,8 @@ int main(int argc, char *argv[])
          }
          paraview_dc.RegisterQField("tau_qp", qdiag_fields.tau_qf.get());
          paraview_dc.RegisterQField("rho_s_qp", qdiag_fields.rho_s_qf.get());
+         paraview_dc.RegisterQField("gas_density_qp", qdiag_fields.gas_density_qf.get());
+         paraview_dc.RegisterQField("mobility_qp", qdiag_fields.mobility_qf.get());
          paraview_dc.RegisterQField("pi_total_qp", qdiag_fields.pi_total_qf.get());
          paraview_dc.RegisterQField("m_dot_g_qp", qdiag_fields.m_dot_g_qf.get());
          paraview_dc.RegisterQField("degree_char_qp",

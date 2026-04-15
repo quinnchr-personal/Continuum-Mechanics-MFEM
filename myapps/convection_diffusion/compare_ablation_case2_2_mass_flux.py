@@ -206,6 +206,23 @@ def main() -> None:
     mfem_mdot_centerline = (
         mass["m_dot_g_centerline"] if "m_dot_g_centerline" in mass.dtype.names else None
     )
+    try:
+        pv_flux = common.sample_mass_flux_from_paraview(out_dir, Path(args.input))
+        mfem_mdot = np.interp(
+            mfem_mass_t, pv_flux["time"], pv_flux["m_dot_g_surf"]
+        )
+        mfem_mdot_centerline = np.interp(
+            mfem_mass_t, pv_flux["time"], pv_flux["m_dot_g_centerline"]
+        )
+        print(
+            "Using ParaView-reconstructed MFEM m_dot_g from gas_density_qp, "
+            "mobility_qp, and pressure instead of mass_metrics.csv."
+        )
+    except Exception as exc:
+        print(
+            "Warning: falling back to mass_metrics.csv for MFEM m_dot_g because "
+            f"ParaView reconstruction failed: {exc}"
+        )
     mfem_mdot_c = mass["m_dot_c"]
     mfem_recession = mass["recession"]
     mfem_recession_rate = common.time_derivative(mfem_mass_t, mfem_recession)
