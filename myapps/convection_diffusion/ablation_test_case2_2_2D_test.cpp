@@ -129,6 +129,8 @@ struct DriverParams
    bool ale_energy_solid_enabled = true;
    bool ale_energy_gas_enabled = true;
    bool ale_remap_enabled = true;
+   string ale_remap_extent_mode = "nearest_qp";
+   int ale_remap_extent_l2_order = 1;
    string mesh_smoothing_model = "laplacian";
    string recession_density_mode = "char_surface";
    double recession_density_constant = 1200.0;
@@ -216,6 +218,31 @@ string NormalizeTopThermalBC(string mode)
    if (mode == "temp_dirichlet" || mode == "temperature")
    {
       return "temperature_dirichlet";
+   }
+   return mode;
+}
+
+string NormalizeAleRemapExtentMode(string mode)
+{
+   transform(mode.begin(), mode.end(), mode.begin(),
+             [](unsigned char c) { return static_cast<char>(tolower(c)); });
+
+   if (mode == "nearest" || mode == "nearest-qp" || mode == "nearestqp")
+   {
+      return "nearest_qp";
+   }
+   if (mode == "l2" || mode == "l2_point" || mode == "l2_point_eval")
+   {
+      return "l2_point_eval";
+   }
+   if (mode == "h1" || mode == "h1_point" || mode == "h1_point_eval")
+   {
+      return "h1_point_eval";
+   }
+   if (mode == "conservative" || mode == "l2-conservative" ||
+       mode == "l2_conservative")
+   {
+      return "l2_conservative";
    }
    return mode;
 }
@@ -609,6 +636,14 @@ void LoadParams(const string &path, DriverParams &p)
    if (n["ale_energy_solid_enabled"]) { p.ale_energy_solid_enabled = n["ale_energy_solid_enabled"].as<bool>(); }
    if (n["ale_energy_gas_enabled"]) { p.ale_energy_gas_enabled = n["ale_energy_gas_enabled"].as<bool>(); }
    if (n["ale_remap_enabled"]) { p.ale_remap_enabled = n["ale_remap_enabled"].as<bool>(); }
+   if (n["ale_remap_extent_mode"])
+   {
+      p.ale_remap_extent_mode = n["ale_remap_extent_mode"].as<string>();
+   }
+   if (n["ale_remap_extent_l2_order"])
+   {
+      p.ale_remap_extent_l2_order = n["ale_remap_extent_l2_order"].as<int>();
+   }
    if (n["mesh_smoothing_model"])
    {
       p.mesh_smoothing_model = n["mesh_smoothing_model"].as<string>();
@@ -740,6 +775,21 @@ void LoadParams(const string &path, DriverParams &p)
    {
       throw runtime_error("min_quality_ratio must be in (0,1).");
    }
+   p.ale_remap_extent_mode =
+      NormalizeAleRemapExtentMode(p.ale_remap_extent_mode);
+   if (p.ale_remap_extent_mode != "nearest_qp" &&
+       p.ale_remap_extent_mode != "l2_point_eval" &&
+       p.ale_remap_extent_mode != "h1_point_eval" &&
+       p.ale_remap_extent_mode != "l2_conservative")
+   {
+      throw runtime_error(
+         "ale_remap_extent_mode must be \"nearest_qp\", \"l2_point_eval\", "
+         "\"h1_point_eval\", or \"l2_conservative\".");
+   }
+   if (p.ale_remap_extent_l2_order < 0 || p.ale_remap_extent_l2_order > 2)
+   {
+      throw runtime_error("ale_remap_extent_l2_order must be in [0,2].");
+   }
    if (p.remap_self_test.abs_tol < 0.0)
    {
       throw runtime_error("remap_self_test.abs_tol must be >= 0.");
@@ -846,18 +896,6 @@ double ComputeMinElementQuality(ParMesh &pmesh)
    return global_min;
 }
 
-void UpdateDiagnosticMeshGeometry(const ParGridFunction &live_reference_nodes,
-                                  const ParGridFunction &ale_displacement_live,
-                                  ParMesh &diagnostic_mesh)
-{
-   auto *live_nodes = dynamic_cast<ParGridFunction *>(diagnostic_mesh.GetNodes());
-   MFEM_VERIFY(live_nodes != nullptr,
-               "Diagnostic ALE mesh requires a nodal ParGridFunction.");
-   *live_nodes = live_reference_nodes;
-   live_nodes->Add(1.0, ale_displacement_live);
-   diagnostic_mesh.NodesUpdated();
-}
-
 class AleJacobianCoefficient : public Coefficient
 {
 public:
@@ -881,6 +919,635 @@ public:
 
 private:
    const ParGridFunction &ale_displacement_;
+};
+
+void BuildAleDeformationMap2D(const DenseMatrix &grad_disp,
+                              DenseMatrix &F,
+                              DenseMatrix &cofactor,
+                              DenseMatrix &invF,
+                              double &J)
+{
+   MFEM_VERIFY(grad_disp.Height() == 2 && grad_disp.Width() == 2,
+               "BuildAleDeformationMap2D expects a 2x2 displacement gradient.");
+
+   const double g00 = 1.0 + grad_disp(0, 0);
+   const double g01 = grad_disp(0, 1);
+   const double g10 = grad_disp(1, 0);
+   const double g11 = 1.0 + grad_disp(1, 1);
+
+   F.SetSize(2, 2);
+   F(0, 0) = g00;
+   F(0, 1) = g01;
+   F(1, 0) = g10;
+   F(1, 1) = g11;
+
+   J = g00 * g11 - g01 * g10;
+   cofactor.SetSize(2, 2);
+   cofactor(0, 0) = g11;
+   cofactor(0, 1) = -g01;
+   cofactor(1, 0) = -g10;
+   cofactor(1, 1) = g00;
+
+   invF.SetSize(2, 2);
+   invF = cofactor;
+   invF *= (1.0 / J);
+}
+
+struct AleFaceGeometry2D
+{
+   Vector x_current;
+   Vector area_vector;
+   Vector unit_normal;
+   double ds = 0.0;
+   bool valid = false;
+};
+
+void EvaluateAleMap2D(ElementTransformation &Tr,
+                      const IntegrationPoint &ip,
+                      const ParGridFunction *ale_displacement,
+                      Vector &x_current,
+                      DenseMatrix &F,
+                      DenseMatrix &cofactor,
+                      DenseMatrix &invF,
+                      double &J)
+{
+   const int dim = Tr.GetSpaceDim();
+   MFEM_VERIFY(dim == 2, "EvaluateAleMap2D expects a 2D element transformation.");
+
+   Tr.SetIntPoint(&ip);
+   x_current.SetSize(dim);
+   Tr.Transform(ip, x_current);
+
+   F.SetSize(dim, dim);
+   cofactor.SetSize(dim, dim);
+   invF.SetSize(dim, dim);
+   F = 0.0;
+   cofactor = 0.0;
+   invF = 0.0;
+   for (int d = 0; d < dim; ++d)
+   {
+      F(d, d) = 1.0;
+      cofactor(d, d) = 1.0;
+      invF(d, d) = 1.0;
+   }
+   J = 1.0;
+
+   if (!ale_displacement)
+   {
+      return;
+   }
+
+   Vector disp(dim);
+   ale_displacement->GetVectorValue(Tr, ip, disp);
+   x_current += disp;
+
+   DenseMatrix grad_disp;
+   ale_displacement->GetVectorGradient(Tr, grad_disp);
+   BuildAleDeformationMap2D(grad_disp, F, cofactor, invF, J);
+}
+
+void ApplyInverseTranspose2D(const DenseMatrix &invF,
+                             const Vector &grad_ref,
+                             Vector &grad_cur)
+{
+   MFEM_VERIFY(invF.Height() == 2 && invF.Width() == 2,
+               "ApplyInverseTranspose2D expects a 2x2 inverse deformation map.");
+   MFEM_VERIFY(grad_ref.Size() == 2,
+               "ApplyInverseTranspose2D expects a 2D reference gradient.");
+
+   grad_cur.SetSize(2);
+   grad_cur[0] = invF(0, 0) * grad_ref[0] + invF(1, 0) * grad_ref[1];
+   grad_cur[1] = invF(0, 1) * grad_ref[0] + invF(1, 1) * grad_ref[1];
+}
+
+double ComputeCurrentVectorDivergence2D(const DenseMatrix &grad_ref,
+                                        const DenseMatrix &invF)
+{
+   MFEM_VERIFY(grad_ref.Height() == 2 && grad_ref.Width() == 2,
+               "ComputeCurrentVectorDivergence2D expects a 2x2 reference gradient.");
+   MFEM_VERIFY(invF.Height() == 2 && invF.Width() == 2,
+               "ComputeCurrentVectorDivergence2D expects a 2x2 inverse deformation map.");
+
+   double div_cur = 0.0;
+   for (int i = 0; i < 2; ++i)
+   {
+      for (int j = 0; j < 2; ++j)
+      {
+         div_cur += grad_ref(i, j) * invF(j, i);
+      }
+   }
+   return div_cur;
+}
+
+bool ReferencePointInside2D(const Geometry::Type geom,
+                            const IntegrationPoint &ip,
+                            const double tol)
+{
+   switch (geom)
+   {
+      case Geometry::TRIANGLE:
+         return (ip.x >= -tol &&
+                 ip.y >= -tol &&
+                 (ip.x + ip.y) <= (1.0 + tol));
+      case Geometry::SQUARE:
+         return (ip.x >= -tol &&
+                 ip.x <= (1.0 + tol) &&
+                 ip.y >= -tol &&
+                 ip.y <= (1.0 + tol));
+      default:
+         MFEM_ABORT("ReferencePointInside2D only supports triangles and quads.");
+   }
+}
+
+vector<IntegrationPoint> ReferenceSeeds2D(const Geometry::Type geom)
+{
+   vector<IntegrationPoint> seeds;
+   auto add_seed = [&](const double x, const double y)
+   {
+      IntegrationPoint ip;
+      ip.x = x;
+      ip.y = y;
+      ip.z = 0.0;
+      seeds.push_back(ip);
+   };
+
+   switch (geom)
+   {
+      case Geometry::TRIANGLE:
+         add_seed(1.0 / 3.0, 1.0 / 3.0);
+         add_seed(0.0, 0.0);
+         add_seed(1.0, 0.0);
+         add_seed(0.0, 1.0);
+         add_seed(0.5, 0.0);
+         add_seed(0.5, 0.5);
+         add_seed(0.0, 0.5);
+         break;
+      case Geometry::SQUARE:
+         add_seed(0.5, 0.5);
+         add_seed(0.0, 0.0);
+         add_seed(1.0, 0.0);
+         add_seed(1.0, 1.0);
+         add_seed(0.0, 1.0);
+         add_seed(0.5, 0.0);
+         add_seed(1.0, 0.5);
+         add_seed(0.5, 1.0);
+         add_seed(0.0, 0.5);
+         break;
+      default:
+         MFEM_ABORT("ReferenceSeeds2D only supports triangles and quads.");
+   }
+   return seeds;
+}
+
+bool Solve2x2(const DenseMatrix &A,
+              const Vector &rhs,
+              Vector &x)
+{
+   MFEM_VERIFY(A.Height() == 2 && A.Width() == 2,
+               "Solve2x2 expects a 2x2 matrix.");
+   MFEM_VERIFY(rhs.Size() == 2,
+               "Solve2x2 expects a 2D right-hand side.");
+
+   const double det = A(0, 0) * A(1, 1) - A(0, 1) * A(1, 0);
+   if (!(std::abs(det) > 1.0e-20))
+   {
+      return false;
+   }
+
+   x.SetSize(2);
+   x[0] = ( rhs[0] * A(1, 1) - rhs[1] * A(0, 1)) / det;
+   x[1] = (-rhs[0] * A(1, 0) + rhs[1] * A(0, 0)) / det;
+   return true;
+}
+
+double ComputeMinAleElementQuality(ParMesh &pmesh,
+                                   const ParGridFunction *ale_displacement)
+{
+   double local_min = std::numeric_limits<double>::infinity();
+   Vector x_current;
+   DenseMatrix F, cofactor, invF;
+   for (int e = 0; e < pmesh.GetNE(); ++e)
+   {
+      ElementTransformation *Tr = pmesh.GetElementTransformation(e);
+      const IntegrationRule &ir = IntRules.Get(pmesh.GetElementBaseGeometry(e), 2);
+      for (int q = 0; q < ir.GetNPoints(); ++q)
+      {
+         const IntegrationPoint &ip = ir.IntPoint(q);
+         double J = 1.0;
+         EvaluateAleMap2D(*Tr, ip, ale_displacement, x_current, F, cofactor, invF, J);
+         local_min = std::min(local_min, J * static_cast<double>(Tr->Weight()));
+      }
+   }
+
+   double global_min = local_min;
+   MPI_Allreduce(&local_min, &global_min, 1, MPI_DOUBLE, MPI_MIN, pmesh.GetComm());
+   return global_min;
+}
+
+bool EvaluateCurrentFaceGeometry2D(FaceElementTransformations &FT,
+                                   const IntegrationPoint &fip,
+                                   const IntegrationPoint &eip,
+                                   const ParGridFunction *ale_displacement,
+                                   AleFaceGeometry2D &face_geom)
+{
+   Vector x_current;
+   DenseMatrix F, cofactor, invF;
+   double J = 1.0;
+   EvaluateAleMap2D(*FT.Elem1, eip, ale_displacement,
+                    x_current, F, cofactor, invF, J);
+
+   Vector ref_area(2);
+   FT.Face->SetIntPoint(&fip);
+   CalcOrtho(FT.Face->Jacobian(), ref_area);
+
+   face_geom.area_vector.SetSize(2);
+   if (ale_displacement)
+   {
+      cofactor.Mult(ref_area, face_geom.area_vector);
+   }
+   else
+   {
+      face_geom.area_vector = ref_area;
+   }
+
+   const double area_mag = face_geom.area_vector.Norml2();
+   if (!(area_mag > 1.0e-20))
+   {
+      face_geom.valid = false;
+      face_geom.ds = 0.0;
+      return false;
+   }
+
+   face_geom.x_current = x_current;
+   face_geom.unit_normal.SetSize(2);
+   face_geom.unit_normal = face_geom.area_vector;
+   face_geom.unit_normal /= area_mag;
+   face_geom.ds = fip.weight * area_mag;
+   face_geom.valid = true;
+   return true;
+}
+
+class AlePointLocator2D
+{
+public:
+   struct PointLocation
+   {
+      int elem = -1;
+      IntegrationPoint ip;
+      double residual_norm = std::numeric_limits<double>::infinity();
+   };
+
+   AlePointLocator2D(ParMesh &pmesh,
+                     const ParFiniteElementSpace &fes_state)
+      : pmesh_(pmesh),
+        fes_state_(fes_state)
+   {}
+
+   void Update(const ParGridFunction *ale_displacement)
+   {
+      ale_displacement_ = ale_displacement;
+      BuildElementBoundingBoxes_();
+   }
+
+   const ParGridFunction *Displacement() const { return ale_displacement_; }
+   MPI_Comm Comm() const { return pmesh_.GetComm(); }
+   ParMesh &Mesh() const { return pmesh_; }
+
+   bool FindPointLocal(const Vector &x_target,
+                       PointLocation &location) const
+   {
+      location = PointLocation{};
+
+      vector<int> candidate_elems;
+      const double bbox_tol = 1.0e-10;
+      for (int e = 0; e < static_cast<int>(element_bboxes_.size()); ++e)
+      {
+         const ElementBBox &bbox = element_bboxes_[static_cast<size_t>(e)];
+         if (x_target[0] >= (bbox.xmin - bbox_tol) &&
+             x_target[0] <= (bbox.xmax + bbox_tol) &&
+             x_target[1] >= (bbox.ymin - bbox_tol) &&
+             x_target[1] <= (bbox.ymax + bbox_tol))
+         {
+            candidate_elems.push_back(e);
+         }
+      }
+
+      PointLocation best_location;
+      if (TryCandidateElements_(candidate_elems, x_target, best_location))
+      {
+         location = best_location;
+         return true;
+      }
+
+      candidate_elems.clear();
+      candidate_elems.reserve(fes_state_.GetNE());
+      for (int e = 0; e < fes_state_.GetNE(); ++e)
+      {
+         candidate_elems.push_back(e);
+      }
+      if (TryCandidateElements_(candidate_elems, x_target, best_location))
+      {
+         location = best_location;
+         return true;
+      }
+
+      return false;
+   }
+
+   void FindPointsAllGather(const DenseMatrix &local_points,
+                            Array<int> &elem_ids,
+                            Array<IntegrationPoint> &ref_pts) const
+   {
+      const int local_npts = local_points.Width();
+      const int dim = local_points.Height();
+      MFEM_VERIFY(dim == 2, "AlePointLocator2D expects 2D query points.");
+
+      const int myid = Mpi::WorldRank();
+      int world_size = 1;
+      MPI_Comm_size(pmesh_.GetComm(), &world_size);
+
+      vector<int> point_counts(static_cast<size_t>(world_size), 0);
+      MPI_Allgather(&local_npts,
+                    1,
+                    MPI_INT,
+                    point_counts.data(),
+                    1,
+                    MPI_INT,
+                    pmesh_.GetComm());
+
+      vector<int> point_displs(static_cast<size_t>(world_size), 0);
+      vector<int> coord_counts(static_cast<size_t>(world_size), 0);
+      vector<int> coord_displs(static_cast<size_t>(world_size), 0);
+      int total_npts = 0;
+      int total_coords = 0;
+      for (int rank = 0; rank < world_size; ++rank)
+      {
+         point_displs[static_cast<size_t>(rank)] = total_npts;
+         coord_displs[static_cast<size_t>(rank)] = total_coords;
+         total_npts += point_counts[static_cast<size_t>(rank)];
+         coord_counts[static_cast<size_t>(rank)] =
+            point_counts[static_cast<size_t>(rank)] * dim;
+         total_coords += coord_counts[static_cast<size_t>(rank)];
+      }
+
+      vector<double> gathered_point_data(static_cast<size_t>(total_coords), 0.0);
+      MPI_Allgatherv(local_npts > 0 ? local_points.GetData() : nullptr,
+                     local_npts * dim,
+                     MPI_DOUBLE,
+                     gathered_point_data.data(),
+                     coord_counts.data(),
+                     coord_displs.data(),
+                     MPI_DOUBLE,
+                     pmesh_.GetComm());
+
+      DenseMatrix gathered_points(gathered_point_data.data(), dim, total_npts);
+      vector<int> owner_candidate(static_cast<size_t>(total_npts), world_size);
+      vector<int> local_elem_plus_one(static_cast<size_t>(total_npts), 0);
+      vector<double> local_ipx(static_cast<size_t>(total_npts), 0.0);
+      vector<double> local_ipy(static_cast<size_t>(total_npts), 0.0);
+      vector<double> local_ipz(static_cast<size_t>(total_npts), 0.0);
+
+      Vector x_target(dim);
+      for (int k = 0; k < total_npts; ++k)
+      {
+         for (int d = 0; d < dim; ++d)
+         {
+            x_target[d] = gathered_points(d, k);
+         }
+
+         PointLocation location;
+         if (!FindPointLocal(x_target, location))
+         {
+            continue;
+         }
+
+         owner_candidate[static_cast<size_t>(k)] = myid;
+         local_elem_plus_one[static_cast<size_t>(k)] = location.elem + 1;
+         local_ipx[static_cast<size_t>(k)] = location.ip.x;
+         local_ipy[static_cast<size_t>(k)] = location.ip.y;
+         local_ipz[static_cast<size_t>(k)] = location.ip.z;
+      }
+
+      vector<int> owner_rank(static_cast<size_t>(total_npts), world_size);
+      MPI_Allreduce(owner_candidate.data(),
+                    owner_rank.data(),
+                    total_npts,
+                    MPI_INT,
+                    MPI_MIN,
+                    pmesh_.GetComm());
+
+      for (int k = 0; k < total_npts; ++k)
+      {
+         if (owner_rank[static_cast<size_t>(k)] != myid)
+         {
+            local_elem_plus_one[static_cast<size_t>(k)] = 0;
+            local_ipx[static_cast<size_t>(k)] = 0.0;
+            local_ipy[static_cast<size_t>(k)] = 0.0;
+            local_ipz[static_cast<size_t>(k)] = 0.0;
+         }
+      }
+
+      vector<int> global_elem_plus_one(static_cast<size_t>(total_npts), 0);
+      vector<double> global_ipx(static_cast<size_t>(total_npts), 0.0);
+      vector<double> global_ipy(static_cast<size_t>(total_npts), 0.0);
+      vector<double> global_ipz(static_cast<size_t>(total_npts), 0.0);
+      if (total_npts > 0)
+      {
+         MPI_Allreduce(local_elem_plus_one.data(),
+                       global_elem_plus_one.data(),
+                       total_npts,
+                       MPI_INT,
+                       MPI_SUM,
+                       pmesh_.GetComm());
+         MPI_Allreduce(local_ipx.data(),
+                       global_ipx.data(),
+                       total_npts,
+                       MPI_DOUBLE,
+                       MPI_SUM,
+                       pmesh_.GetComm());
+         MPI_Allreduce(local_ipy.data(),
+                       global_ipy.data(),
+                       total_npts,
+                       MPI_DOUBLE,
+                       MPI_SUM,
+                       pmesh_.GetComm());
+         MPI_Allreduce(local_ipz.data(),
+                       global_ipz.data(),
+                       total_npts,
+                       MPI_DOUBLE,
+                       MPI_SUM,
+                       pmesh_.GetComm());
+      }
+
+      elem_ids.SetSize(local_npts);
+      ref_pts.SetSize(local_npts);
+      const int local_offset = point_displs[static_cast<size_t>(myid)];
+      for (int k = 0; k < local_npts; ++k)
+      {
+         const int global_k = local_offset + k;
+         elem_ids[k] = global_elem_plus_one[static_cast<size_t>(global_k)] - 1;
+         ref_pts[k].x = global_ipx[static_cast<size_t>(global_k)];
+         ref_pts[k].y = global_ipy[static_cast<size_t>(global_k)];
+         ref_pts[k].z = global_ipz[static_cast<size_t>(global_k)];
+      }
+   }
+
+private:
+   struct ElementBBox
+   {
+      double xmin = std::numeric_limits<double>::infinity();
+      double xmax = -std::numeric_limits<double>::infinity();
+      double ymin = std::numeric_limits<double>::infinity();
+      double ymax = -std::numeric_limits<double>::infinity();
+   };
+
+   void BuildElementBoundingBoxes_()
+   {
+      element_bboxes_.assign(static_cast<size_t>(fes_state_.GetNE()), ElementBBox{});
+      Vector x_current;
+      DenseMatrix F, cofactor, invF;
+      for (int e = 0; e < fes_state_.GetNE(); ++e)
+      {
+         ElementTransformation *Tr = fes_state_.GetElementTransformation(e);
+         const FiniteElement *fe = fes_state_.GetFE(e);
+         const int bbox_order = std::max(6, 2 * fe->GetOrder() + 3);
+         const IntegrationRule &ir = IntRules.Get(fe->GetGeomType(), bbox_order);
+         ElementBBox &bbox = element_bboxes_[static_cast<size_t>(e)];
+         for (int q = 0; q < ir.GetNPoints(); ++q)
+         {
+            const IntegrationPoint &ip = ir.IntPoint(q);
+            double J = 1.0;
+            EvaluateAleMap2D(*Tr, ip, ale_displacement_, x_current, F, cofactor, invF, J);
+            bbox.xmin = std::min(bbox.xmin, static_cast<double>(x_current[0]));
+            bbox.xmax = std::max(bbox.xmax, static_cast<double>(x_current[0]));
+            bbox.ymin = std::min(bbox.ymin, static_cast<double>(x_current[1]));
+            bbox.ymax = std::max(bbox.ymax, static_cast<double>(x_current[1]));
+         }
+
+         const double dx = bbox.xmax - bbox.xmin;
+         const double dy = bbox.ymax - bbox.ymin;
+         const double pad = 1.0e-10 + 1.0e-8 * std::max(1.0, std::max(dx, dy));
+         bbox.xmin -= pad;
+         bbox.xmax += pad;
+         bbox.ymin -= pad;
+         bbox.ymax += pad;
+      }
+   }
+
+   bool TryLocateInElement_(const int elem,
+                            const Vector &x_target,
+                            PointLocation &best_location) const
+   {
+      const FiniteElement *fe = fes_state_.GetFE(elem);
+      Geometry::Type geom = fe->GetGeomType();
+      const vector<IntegrationPoint> seeds = ReferenceSeeds2D(geom);
+      ElementTransformation *Tr = fes_state_.GetElementTransformation(elem);
+      const ElementBBox &bbox = element_bboxes_[static_cast<size_t>(elem)];
+      const double scale = std::max(1.0,
+                                    std::sqrt((bbox.xmax - bbox.xmin) * (bbox.xmax - bbox.xmin) +
+                                              (bbox.ymax - bbox.ymin) * (bbox.ymax - bbox.ymin)));
+      const double residual_tol = 1.0e-8 * scale + 1.0e-12;
+      const double inside_tol = 1.0e-8;
+
+      Vector x_current(2), residual(2), delta(2);
+      DenseMatrix F, cofactor, invF, Jxi(2), jacobian(2);
+      PointLocation best_elem_location;
+      for (const IntegrationPoint &seed : seeds)
+      {
+         IntegrationPoint ip = seed;
+         bool finite_iterate = true;
+         for (int iter = 0; iter < 15; ++iter)
+         {
+            double J = 1.0;
+            EvaluateAleMap2D(*Tr, ip, ale_displacement_, x_current, F, cofactor, invF, J);
+            residual = x_current;
+            residual -= x_target;
+
+            if (residual.Norml2() <= residual_tol &&
+                ReferencePointInside2D(geom, ip, inside_tol))
+            {
+               break;
+            }
+
+            const DenseMatrix &Jref = Tr->Jacobian();
+            Jxi(0, 0) = Jref(0, 0);
+            Jxi(0, 1) = Jref(0, 1);
+            Jxi(1, 0) = Jref(1, 0);
+            Jxi(1, 1) = Jref(1, 1);
+            jacobian(0, 0) = F(0, 0) * Jxi(0, 0) + F(0, 1) * Jxi(1, 0);
+            jacobian(0, 1) = F(0, 0) * Jxi(0, 1) + F(0, 1) * Jxi(1, 1);
+            jacobian(1, 0) = F(1, 0) * Jxi(0, 0) + F(1, 1) * Jxi(1, 0);
+            jacobian(1, 1) = F(1, 0) * Jxi(0, 1) + F(1, 1) * Jxi(1, 1);
+            if (!Solve2x2(jacobian, residual, delta))
+            {
+               finite_iterate = false;
+               break;
+            }
+
+            ip.x -= delta[0];
+            ip.y -= delta[1];
+            if (!std::isfinite(ip.x) || !std::isfinite(ip.y))
+            {
+               finite_iterate = false;
+               break;
+            }
+            if (delta.Norml2() <= 1.0e-12)
+            {
+               break;
+            }
+         }
+
+         if (!finite_iterate)
+         {
+            continue;
+         }
+
+         double J = 1.0;
+         EvaluateAleMap2D(*Tr, ip, ale_displacement_, x_current, F, cofactor, invF, J);
+         residual = x_current;
+         residual -= x_target;
+         const double residual_norm = residual.Norml2();
+         if (residual_norm > residual_tol ||
+             !ReferencePointInside2D(geom, ip, inside_tol))
+         {
+            continue;
+         }
+
+         if (best_elem_location.elem < 0 ||
+             residual_norm < best_elem_location.residual_norm)
+         {
+            best_elem_location.elem = elem;
+            best_elem_location.ip = ip;
+            best_elem_location.residual_norm = residual_norm;
+         }
+      }
+
+      if (best_elem_location.elem >= 0 &&
+          (best_location.elem < 0 ||
+           best_elem_location.residual_norm < best_location.residual_norm))
+      {
+         best_location = best_elem_location;
+         return true;
+      }
+      return false;
+   }
+
+   bool TryCandidateElements_(const vector<int> &candidate_elems,
+                              const Vector &x_target,
+                              PointLocation &best_location) const
+   {
+      bool found = false;
+      for (const int elem : candidate_elems)
+      {
+         found = TryLocateInElement_(elem, x_target, best_location) || found;
+      }
+      return found;
+   }
+
+   ParMesh &pmesh_;
+   const ParFiniteElementSpace &fes_state_;
+   const ParGridFunction *ale_displacement_ = nullptr;
+   vector<ElementBBox> element_bboxes_;
 };
 
 struct SurfaceFluxModelParams
@@ -3784,7 +4451,7 @@ static void ProjectRhoToDG1Field(const ParFiniteElementSpace &fes_T,
    }
 }
 
-static void ProjectExtentsToDG1Fields(
+static void ProjectExtentsToL2Fields(
    const ParFiniteElementSpace &fes_state,
    const ParFiniteElementSpace &fes_extent,
    const ReactionStateManager &state_manager,
@@ -3835,6 +4502,137 @@ static void ProjectExtentsToDG1Fields(
             (*extent_fields[static_cast<size_t>(r)])(dof) =
                sign * extent_coeffs[static_cast<size_t>(r)](j);
          }
+      }
+   }
+}
+
+static void ProjectExtentsToDG1Fields(
+   const ParFiniteElementSpace &fes_state,
+   const ParFiniteElementSpace &fes_extent,
+   const ReactionStateManager &state_manager,
+   const int quad_order,
+   vector<unique_ptr<ParGridFunction>> &extent_fields)
+{
+   ProjectExtentsToL2Fields(fes_state,
+                            fes_extent,
+                            state_manager,
+                            quad_order,
+                            extent_fields);
+}
+
+static void ProjectExtentsToH1Fields(
+   const ParFiniteElementSpace &fes_state,
+   ParFiniteElementSpace &fes_extent,
+   const ReactionStateManager &state_manager,
+   const int quad_order,
+   vector<unique_ptr<ParGridFunction>> &extent_fields)
+{
+   const int nr = state_manager.NumReactions();
+   MFEM_VERIFY(static_cast<int>(extent_fields.size()) == nr,
+               "Extent H1 projection requires one field per reaction.");
+   MFEM_VERIFY(fes_state.GetNE() == fes_extent.GetNE(),
+               "Extent H1 projection requires matching element counts.");
+
+   for (auto &field : extent_fields)
+   {
+      *field = 0.0;
+   }
+
+   Vector dof_weights(fes_extent.GetVSize());
+   dof_weights = 0.0;
+   Array<int> dofs_extent;
+   vector<Vector> extent_coeffs;
+   for (int e = 0; e < fes_state.GetNE(); ++e)
+   {
+      const FiniteElement *fe_state = fes_state.GetFE(e);
+      const FiniteElement *fe_extent = fes_extent.GetFE(e);
+      ElementTransformation *Tr_state = fes_state.GetElementTransformation(e);
+      MFEM_VERIFY(fe_state != nullptr && fe_extent != nullptr && Tr_state != nullptr,
+                  "Missing FE or transformation for extent H1 projection.");
+
+      ProjectElementQPointExtentsToL2Coefficients(state_manager,
+                                                  *fe_state,
+                                                  *fe_extent,
+                                                  *Tr_state,
+                                                  e,
+                                                  quad_order,
+                                                  "Extent H1 projection",
+                                                  extent_coeffs);
+      fes_extent.GetElementDofs(e, dofs_extent);
+      for (int j = 0; j < dofs_extent.Size(); ++j)
+      {
+         int dof = dofs_extent[j];
+         double sign = 1.0;
+         if (dof < 0)
+         {
+            dof = -1 - dof;
+            sign = -1.0;
+         }
+         dof_weights(dof) += 1.0;
+         for (int r = 0; r < nr; ++r)
+         {
+            (*extent_fields[static_cast<size_t>(r)])(dof) +=
+               sign * extent_coeffs[static_cast<size_t>(r)](j);
+         }
+      }
+   }
+
+   for (int dof = 0; dof < dof_weights.Size(); ++dof)
+   {
+      const double w = dof_weights(dof);
+      if (w <= 0.0)
+      {
+         continue;
+      }
+      const double inv_w = 1.0 / w;
+      for (int r = 0; r < nr; ++r)
+      {
+         (*extent_fields[static_cast<size_t>(r)])(dof) *= inv_w;
+      }
+   }
+}
+
+static void ValidateAleRemapExtentReconstructionConfig(
+   const DriverParams &params,
+   const ParFiniteElementSpace &fes_state,
+   const int quad_order)
+{
+   if (params.ale_remap_extent_mode != "l2_point_eval" &&
+       params.ale_remap_extent_mode != "h1_point_eval" &&
+       params.ale_remap_extent_mode != "l2_conservative")
+   {
+      return;
+   }
+
+   unique_ptr<FiniteElementCollection> remap_fec;
+   if (params.ale_remap_extent_mode == "h1_point_eval")
+   {
+      remap_fec =
+         make_unique<H1_FECollection>(params.ale_remap_extent_l2_order,
+                                      fes_state.GetMesh()->Dimension());
+   }
+   else
+   {
+      remap_fec =
+         make_unique<L2_FECollection>(params.ale_remap_extent_l2_order,
+                                      fes_state.GetMesh()->Dimension());
+   }
+   for (int e = 0; e < fes_state.GetNE(); ++e)
+   {
+      const FiniteElement *fe_state = fes_state.GetFE(e);
+      const FiniteElement *fe_recon =
+         remap_fec->FiniteElementForGeometry(fe_state->GetGeomType());
+      MFEM_VERIFY(fe_state != nullptr && fe_recon != nullptr,
+                  "ALE remap reconstruction requires valid finite elements.");
+      const int nq = IntRules.Get(fe_state->GetGeomType(), quad_order).GetNPoints();
+      if (fe_recon->GetDof() > nq)
+      {
+         ostringstream oss;
+         oss << "ale_remap_extent_l2_order=" << params.ale_remap_extent_l2_order
+             << " is not solvable for remap on element " << e
+             << ": reconstruction dofs=" << fe_recon->GetDof()
+             << " exceed remap quadrature points=" << nq << ".";
+         throw runtime_error(oss.str());
       }
    }
 }
@@ -4058,6 +4856,7 @@ SurfaceBoundaryDiagnostics ComputeTopBoundaryDiagnostics(
    const ParFiniteElementSpace &fes_p,
    const ParGridFunction &T,
    const ParGridFunction &p,
+   const ParGridFunction *ale_displacement,
    const TACOTMaterial &material,
    const ReactionStateManager &state_manager,
    const BPrimeTable &bprime_table,
@@ -4073,7 +4872,7 @@ SurfaceBoundaryDiagnostics ComputeTopBoundaryDiagnostics(
    const SurfaceBCSchedule::BoundaryState bc_state = schedule.Eval(time);
 
    Array<int> dofs_T, dofs_p;
-   Vector elT, elp, shape_T, shape_p, gradp, normal;
+   Vector elT, elp, shape_T, shape_p, gradp, gradp_cur;
    DenseMatrix dshape_p;
 
    const int dim = pmesh.Dimension();
@@ -4115,7 +4914,6 @@ SurfaceBoundaryDiagnostics ComputeTopBoundaryDiagnostics(
       shape_p.SetSize(fe_p->GetDof());
       dshape_p.SetSize(fe_p->GetDof(), dim);
       gradp.SetSize(dim);
-      normal.SetSize(dim);
 
       const int face_int_order = max(2, 2 * max(fe_T->GetOrder(), fe_p->GetOrder()) + 2);
       const IntegrationRule &ir_face = IntRules.Get(FT->GetGeometryType(), face_int_order);
@@ -4152,6 +4950,19 @@ SurfaceBoundaryDiagnostics ComputeTopBoundaryDiagnostics(
             }
          }
 
+         Vector x_current;
+         DenseMatrix F, cofactor, invF;
+         double J = 1.0;
+         EvaluateAleMap2D(*FT->Elem1,
+                          eip,
+                          ale_displacement,
+                          x_current,
+                          F,
+                          cofactor,
+                          invF,
+                          J);
+         ApplyInverseTranspose2D(invF, gradp, gradp_cur);
+
          const TACOTMaterial::InternalState &state = face_state_recon.Evaluate(eip);
          const TACOTMaterial::SolidProperties solid =
             material.EvaluateSolid(Tq, pq, state);
@@ -4184,37 +4995,30 @@ SurfaceBoundaryDiagnostics ComputeTopBoundaryDiagnostics(
          Vector mflux(dim);
          for (int d = 0; d < dim; ++d)
          {
-            mflux[d] = -rho_darcy * gradp[d] + rho2_darcy * gravity[d];
+            mflux[d] = -rho_darcy * gradp_cur[d] + rho2_darcy * gravity[d];
          }
 
-         FT->Face->SetIntPoint(&fip);
-         if (dim == 1)
-         {
-            normal[0] = 1.0;
-         }
-         else
-         {
-            CalcOrtho(FT->Face->Jacobian(), normal);
-         }
-
-         const double nmag = normal.Norml2();
-         if (nmag <= 1.0e-20)
+         AleFaceGeometry2D face_geom;
+         if (!EvaluateCurrentFaceGeometry2D(*FT,
+                                            fip,
+                                            eip,
+                                            ale_displacement,
+                                            face_geom))
          {
             continue;
          }
 
-         const double ds = fip.weight * nmag;
          double gradp_n = 0.0;
          for (int d = 0; d < dim; ++d)
          {
-            gradp_n += gradp[d] * (normal[d] / nmag);
+            gradp_n += gradp_cur[d] * face_geom.unit_normal[d];
          }
-         const double m_dot_g_w = (mflux * normal) / nmag;
+         const double m_dot_g_w = mflux * face_geom.unit_normal;
 
-         local_sum.m_dot_g_surf += ds * m_dot_g_w;
+         local_sum.m_dot_g_surf += face_geom.ds * m_dot_g_w;
          if (std::isfinite(x_target))
          {
-            FT->Face->Transform(fip, face_pos);
+            face_pos = face_geom.x_current;
             const double dist = std::abs(face_pos[0] - x_target);
             if (dist < local_centerline_dist)
             {
@@ -4242,22 +5046,22 @@ SurfaceBoundaryDiagnostics ComputeTopBoundaryDiagnostics(
                   std::max(0.0, bc_state.rhoeUeCH) * terms.BprimeC *
                      terms.blowing_correction :
                   0.0;
-            local_sum.m_dot_c_surf += ds * m_dot_c;
-            local_sum.rho_s_surf += ds * solid.rho_s;
-            local_sum.BprimeG_surf += ds * terms.BprimeG;
-            local_sum.BprimeC_surf += ds * terms.BprimeC;
-            local_sum.h_w_surf += ds * terms.h_w;
-            local_sum.emissivity_surf += ds * terms.emissivity;
-            local_sum.absorptivity_surf += ds * terms.absorptivity;
-            local_sum.reflectivity_surf += ds * terms.reflectivity;
-            local_sum.blowing_correction_surf += ds * terms.blowing_correction;
-            local_sum.q_conv_surf += ds * terms.q_conv;
-            local_sum.q_adv_pyro_surf += ds * terms.q_adv_pyro;
-            local_sum.q_rad_emit_surf += ds * terms.q_rad_emit;
-            local_sum.q_rad_abs_surf += ds * terms.q_rad_abs;
-            local_sum.q_surf += ds * terms.q_surf;
+            local_sum.m_dot_c_surf += face_geom.ds * m_dot_c;
+            local_sum.rho_s_surf += face_geom.ds * solid.rho_s;
+            local_sum.BprimeG_surf += face_geom.ds * terms.BprimeG;
+            local_sum.BprimeC_surf += face_geom.ds * terms.BprimeC;
+            local_sum.h_w_surf += face_geom.ds * terms.h_w;
+            local_sum.emissivity_surf += face_geom.ds * terms.emissivity;
+            local_sum.absorptivity_surf += face_geom.ds * terms.absorptivity;
+            local_sum.reflectivity_surf += face_geom.ds * terms.reflectivity;
+            local_sum.blowing_correction_surf += face_geom.ds * terms.blowing_correction;
+            local_sum.q_conv_surf += face_geom.ds * terms.q_conv;
+            local_sum.q_adv_pyro_surf += face_geom.ds * terms.q_adv_pyro;
+            local_sum.q_rad_emit_surf += face_geom.ds * terms.q_rad_emit;
+            local_sum.q_rad_abs_surf += face_geom.ds * terms.q_rad_abs;
+            local_sum.q_surf += face_geom.ds * terms.q_surf;
          }
-         local_area += ds;
+         local_area += face_geom.ds;
       }
    }
 
@@ -4446,6 +5250,7 @@ void AssembleTopBoundaryRecessionVelocity(
    const ParFiniteElementSpace &fes_scalar,
    const ParGridFunction &T,
    const ParGridFunction &p,
+   const ParGridFunction *ale_displacement,
    const TACOTMaterial &material,
    const ReactionStateManager &state_manager,
    const BPrimeTable &bprime_table,
@@ -4467,7 +5272,7 @@ void AssembleTopBoundaryRecessionVelocity(
    vel_den = 0.0;
 
    Array<int> dofs_T, dofs_p, dofs_scalar;
-   Vector elT, elp, shape_T, shape_p, shape_scalar, gradp, normal;
+   Vector elT, elp, shape_T, shape_p, shape_scalar, gradp, gradp_cur;
    DenseMatrix dshape_p;
    const int dim = pmesh.Dimension();
 
@@ -4500,7 +5305,6 @@ void AssembleTopBoundaryRecessionVelocity(
       shape_scalar.SetSize(fe_scalar->GetDof());
       dshape_p.SetSize(fe_p->GetDof(), dim);
       gradp.SetSize(dim);
-      normal.SetSize(dim);
 
       const int face_int_order =
          max(2,
@@ -4539,6 +5343,19 @@ void AssembleTopBoundaryRecessionVelocity(
             }
          }
 
+         Vector x_current;
+         DenseMatrix F, cofactor, invF;
+         double J = 1.0;
+         EvaluateAleMap2D(*FT->Elem1,
+                          eip,
+                          ale_displacement,
+                          x_current,
+                          F,
+                          cofactor,
+                          invF,
+                          J);
+         ApplyInverseTranspose2D(invF, gradp, gradp_cur);
+
          const TACOTMaterial::InternalState &state = face_state_recon.Evaluate(eip);
          const TACOTMaterial::SolidProperties solid =
             material.EvaluateSolid(Tq, pq, state);
@@ -4552,27 +5369,20 @@ void AssembleTopBoundaryRecessionVelocity(
          Vector mflux(dim);
          for (int d = 0; d < dim; ++d)
          {
-            mflux[d] = -rho_darcy * gradp[d] + rho2_darcy * gravity[d];
+            mflux[d] = -rho_darcy * gradp_cur[d] + rho2_darcy * gravity[d];
          }
 
-         FT->Face->SetIntPoint(&fip);
-         if (dim == 1)
-         {
-            normal[0] = 1.0;
-         }
-         else
-         {
-            CalcOrtho(FT->Face->Jacobian(), normal);
-         }
-
-         const double nmag = normal.Norml2();
-         if (nmag <= 1.0e-20)
+         AleFaceGeometry2D face_geom;
+         if (!EvaluateCurrentFaceGeometry2D(*FT,
+                                            fip,
+                                            eip,
+                                            ale_displacement,
+                                            face_geom))
          {
             continue;
          }
 
-         const double ds = fip.weight * nmag;
-         const double m_dot_g_w = (mflux * normal) / nmag;
+         const double m_dot_g_w = mflux * face_geom.unit_normal;
 
          const SurfaceFluxTerms terms = EvaluateSurfaceFluxTerms(m_dot_g_w,
                                                                  gas.h,
@@ -4600,7 +5410,7 @@ void AssembleTopBoundaryRecessionVelocity(
          {
             int dof = dofs_scalar[j];
             if (dof < 0) { dof = -1 - dof; }
-            const double w = ds * shape_scalar[j];
+            const double w = face_geom.ds * shape_scalar[j];
             vel_num(dof) += w * v_rec;
             vel_den(dof) += w;
          }
@@ -4708,29 +5518,27 @@ double ClampAndAverageTopRecessionVelocity(const Array<int> &top_tdofs,
    return global_data[0] / global_data[1];
 }
 
-double SampleFieldAtPoint(ParMesh &pmesh, const ParGridFunction &gf,
+double SampleFieldAtPoint(const AlePointLocator2D &locator,
+                          const ParGridFunction &gf,
                           const double x, const double y)
 {
-   DenseMatrix pt(2, 1);
-   pt(0, 0) = x;
-   pt(1, 0) = y;
-
-   Array<int> elem_ids;
-   Array<IntegrationPoint> ips;
-   pmesh.FindPoints(pt, elem_ids, ips, false);
+   Vector target(2);
+   target[0] = x;
+   target[1] = y;
 
    double local_val = 0.0;
    int local_found = 0;
-   if (elem_ids.Size() > 0 && elem_ids[0] >= 0)
+   AlePointLocator2D::PointLocation location;
+   if (locator.FindPointLocal(target, location))
    {
-      local_val = gf.GetValue(elem_ids[0], ips[0]);
+      local_val = gf.GetValue(location.elem, location.ip);
       local_found = 1;
    }
 
    double global_sum = 0.0;
    int global_count = 0;
-   MPI_Allreduce(&local_val, &global_sum, 1, MPI_DOUBLE, MPI_SUM, pmesh.GetComm());
-   MPI_Allreduce(&local_found, &global_count, 1, MPI_INT, MPI_SUM, pmesh.GetComm());
+   MPI_Allreduce(&local_val, &global_sum, 1, MPI_DOUBLE, MPI_SUM, locator.Comm());
+   MPI_Allreduce(&local_found, &global_count, 1, MPI_INT, MPI_SUM, locator.Comm());
 
    if (global_count == 0)
    {
@@ -4759,44 +5567,59 @@ struct MassEqProbeSample
    double mflux_y = numeric_limits<double>::quiet_NaN();
 };
 
-VectorDivSample SampleVectorFieldAndDivergenceAtPoint(ParMesh &pmesh,
+VectorDivSample SampleVectorFieldAndDivergenceAtPoint(const AlePointLocator2D &locator,
                                                       const ParGridFunction &gf,
                                                       const double x,
                                                       const double y)
 {
-   const int sdim = pmesh.SpaceDimension();
-   DenseMatrix pt(sdim, 1);
-   pt = 0.0;
-   pt(0, 0) = x;
-   if (sdim > 1) { pt(1, 0) = y; }
-
-   Array<int> elem_ids;
-   Array<IntegrationPoint> ips;
-   pmesh.FindPoints(pt, elem_ids, ips, false);
+   Vector target(2);
+   target[0] = x;
+   target[1] = y;
 
    double local_wx = 0.0;
    double local_wy = 0.0;
    double local_divw = 0.0;
    int local_found = 0;
-   if (elem_ids.Size() > 0 && elem_ids[0] >= 0)
+   AlePointLocator2D::PointLocation location;
+   if (locator.FindPointLocal(target, location))
    {
-      ElementTransformation *Tr = pmesh.GetElementTransformation(elem_ids[0]);
+      ElementTransformation *Tr = locator.Mesh().GetElementTransformation(location.elem);
       MFEM_VERIFY(Tr != nullptr, "Null element transformation in vector point sample.");
-      Tr->SetIntPoint(&ips[0]);
+      Tr->SetIntPoint(&location.ip);
 
-      Vector w_val(sdim);
-      gf.GetVectorValue(*Tr, ips[0], w_val);
+      Vector w_val(2);
+      gf.GetVectorValue(*Tr, location.ip, w_val);
       local_wx = (w_val.Size() > 0) ? w_val[0] : 0.0;
       local_wy = (w_val.Size() > 1) ? w_val[1] : 0.0;
-      local_divw = gf.GetDivergence(*Tr);
+
+      if (locator.Displacement())
+      {
+         Vector x_current;
+         DenseMatrix F, cofactor, invF, grad_ref;
+         double J = 1.0;
+         EvaluateAleMap2D(*Tr,
+                          location.ip,
+                          locator.Displacement(),
+                          x_current,
+                          F,
+                          cofactor,
+                          invF,
+                          J);
+         gf.GetVectorGradient(*Tr, grad_ref);
+         local_divw = ComputeCurrentVectorDivergence2D(grad_ref, invF);
+      }
+      else
+      {
+         local_divw = gf.GetDivergence(*Tr);
+      }
       local_found = 1;
    }
 
    double sums[3] = {0.0, 0.0, 0.0};
    double local_vals[3] = {local_wx, local_wy, local_divw};
    int global_count = 0;
-   MPI_Allreduce(local_vals, sums, 3, MPI_DOUBLE, MPI_SUM, pmesh.GetComm());
-   MPI_Allreduce(&local_found, &global_count, 1, MPI_INT, MPI_SUM, pmesh.GetComm());
+   MPI_Allreduce(local_vals, sums, 3, MPI_DOUBLE, MPI_SUM, locator.Comm());
+   MPI_Allreduce(&local_found, &global_count, 1, MPI_INT, MPI_SUM, locator.Comm());
 
    VectorDivSample out;
    if (global_count == 0)
@@ -4810,7 +5633,7 @@ VectorDivSample SampleVectorFieldAndDivergenceAtPoint(ParMesh &pmesh,
    return out;
 }
 
-MassEqProbeSample SampleMassEqProbeAtPoint(ParMesh &pmesh,
+MassEqProbeSample SampleMassEqProbeAtPoint(const AlePointLocator2D &locator,
                                            const ParFiniteElementSpace &fes_T,
                                            const ParFiniteElementSpace &fes_p,
                                            const ParGridFunction &T_gf,
@@ -4822,33 +5645,28 @@ MassEqProbeSample SampleMassEqProbeAtPoint(ParMesh &pmesh,
                                            const double x,
                                            const double y)
 {
-   const int sdim = pmesh.SpaceDimension();
-   DenseMatrix pt(sdim, 1);
-   pt = 0.0;
-   pt(0, 0) = x;
-   if (sdim > 1) { pt(1, 0) = y; }
-
-   Array<int> elem_ids;
-   Array<IntegrationPoint> ips;
-   pmesh.FindPoints(pt, elem_ids, ips, false);
+   Vector target(2);
+   target[0] = x;
+   target[1] = y;
 
    array<double, 9> local_vals{};
    local_vals.fill(0.0);
    int local_found = 0;
 
-   if (elem_ids.Size() > 0 && elem_ids[0] >= 0)
+   AlePointLocator2D::PointLocation location;
+   if (locator.FindPointLocal(target, location))
    {
-      const int elem = elem_ids[0];
+      const int elem = location.elem;
       const FiniteElement *fe_T = fes_T.GetFE(elem);
       const FiniteElement *fe_p = fes_p.GetFE(elem);
-      ElementTransformation *Tr = pmesh.GetElementTransformation(elem);
+      ElementTransformation *Tr = locator.Mesh().GetElementTransformation(elem);
       MFEM_VERIFY(fe_T && fe_p && Tr, "Null FE/transformation in mass-equation point sample.");
 
-      const IntegrationPoint &ip = ips[0];
+      const IntegrationPoint &ip = location.ip;
       Tr->SetIntPoint(&ip);
 
       Array<int> dofs_T, dofs_p;
-      Vector elT, elp, shape_T, shape_p, gradp;
+      Vector elT, elp, shape_T, shape_p, gradp, gradp_cur;
       DenseMatrix dshape_p;
 
       fes_T.GetElementDofs(elem, dofs_T);
@@ -4858,8 +5676,8 @@ MassEqProbeSample SampleMassEqProbeAtPoint(ParMesh &pmesh,
 
       shape_T.SetSize(fe_T->GetDof());
       shape_p.SetSize(fe_p->GetDof());
-      dshape_p.SetSize(fe_p->GetDof(), pmesh.Dimension());
-      gradp.SetSize(pmesh.Dimension());
+      dshape_p.SetSize(fe_p->GetDof(), locator.Mesh().Dimension());
+      gradp.SetSize(locator.Mesh().Dimension());
 
       fe_T->CalcPhysShape(*Tr, shape_T);
       fe_p->CalcPhysShape(*Tr, shape_p);
@@ -4870,11 +5688,24 @@ MassEqProbeSample SampleMassEqProbeAtPoint(ParMesh &pmesh,
       gradp = 0.0;
       for (int j = 0; j < fe_p->GetDof(); ++j)
       {
-         for (int d = 0; d < pmesh.Dimension(); ++d)
+         for (int d = 0; d < locator.Mesh().Dimension(); ++d)
          {
             gradp[d] += elp[j] * dshape_p(j, d);
          }
       }
+
+      Vector x_current;
+      DenseMatrix F, cofactor, invF;
+      double J = 1.0;
+      EvaluateAleMap2D(*Tr,
+                       ip,
+                       locator.Displacement(),
+                       x_current,
+                       F,
+                       cofactor,
+                       invF,
+                       J);
+      ApplyInverseTranspose2D(invF, gradp, gradp_cur);
 
       const IntegrationRule &ir =
          IntRules.Get(fe_T->GetGeomType(), quad_order);
@@ -4906,7 +5737,7 @@ MassEqProbeSample SampleMassEqProbeAtPoint(ParMesh &pmesh,
       const double rho_darcy = gas.rho * darcy;
       const double rho2_darcy = gas.rho * rho_darcy;
       const double gy = (gravity.Size() > 1) ? gravity[1] : 0.0;
-      const double gradp_y = (gradp.Size() > 1) ? gradp[1] : 0.0;
+      const double gradp_y = (gradp_cur.Size() > 1) ? gradp_cur[1] : 0.0;
       const double mflux_y = -rho_darcy * gradp_y + rho2_darcy * gy;
 
       local_vals[0] = pi_total_q;
@@ -4925,8 +5756,8 @@ MassEqProbeSample SampleMassEqProbeAtPoint(ParMesh &pmesh,
    sums.fill(0.0);
    int global_count = 0;
    MPI_Allreduce(local_vals.data(), sums.data(), static_cast<int>(sums.size()),
-                 MPI_DOUBLE, MPI_SUM, pmesh.GetComm());
-   MPI_Allreduce(&local_found, &global_count, 1, MPI_INT, MPI_SUM, pmesh.GetComm());
+                 MPI_DOUBLE, MPI_SUM, locator.Comm());
+   MPI_Allreduce(&local_found, &global_count, 1, MPI_INT, MPI_SUM, locator.Comm());
 
    MassEqProbeSample out;
    if (global_count == 0)
@@ -4947,7 +5778,7 @@ MassEqProbeSample SampleMassEqProbeAtPoint(ParMesh &pmesh,
    return out;
 }
 
-double ComputeFrontDepth(ParMesh &pmesh,
+double ComputeFrontDepth(const AlePointLocator2D &locator,
                          const ParGridFunction &tau_gf,
                          const double x,
                          const double y_top,
@@ -4962,12 +5793,12 @@ double ComputeFrontDepth(ParMesh &pmesh,
    const double dy = (y0 - y1) / static_cast<double>(ns);
 
    double yp = y0;
-   double vp = SampleFieldAtPoint(pmesh, tau_gf, x, yp);
+   double vp = SampleFieldAtPoint(locator, tau_gf, x, yp);
 
    for (int k = 1; k <= ns; ++k)
    {
       const double yc = y0 - k * dy;
-      const double vc = SampleFieldAtPoint(pmesh, tau_gf, x, yc);
+      const double vc = SampleFieldAtPoint(locator, tau_gf, x, yc);
 
       if (std::isfinite(vp) && std::isfinite(vc) && vp > threshold && vc <= threshold)
       {
@@ -5119,13 +5950,22 @@ struct AleRemapWorkspace
    DenseMatrix target_pts;
    vector<pair<int, int>> qp_map;
    vector<vector<double>> remapped_extents;
+   unique_ptr<L2_FECollection> extent_l2_fec;
+   unique_ptr<ParFiniteElementSpace> extent_l2_fes;
+   vector<unique_ptr<ParGridFunction>> extent_l2_fields;
+   unique_ptr<H1_FECollection> extent_h1_fec;
+   unique_ptr<ParFiniteElementSpace> extent_h1_fes;
+   vector<unique_ptr<ParGridFunction>> extent_h1_fields;
+   vector<int> element_skipped;
+   vector<int> element_clipped;
    int total_qps = 0;
    int num_reactions = 0;
    int quad_order = -1;
+   int extent_l2_order = -1;
+   int extent_h1_order = -1;
 
    void Initialize(const ReactionStateManager &state_manager,
                    const ParFiniteElementSpace &fes_state,
-                   ParMesh &old_lookup_mesh,
                    const int new_quad_order)
    {
       const int nr = state_manager.NumReactions();
@@ -5148,6 +5988,8 @@ struct AleRemapWorkspace
           total_qps != new_total_qps);
       if (!need_rebuild)
       {
+         element_skipped.assign(static_cast<size_t>(fes_state.GetNE()), 0);
+         element_clipped.assign(static_cast<size_t>(fes_state.GetNE()), 0);
          return;
       }
 
@@ -5155,22 +5997,226 @@ struct AleRemapWorkspace
       num_reactions = nr;
       quad_order = new_quad_order;
       qp_map = std::move(new_qp_map);
-      target_pts.SetSize(old_lookup_mesh.SpaceDimension(), total_qps);
+      target_pts.SetSize(fes_state.GetParMesh()->SpaceDimension(), total_qps);
       remapped_extents.assign(static_cast<size_t>(total_qps),
                               vector<double>(static_cast<size_t>(nr), 0.0));
+      element_skipped.assign(static_cast<size_t>(fes_state.GetNE()), 0);
+      element_clipped.assign(static_cast<size_t>(fes_state.GetNE()), 0);
+   }
+
+   void InitializeExtentReconstruction(
+      const ParFiniteElementSpace &fes_state,
+      const int new_l2_order,
+      const int nr)
+   {
+      const bool need_rebuild =
+         (!extent_l2_fec ||
+          !extent_l2_fes ||
+          extent_l2_order != new_l2_order ||
+          static_cast<int>(extent_l2_fields.size()) != nr ||
+          extent_l2_fes->GetNE() != fes_state.GetNE());
+      if (!need_rebuild)
+      {
+         return;
+      }
+
+      extent_l2_order = new_l2_order;
+      extent_l2_fec =
+         make_unique<L2_FECollection>(new_l2_order, fes_state.GetMesh()->Dimension());
+      extent_l2_fes =
+         make_unique<ParFiniteElementSpace>(fes_state.GetParMesh(), extent_l2_fec.get());
+      extent_l2_fields.clear();
+      extent_l2_fields.reserve(static_cast<size_t>(nr));
+      for (int r = 0; r < nr; ++r)
+      {
+         extent_l2_fields.emplace_back(make_unique<ParGridFunction>(extent_l2_fes.get()));
+      }
+   }
+
+   void InitializeExtentH1Reconstruction(
+      const ParFiniteElementSpace &fes_state,
+      const int new_h1_order,
+      const int new_quad_order,
+      const int nr)
+   {
+      const bool need_rebuild =
+         (!extent_h1_fec ||
+          !extent_h1_fes ||
+          extent_h1_order != new_h1_order ||
+          static_cast<int>(extent_h1_fields.size()) != nr ||
+          extent_h1_fes->GetNE() != fes_state.GetNE() ||
+          quad_order != new_quad_order);
+      if (!need_rebuild)
+      {
+         return;
+      }
+
+      extent_h1_order = new_h1_order;
+      extent_h1_fec =
+         make_unique<H1_FECollection>(new_h1_order, fes_state.GetMesh()->Dimension());
+      extent_h1_fes =
+         make_unique<ParFiniteElementSpace>(fes_state.GetParMesh(), extent_h1_fec.get());
+      extent_h1_fields.clear();
+      extent_h1_fields.reserve(static_cast<size_t>(nr));
+      for (int r = 0; r < nr; ++r)
+      {
+         extent_h1_fields.emplace_back(make_unique<ParGridFunction>(extent_h1_fes.get()));
+      }
    }
 };
 
 struct AleRemapStats
 {
    int global_not_found = 0;
+   int global_skipped_elements = 0;
+   int global_clipped_values = 0;
 };
 
-template <typename SampleFn>
-static void SampleAleRemapNearestQPointValuesAtTargetPoints(
-   ParMesh &old_lookup_mesh,
+static void ConservativelyProjectSampledExtentsToTargetQPs(
    const ParFiniteElementSpace &fes_state,
+   const ParFiniteElementSpace &fes_extent,
+   const ParGridFunction &ale_displacement_new,
    const int quad_order,
+   const vector<Vector> &sampled_extents,
+   const vector<int> &point_found,
+   vector<vector<double>> &remapped_extents,
+   AleRemapWorkspace &workspace,
+   AleRemapStats &stats)
+{
+   const int nr = static_cast<int>(sampled_extents.size());
+   const int ne = fes_state.GetNE();
+   int local_skipped_elements = 0;
+   int local_clipped_values = 0;
+   int col = 0;
+
+   for (int e = 0; e < ne; ++e)
+   {
+      const FiniteElement *fe_state = fes_state.GetFE(e);
+      const FiniteElement *fe_extent = fes_extent.GetFE(e);
+      ElementTransformation *Tr_ref = fes_state.GetElementTransformation(e);
+      MFEM_VERIFY(fe_state != nullptr && fe_extent != nullptr && Tr_ref != nullptr,
+                  "Missing FE or transformation for conservative ALE remap.");
+      const IntegrationRule &ir = IntRules.Get(fe_state->GetGeomType(), quad_order);
+      const int nq = ir.GetNPoints();
+      const int col0 = col;
+
+      bool skip_element = false;
+      for (int q = 0; q < nq; ++q, ++col)
+      {
+         if (point_found[static_cast<size_t>(col)] == 0)
+         {
+            skip_element = true;
+         }
+      }
+
+      if (skip_element)
+      {
+         workspace.element_skipped[static_cast<size_t>(e)] = 1;
+         ++local_skipped_elements;
+         continue;
+      }
+
+      const int ndof = fe_extent->GetDof();
+      DenseMatrix mass(ndof);
+      mass = 0.0;
+      Vector shape(ndof);
+      vector<Vector> rhs(static_cast<size_t>(nr));
+      vector<Vector> coeffs(static_cast<size_t>(nr));
+      for (int r = 0; r < nr; ++r)
+      {
+         rhs[static_cast<size_t>(r)].SetSize(ndof);
+         rhs[static_cast<size_t>(r)] = 0.0;
+         coeffs[static_cast<size_t>(r)].SetSize(ndof);
+         coeffs[static_cast<size_t>(r)] = 0.0;
+      }
+
+      col = col0;
+      for (int q = 0; q < nq; ++q, ++col)
+      {
+         const IntegrationPoint &ip = ir.IntPoint(q);
+         Tr_ref->SetIntPoint(&ip);
+         fe_extent->CalcShape(ip, shape);
+
+         Vector x_current;
+         DenseMatrix F, cofactor, invF;
+         double J_new = 1.0;
+         EvaluateAleMap2D(*Tr_ref,
+                          ip,
+                          &ale_displacement_new,
+                          x_current,
+                          F,
+                          cofactor,
+                          invF,
+                          J_new);
+         const double weight = ip.weight * Tr_ref->Weight() * J_new;
+
+         for (int i = 0; i < ndof; ++i)
+         {
+            for (int j = 0; j < ndof; ++j)
+            {
+               mass(i, j) += weight * shape(i) * shape(j);
+            }
+         }
+
+         for (int r = 0; r < nr; ++r)
+         {
+            const double xi = sampled_extents[static_cast<size_t>(r)](col);
+            for (int i = 0; i < ndof; ++i)
+            {
+               rhs[static_cast<size_t>(r)](i) += weight * shape(i) * xi;
+            }
+         }
+      }
+
+      DenseMatrixInverse mass_inv(mass);
+      for (int r = 0; r < nr; ++r)
+      {
+         mass_inv.Mult(rhs[static_cast<size_t>(r)], coeffs[static_cast<size_t>(r)]);
+      }
+
+      bool clipped_element = false;
+      col = col0;
+      for (int q = 0; q < nq; ++q, ++col)
+      {
+         const IntegrationPoint &ip = ir.IntPoint(q);
+         fe_extent->CalcShape(ip, shape);
+         for (int r = 0; r < nr; ++r)
+         {
+            const double xi = shape * coeffs[static_cast<size_t>(r)];
+            const double xi_clamped = std::max(0.0, std::min(1.0, xi));
+            if (std::abs(xi_clamped - xi) > 0.0)
+            {
+               clipped_element = true;
+               ++local_clipped_values;
+            }
+            remapped_extents[static_cast<size_t>(col)][r] = xi_clamped;
+         }
+      }
+
+      if (clipped_element)
+      {
+         workspace.element_clipped[static_cast<size_t>(e)] = 1;
+      }
+   }
+
+   MPI_Allreduce(&local_skipped_elements,
+                 &stats.global_skipped_elements,
+                 1,
+                 MPI_INT,
+                 MPI_SUM,
+                 fes_state.GetParMesh()->GetComm());
+   MPI_Allreduce(&local_clipped_values,
+                 &stats.global_clipped_values,
+                 1,
+                 MPI_INT,
+                 MPI_SUM,
+                 fes_state.GetParMesh()->GetComm());
+}
+
+template <typename SampleFn>
+static void SampleAleRemapPointValuesAtTargetPoints(
+   const AlePointLocator2D &old_locator,
+   const ParFiniteElementSpace &fes_state,
    const DenseMatrix &target_pts,
    const int num_values,
    SampleFn &&sample_fn,
@@ -5181,7 +6227,7 @@ static void SampleAleRemapNearestQPointValuesAtTargetPoints(
    const int dim = target_pts.Height();
    const int myid = Mpi::WorldRank();
    int world_size = 1;
-   MPI_Comm_size(old_lookup_mesh.GetComm(), &world_size);
+   MPI_Comm_size(fes_state.GetParMesh()->GetComm(), &world_size);
 
    sampled_values.resize(static_cast<size_t>(num_values));
    for (int v = 0; v < num_values; ++v)
@@ -5191,35 +6237,6 @@ static void SampleAleRemapNearestQPointValuesAtTargetPoints(
    }
    point_found.assign(static_cast<size_t>(local_npts), 0);
 
-   if (world_size == 1)
-   {
-      DenseMatrix local_points(target_pts);
-      Array<int> elem_ids;
-      Array<IntegrationPoint> ref_pts;
-      old_lookup_mesh.Mesh::FindPoints(local_points,
-                                       elem_ids,
-                                       ref_pts,
-                                       false);
-      Vector sample_buffer(num_values);
-      for (int k = 0; k < local_npts; ++k)
-      {
-         if (elem_ids[k] < 0) { continue; }
-         point_found[static_cast<size_t>(k)] = 1;
-         const int elem = elem_ids[k];
-         const FiniteElement *fe = fes_state.GetFE(elem);
-         const IntegrationRule &ir =
-            IntRules.Get(fe->GetGeomType(), quad_order);
-         const int nearest_q =
-            FindNearestIntegrationPoint(ir, ref_pts[k]);
-         sample_fn(elem, nearest_q, sample_buffer);
-         for (int v = 0; v < num_values; ++v)
-         {
-            sampled_values[static_cast<size_t>(v)](k) = sample_buffer(v);
-         }
-      }
-      return;
-   }
-
    vector<int> point_counts(static_cast<size_t>(world_size), 0);
    MPI_Allgather(&local_npts,
                  1,
@@ -5227,7 +6244,7 @@ static void SampleAleRemapNearestQPointValuesAtTargetPoints(
                  point_counts.data(),
                  1,
                  MPI_INT,
-                 old_lookup_mesh.GetComm());
+                 fes_state.GetParMesh()->GetComm());
    vector<int> point_displs(static_cast<size_t>(world_size), 0);
    vector<int> coord_counts(static_cast<size_t>(world_size), 0);
    vector<int> coord_displs(static_cast<size_t>(world_size), 0);
@@ -5251,47 +6268,48 @@ static void SampleAleRemapNearestQPointValuesAtTargetPoints(
                   coord_counts.data(),
                   coord_displs.data(),
                   MPI_DOUBLE,
-                  old_lookup_mesh.GetComm());
+                  fes_state.GetParMesh()->GetComm());
 
    DenseMatrix gathered_points(gathered_point_data.data(), dim, total_npts);
-   Array<int> elem_ids_all;
-   Array<IntegrationPoint> ref_pts_all;
-   old_lookup_mesh.Mesh::FindPoints(gathered_points,
-                                    elem_ids_all,
-                                    ref_pts_all,
-                                    false);
-
    vector<int> owner_candidate(static_cast<size_t>(total_npts), world_size);
+   vector<int> local_elem_ids(static_cast<size_t>(total_npts), -1);
+   vector<IntegrationPoint> local_ref_pts(static_cast<size_t>(total_npts));
+   Vector x_target(dim);
    for (int k = 0; k < total_npts; ++k)
    {
-      if (elem_ids_all[k] >= 0)
+      for (int d = 0; d < dim; ++d)
       {
-         owner_candidate[static_cast<size_t>(k)] = myid;
+         x_target[d] = gathered_points(d, k);
       }
+      AlePointLocator2D::PointLocation location;
+      if (!old_locator.FindPointLocal(x_target, location))
+      {
+         continue;
+      }
+      owner_candidate[static_cast<size_t>(k)] = myid;
+      local_elem_ids[static_cast<size_t>(k)] = location.elem;
+      local_ref_pts[static_cast<size_t>(k)] = location.ip;
    }
+
    vector<int> owner_rank(static_cast<size_t>(total_npts), world_size);
    MPI_Allreduce(owner_candidate.data(),
                  owner_rank.data(),
                  total_npts,
                  MPI_INT,
                  MPI_MIN,
-                 old_lookup_mesh.GetComm());
+                 fes_state.GetParMesh()->GetComm());
 
-   vector<double> local_values(static_cast<size_t>(total_npts * num_values), 0.0);
    Vector sample_buffer(num_values);
+   vector<double> local_values(static_cast<size_t>(total_npts * num_values), 0.0);
    for (int k = 0; k < total_npts; ++k)
    {
-      if (owner_rank[static_cast<size_t>(k)] != myid || elem_ids_all[k] < 0)
+      if (owner_rank[static_cast<size_t>(k)] != myid ||
+          local_elem_ids[static_cast<size_t>(k)] < 0)
       {
          continue;
       }
-      const int elem = elem_ids_all[k];
-      const FiniteElement *fe = fes_state.GetFE(elem);
-      const IntegrationRule &ir =
-         IntRules.Get(fe->GetGeomType(), quad_order);
-      const int nearest_q =
-         FindNearestIntegrationPoint(ir, ref_pts_all[k]);
-      sample_fn(elem, nearest_q, sample_buffer);
+      const int elem = local_elem_ids[static_cast<size_t>(k)];
+      sample_fn(elem, local_ref_pts[static_cast<size_t>(k)], sample_buffer);
       for (int v = 0; v < num_values; ++v)
       {
          local_values[static_cast<size_t>(v * total_npts + k)] = sample_buffer(v);
@@ -5306,14 +6324,14 @@ static void SampleAleRemapNearestQPointValuesAtTargetPoints(
                     total_npts * num_values,
                     MPI_DOUBLE,
                     MPI_SUM,
-                    old_lookup_mesh.GetComm());
+                    fes_state.GetParMesh()->GetComm());
    }
 
    const int local_offset = point_displs[static_cast<size_t>(myid)];
    for (int k = 0; k < local_npts; ++k)
    {
       const int global_k = local_offset + k;
-      if (owner_rank[static_cast<size_t>(global_k)] == world_size)
+      if (owner_rank[static_cast<size_t>(global_k)] >= world_size)
       {
          continue;
       }
@@ -5326,30 +6344,64 @@ static void SampleAleRemapNearestQPointValuesAtTargetPoints(
    }
 }
 
+template <typename SampleFn>
+static void SampleAleRemapNearestQPointValuesAtTargetPoints(
+   const AlePointLocator2D &old_locator,
+   const ParFiniteElementSpace &fes_state,
+   const int quad_order,
+   const DenseMatrix &target_pts,
+   const int num_values,
+   SampleFn &&sample_fn,
+   vector<Vector> &sampled_values,
+   vector<int> &point_found)
+{
+   SampleAleRemapPointValuesAtTargetPoints(
+      old_locator,
+      fes_state,
+      target_pts,
+      num_values,
+      [&](const int elem_src, const IntegrationPoint &ip_src, Vector &sample_buffer)
+      {
+         const FiniteElement *fe = fes_state.GetFE(elem_src);
+         const IntegrationRule &ir =
+            IntRules.Get(fe->GetGeomType(), quad_order);
+         const int nearest_q = FindNearestIntegrationPoint(ir, ip_src);
+         sample_fn(elem_src, nearest_q, sample_buffer);
+      },
+      sampled_values,
+      point_found);
+}
+
 // Pull back the stored internal state from the old ALE map to the new ALE map.
 //
-// The reference mesh remains fixed. The old material history is represented on
-// old_lookup_mesh, which must already carry the geometry defined by the old ALE
-// displacement. For each destination reference QP X_q, we evaluate the old
-// internal state at the physical point x^{n+1}(X_q) located in old_lookup_mesh:
+// The reference mesh remains fixed. The old material history is queried with an
+// ALE point locator configured on the old ALE displacement. For each
+// destination reference QP X_q, we evaluate the old internal state at the
+// physical point x^{n+1}(X_q) located in the old ALE configuration:
 //
 //    xi^{n,remap}(X_q) = xi_h^n( (chi^n)^{-1}(chi^{n+1}(X_q)) ).
 //
-// The source element is located at the pullback source point. The remapped
-// values are taken from the nearest source quadrature point in that element and
-// written into both extent and extent_old so the remap itself does not produce
-// artificial reaction increments on the following local kinetics update.
+// The source element is located at the pullback source point. Depending on the
+// configured mode, the old state is sampled from the nearest source quadrature
+// point, from a reconstructed L2 field, or from a conservative target-element
+// projection of the pulled-back old field. The remapped values are written into
+// both extent and extent_old so the remap itself does not produce artificial
+// reaction increments on the following local kinetics update.
 static AleRemapStats RemapExtentsALE(ReactionStateManager &state_manager,
                                      ParMesh &reference_pmesh,
-                                     ParMesh &old_lookup_mesh,
                                      const ParFiniteElementSpace &fes_T,
+                                     const ParGridFunction &ale_displacement_old,
                                      const ParGridFunction &ale_displacement_new,
                                      const int quad_order,
+                                     const string &extent_remap_mode,
+                                     const int extent_l2_order,
+                                     AlePointLocator2D &old_locator,
                                      AleRemapWorkspace &workspace)
 {
    AleRemapStats stats;
    const int ne = fes_T.GetNE();
-   workspace.Initialize(state_manager, fes_T, old_lookup_mesh, quad_order);
+   workspace.Initialize(state_manager, fes_T, quad_order);
+   old_locator.Update(&ale_displacement_old);
    int global_total_qps = 0;
    MPI_Allreduce(&workspace.total_qps,
                  &global_total_qps,
@@ -5371,64 +6423,165 @@ static AleRemapStats RemapExtentsALE(ReactionStateManager &state_manager,
       ElementTransformation *Tr_ref = fes_T.GetElementTransformation(e);
       const IntegrationRule &ir = IntRules.Get(fe->GetGeomType(), quad_order);
       const IntegrationPoint &ip = ir.IntPoint(q);
-      Tr_ref->SetIntPoint(&ip);
-
-      Vector x_ref(dim);
-      Tr_ref->Transform(ip, x_ref);
-
-      Vector disp_new(dim);
-      ale_displacement_new.GetVectorValue(e, ip, disp_new);
+      Vector x_current;
+      DenseMatrix F, cofactor, invF;
+      double J = 1.0;
+      EvaluateAleMap2D(*Tr_ref,
+                       ip,
+                       &ale_displacement_new,
+                       x_current,
+                       F,
+                       cofactor,
+                       invF,
+                       J);
 
       for (int d = 0; d < dim; ++d)
       {
-         target_pts(d, col) = x_ref(d) + disp_new(d);
+         target_pts(d, col) = x_current(d);
       }
    }
 
    const int nr = state_manager.NumReactions();
    vector<Vector> sampled_extents;
    vector<int> point_found;
-   SampleAleRemapNearestQPointValuesAtTargetPoints(
-      old_lookup_mesh,
-      fes_T,
-      quad_order,
-      target_pts,
-      nr,
-      [&](const int elem_src, const int q_src, Vector &sample_buffer)
-      {
-         sample_buffer = 0.0;
-         const TACOTMaterial::InternalState &src =
-            state_manager.GetState(elem_src, q_src);
-         for (int r = 0; r < nr; ++r)
+   const bool use_l2_source_sampling =
+      (extent_remap_mode == "l2_point_eval" ||
+       extent_remap_mode == "l2_conservative");
+   const bool use_h1_source_sampling =
+      (extent_remap_mode == "h1_point_eval");
+   if (use_l2_source_sampling)
+   {
+      workspace.InitializeExtentReconstruction(fes_T, extent_l2_order, nr);
+      ProjectExtentsToL2Fields(fes_T,
+                               *workspace.extent_l2_fes,
+                               state_manager,
+                               quad_order,
+                               workspace.extent_l2_fields);
+   }
+   if (use_h1_source_sampling)
+   {
+      workspace.InitializeExtentH1Reconstruction(fes_T,
+                                                 extent_l2_order,
+                                                 quad_order,
+                                                 nr);
+      ProjectExtentsToH1Fields(fes_T,
+                               *workspace.extent_h1_fes,
+                               state_manager,
+                               quad_order,
+                               workspace.extent_h1_fields);
+   }
+
+   if (extent_remap_mode == "nearest_qp")
+   {
+      SampleAleRemapNearestQPointValuesAtTargetPoints(
+         old_locator,
+         fes_T,
+         quad_order,
+         target_pts,
+         nr,
+         [&](const int elem_src, const int q_src, Vector &sample_buffer)
          {
-            sample_buffer(r) =
-               (r < static_cast<int>(src.extent.size())) ? src.extent[r] : 0.0;
-         }
-      },
-      sampled_extents,
-      point_found);
+            sample_buffer = 0.0;
+            const TACOTMaterial::InternalState &src =
+               state_manager.GetState(elem_src, q_src);
+            for (int r = 0; r < nr; ++r)
+            {
+               sample_buffer(r) =
+                  (r < static_cast<int>(src.extent.size())) ? src.extent[r] : 0.0;
+            }
+         },
+         sampled_extents,
+         point_found);
+   }
+   else if (extent_remap_mode == "l2_point_eval" ||
+            extent_remap_mode == "l2_conservative")
+   {
+      SampleAleRemapPointValuesAtTargetPoints(
+         old_locator,
+         fes_T,
+         target_pts,
+         nr,
+         [&](const int elem_src, const IntegrationPoint &ip_src, Vector &sample_buffer)
+         {
+            sample_buffer = 0.0;
+            for (int r = 0; r < nr; ++r)
+            {
+               sample_buffer(r) =
+                  workspace.extent_l2_fields[static_cast<size_t>(r)]->GetValue(elem_src,
+                                                                                ip_src);
+            }
+         },
+         sampled_extents,
+         point_found);
+   }
+   else if (extent_remap_mode == "h1_point_eval")
+   {
+      SampleAleRemapPointValuesAtTargetPoints(
+         old_locator,
+         fes_T,
+         target_pts,
+         nr,
+         [&](const int elem_src, const IntegrationPoint &ip_src, Vector &sample_buffer)
+         {
+            sample_buffer = 0.0;
+            for (int r = 0; r < nr; ++r)
+            {
+               sample_buffer(r) =
+                  workspace.extent_h1_fields[static_cast<size_t>(r)]->GetValue(elem_src,
+                                                                                ip_src);
+            }
+         },
+         sampled_extents,
+         point_found);
+   }
+   else
+   {
+      MFEM_ABORT("Unsupported ALE extent remap mode.");
+   }
 
    int local_not_found = 0;
    for (int k = 0; k < workspace.total_qps; ++k)
    {
-      const auto [e_dest, q_dest] = qp_map[static_cast<size_t>(k)];
       remapped_extents[static_cast<size_t>(k)] =
-         state_manager.GetState(e_dest, q_dest).extent;
+         state_manager.GetState(qp_map[static_cast<size_t>(k)].first,
+                                qp_map[static_cast<size_t>(k)].second).extent;
 
       if (point_found[static_cast<size_t>(k)] == 0)
       {
          ++local_not_found;
-         continue;
       }
+   }
 
-      for (int r = 0; r < nr; ++r)
+   if (extent_remap_mode == "l2_conservative")
+   {
+      ConservativelyProjectSampledExtentsToTargetQPs(fes_T,
+                                                     *workspace.extent_l2_fes,
+                                                     ale_displacement_new,
+                                                     quad_order,
+                                                     sampled_extents,
+                                                     point_found,
+                                                     remapped_extents,
+                                                     workspace,
+                                                     stats);
+   }
+   else
+   {
+      for (int k = 0; k < workspace.total_qps; ++k)
       {
-         const double xi =
-            sampled_extents.empty()
-               ? remapped_extents[static_cast<size_t>(k)][r]
-               : sampled_extents[static_cast<size_t>(r)](k);
-         remapped_extents[static_cast<size_t>(k)][r] =
-            std::max(0.0, std::min(1.0, xi));
+         if (point_found[static_cast<size_t>(k)] == 0)
+         {
+            continue;
+         }
+
+         for (int r = 0; r < nr; ++r)
+         {
+            const double xi =
+               sampled_extents.empty()
+                  ? remapped_extents[static_cast<size_t>(k)][r]
+                  : sampled_extents[static_cast<size_t>(r)](k);
+            remapped_extents[static_cast<size_t>(k)][r] =
+               std::max(0.0, std::min(1.0, xi));
+         }
       }
    }
 
@@ -5445,6 +6598,20 @@ static AleRemapStats RemapExtentsALE(ReactionStateManager &state_manager,
       MFEM_WARNING("ALE internal-state remap left " << global_not_found
                    << " quadrature points unchanged because the old lookup "
                    << "point could not be found.");
+   }
+   if (stats.global_skipped_elements > 0)
+   {
+      MFEM_WARNING("Conservative ALE internal-state remap skipped "
+                   << stats.global_skipped_elements
+                   << " target elements because at least one source point "
+                   << "could not be found on each skipped element.");
+   }
+   if (stats.global_clipped_values > 0)
+   {
+      MFEM_WARNING("Conservative ALE internal-state remap clipped "
+                   << stats.global_clipped_values
+                   << " extent values to [0,1]; strict conservation is not "
+                   << "preserved on those clipped values.");
    }
 
    int col = 0;
@@ -5644,6 +6811,19 @@ void PrintConfig(const DriverParams &p)
    cout << "  ale_energy_solid_enabled: " << (p.ale_energy_solid_enabled ? "true" : "false") << endl;
    cout << "  ale_energy_gas_enabled: " << (p.ale_energy_gas_enabled ? "true" : "false") << endl;
    cout << "  ale_remap_enabled: " << (p.ale_remap_enabled ? "true" : "false") << endl;
+   cout << "  ale_remap_extent_mode: " << p.ale_remap_extent_mode << endl;
+   cout << "  ale_remap_extent_l2_order: " << p.ale_remap_extent_l2_order << endl;
+   if (p.ale_remap_extent_mode == "h1_point_eval")
+   {
+      cout << "  ale_remap_extent_note: h1_point_eval reuses "
+              "ale_remap_extent_l2_order as the H1 polynomial order"
+           << endl;
+   }
+   if (p.ale_remap_extent_mode == "l2_conservative")
+   {
+      cout << "  ale_remap_extent_note: clipping to [0,1] can break strict conservation"
+           << endl;
+   }
    cout << "  mesh_smoothing_model: " << p.mesh_smoothing_model << endl;
    cout << "  recession_density_mode: " << p.recession_density_mode << endl;
    cout << "  recession_density_constant: " << p.recession_density_constant << endl;
@@ -5673,11 +6853,12 @@ void PrintConfig(const DriverParams &p)
    cout << "  remap_self_test.rel_tol: " << p.remap_self_test.rel_tol << endl;
 }
 
-double RemapSelfTestManufacturedExtent(const Bounds &bounds,
-                                       const int reaction_id,
-                                       const int num_reactions,
-                                       const double x,
-                                       const double y)
+double RemapSelfTestManufacturedExtentOfOrder(const Bounds &bounds,
+                                              const int reaction_id,
+                                              const int num_reactions,
+                                              const int poly_order,
+                                              const double x,
+                                              const double y)
 {
    MFEM_VERIFY(num_reactions > 0,
                "Remap self-test requires at least one reaction.");
@@ -5691,9 +6872,39 @@ double RemapSelfTestManufacturedExtent(const Bounds &bounds,
    const double w_r =
       static_cast<double>(reaction_id + 1) /
       static_cast<double>(num_reactions + 1);
-   return 0.05 + 0.20 * w_r +
-          0.10 * (1.0 - w_r) * x_n +
-          0.10 * w_r * y_n;
+
+    switch (poly_order)
+    {
+       case 0:
+          return 0.08 + 0.18 * w_r;
+       case 1:
+          return 0.05 + 0.20 * w_r +
+                 0.10 * (1.0 - w_r) * x_n +
+                 0.10 * w_r * y_n;
+       case 2:
+          return 0.03 + 0.12 * w_r +
+                 0.04 * (1.0 - w_r) * x_n +
+                 0.03 * w_r * y_n +
+                 0.025 * (1.0 - 0.5 * w_r) * x_n * x_n +
+                 0.020 * w_r * x_n * y_n +
+                 0.020 * (0.5 + 0.5 * w_r) * y_n * y_n;
+       default:
+          MFEM_ABORT("Unsupported remap self-test manufactured polynomial order.");
+    }
+}
+
+double RemapSelfTestManufacturedExtent(const Bounds &bounds,
+                                       const int reaction_id,
+                                       const int num_reactions,
+                                       const double x,
+                                       const double y)
+{
+   return RemapSelfTestManufacturedExtentOfOrder(bounds,
+                                                 reaction_id,
+                                                 num_reactions,
+                                                 1,
+                                                 x,
+                                                 y);
 }
 
 void RemapSelfTestTargetPoint(const Bounds &bounds,
@@ -5738,9 +6949,38 @@ void SetRemapSelfTestDisplacement(const Bounds &bounds,
    }
 }
 
+void SetRemapSelfTestTranslatedDisplacement(const Bounds &bounds,
+                                            const ParGridFunction &reference_nodes,
+                                            const double shift_x,
+                                            const double shift_y,
+                                            ParGridFunction &ale_displacement)
+{
+   (void)bounds;
+   auto *fes = ale_displacement.ParFESpace();
+   MFEM_VERIFY(fes != nullptr,
+               "Remap self-test translated displacement requires a valid space.");
+   const auto *nodes_fes = reference_nodes.ParFESpace();
+   MFEM_VERIFY(nodes_fes == fes,
+               "Remap self-test translated displacement requires matching nodal spaces.");
+   const int ndof = fes->GetNDofs();
+   const int vdim = fes->GetVDim();
+   MFEM_VERIFY(vdim >= 2,
+               "Remap self-test translated displacement requires at least 2 components.");
+
+   ale_displacement = 0.0;
+   for (int i = 0; i < ndof; ++i)
+   {
+      const int vdof_x = fes->DofToVDof(i, 0);
+      const int vdof_y = fes->DofToVDof(i, 1);
+      ale_displacement(vdof_x) = shift_x;
+      ale_displacement(vdof_y) = shift_y;
+   }
+}
+
 void SeedRemapSelfTestState(const Bounds &bounds,
                             const ParFiniteElementSpace &fes_T,
                             const int quad_order,
+                            const int manufactured_order,
                             ReactionStateManager &state_manager)
 {
    const int nr = state_manager.NumReactions();
@@ -5762,11 +7002,12 @@ void SeedRemapSelfTestState(const Bounds &bounds,
          st.extent_old.assign(static_cast<size_t>(nr), 0.0);
          for (int r = 0; r < nr; ++r)
          {
-            const double xi = RemapSelfTestManufacturedExtent(bounds,
-                                                              r,
-                                                              nr,
-                                                              x_phys(0),
-                                                              x_phys(1));
+            const double xi = RemapSelfTestManufacturedExtentOfOrder(bounds,
+                                                                     r,
+                                                                     nr,
+                                                                     manufactured_order,
+                                                                     x_phys(0),
+                                                                     x_phys(1));
             st.extent[static_cast<size_t>(r)] = xi;
             st.extent_old[static_cast<size_t>(r)] = xi;
          }
@@ -5774,6 +7015,688 @@ void SeedRemapSelfTestState(const Bounds &bounds,
          state_manager.SetState(e, q, std::move(st));
       }
       state_manager.UpdateExtentAverageFromQPs(e);
+   }
+}
+
+void SeedRemapSelfTestClipStressState(const ParFiniteElementSpace &fes_T,
+                                      const int quad_order,
+                                      ReactionStateManager &state_manager)
+{
+   const int nr = state_manager.NumReactions();
+   const double dt_sentinel = 7.5;
+   for (int e = 0; e < fes_T.GetNE(); ++e)
+   {
+      const FiniteElement *fe = fes_T.GetFE(e);
+      const IntegrationRule &ir = IntRules.Get(fe->GetGeomType(), quad_order);
+      for (int q = 0; q < ir.GetNPoints(); ++q)
+      {
+         TACOTMaterial::InternalState st = state_manager.GetState(e, q);
+         st.extent.assign(static_cast<size_t>(nr), 0.0);
+         st.extent_old.assign(static_cast<size_t>(nr), 0.0);
+         for (int r = 0; r < nr; ++r)
+         {
+            const bool high = ((e + q + r) % 2) != 0;
+            const double xi = high ? 1.0 : 0.0;
+            st.extent[static_cast<size_t>(r)] = xi;
+            st.extent_old[static_cast<size_t>(r)] = xi;
+         }
+         st.dt = dt_sentinel;
+         state_manager.SetState(e, q, std::move(st));
+      }
+      state_manager.UpdateExtentAverageFromQPs(e);
+   }
+}
+
+struct AleRemapSelfTestCase
+{
+   string name;
+   string extent_mode = "nearest_qp";
+   int extent_l2_order = 1;
+   int manufactured_order = 1;
+   bool use_translated_displacement = false;
+   double shift_x = 0.0;
+   double shift_y = 0.0;
+   bool check_pointwise = true;
+   bool check_conservative_integrals = false;
+   bool expect_some_not_found = false;
+   bool expect_some_clipping = false;
+   bool use_clip_stress_seed = false;
+};
+
+static void SampleReconstructedRemapSelfTestExtentsAtTargetPoints(
+   const string &extent_mode,
+   const int extent_l2_order,
+   const ReactionStateManager &state_manager,
+   const AlePointLocator2D &old_locator,
+   const ParFiniteElementSpace &fes_T,
+   const int quad_order,
+   const DenseMatrix &target_pts,
+   vector<Vector> &sampled_extents,
+   vector<int> &point_found)
+{
+   const int nr = state_manager.NumReactions();
+   if (extent_mode == "nearest_qp")
+   {
+      SampleAleRemapNearestQPointValuesAtTargetPoints(
+         old_locator,
+         fes_T,
+         quad_order,
+         target_pts,
+         nr,
+         [&](const int elem_src, const int q_src, Vector &sample_buffer)
+         {
+            sample_buffer = 0.0;
+            const TACOTMaterial::InternalState &src =
+               state_manager.GetState(elem_src, q_src);
+            for (int r = 0; r < nr; ++r)
+            {
+               sample_buffer(r) =
+                  (r < static_cast<int>(src.extent.size())) ? src.extent[r] : 0.0;
+            }
+         },
+         sampled_extents,
+         point_found);
+      return;
+   }
+
+   vector<unique_ptr<ParGridFunction>> extent_fields;
+   if (extent_mode == "h1_point_eval")
+   {
+      H1_FECollection h1_fec(extent_l2_order, fes_T.GetMesh()->Dimension());
+      ParFiniteElementSpace fes_extent(fes_T.GetParMesh(), &h1_fec);
+      extent_fields.reserve(static_cast<size_t>(nr));
+      for (int r = 0; r < nr; ++r)
+      {
+         extent_fields.emplace_back(make_unique<ParGridFunction>(&fes_extent));
+      }
+      ProjectExtentsToH1Fields(fes_T,
+                               fes_extent,
+                               state_manager,
+                               quad_order,
+                               extent_fields);
+      SampleAleRemapPointValuesAtTargetPoints(
+         old_locator,
+         fes_T,
+         target_pts,
+         nr,
+         [&](const int elem_src, const IntegrationPoint &ip_src, Vector &sample_buffer)
+         {
+            sample_buffer = 0.0;
+            for (int r = 0; r < nr; ++r)
+            {
+               sample_buffer(r) =
+                  extent_fields[static_cast<size_t>(r)]->GetValue(elem_src, ip_src);
+            }
+         },
+         sampled_extents,
+         point_found);
+      return;
+   }
+
+   L2_FECollection l2_fec(extent_l2_order, fes_T.GetMesh()->Dimension());
+   ParFiniteElementSpace fes_extent(fes_T.GetParMesh(), &l2_fec);
+   extent_fields.reserve(static_cast<size_t>(nr));
+   for (int r = 0; r < nr; ++r)
+   {
+      extent_fields.emplace_back(make_unique<ParGridFunction>(&fes_extent));
+   }
+   ProjectExtentsToL2Fields(fes_T,
+                            fes_extent,
+                            state_manager,
+                            quad_order,
+                            extent_fields);
+   SampleAleRemapPointValuesAtTargetPoints(
+      old_locator,
+      fes_T,
+      target_pts,
+      nr,
+      [&](const int elem_src, const IntegrationPoint &ip_src, Vector &sample_buffer)
+      {
+         sample_buffer = 0.0;
+         for (int r = 0; r < nr; ++r)
+         {
+            sample_buffer(r) =
+               extent_fields[static_cast<size_t>(r)]->GetValue(elem_src, ip_src);
+         }
+      },
+      sampled_extents,
+      point_found);
+}
+
+template <typename ValueFn>
+static void ComputeRemapSelfTestElementPhysicalIntegrals(
+   const ParFiniteElementSpace &fes_T,
+   const ParGridFunction &ale_displacement_new,
+   const int quad_order,
+   const int nr,
+   ValueFn &&value_fn,
+   vector<vector<double>> &elem_integrals)
+{
+   elem_integrals.assign(static_cast<size_t>(nr),
+                         vector<double>(static_cast<size_t>(fes_T.GetNE()), 0.0));
+   int col = 0;
+   for (int e = 0; e < fes_T.GetNE(); ++e)
+   {
+      const FiniteElement *fe = fes_T.GetFE(e);
+      ElementTransformation *Tr_ref = fes_T.GetElementTransformation(e);
+      const IntegrationRule &ir = IntRules.Get(fe->GetGeomType(), quad_order);
+      for (int q = 0; q < ir.GetNPoints(); ++q, ++col)
+      {
+         const IntegrationPoint &ip = ir.IntPoint(q);
+         Vector x_current;
+         DenseMatrix F, cofactor, invF;
+         double J_new = 1.0;
+         EvaluateAleMap2D(*Tr_ref,
+                          ip,
+                          &ale_displacement_new,
+                          x_current,
+                          F,
+                          cofactor,
+                          invF,
+                          J_new);
+         const double weight = ip.weight * Tr_ref->Weight() * J_new;
+         for (int r = 0; r < nr; ++r)
+         {
+            elem_integrals[static_cast<size_t>(r)][static_cast<size_t>(e)] +=
+               weight * value_fn(e, q, col, r);
+         }
+      }
+   }
+}
+
+static void RunAleRemapSelfTestCase(const DriverParams &params,
+                                    const Bounds &bounds,
+                                    const TACOTMaterial &material,
+                                    const ParFiniteElementSpace &fes_T,
+                                    const ParGridFunction &reference_nodes,
+                                    ParFiniteElementSpace &ale_vector_fes,
+                                    const AleRemapSelfTestCase &test_case)
+{
+   DriverParams case_params = params;
+   case_params.ale_remap_extent_mode = test_case.extent_mode;
+   case_params.ale_remap_extent_l2_order = test_case.extent_l2_order;
+
+   const int quad_order = max(2, 2 * params.order + 2);
+   ValidateAleRemapExtentReconstructionConfig(case_params, fes_T, quad_order);
+
+   ReactionStateManager state_manager;
+   state_manager.Initialize(fes_T, quad_order, material);
+   InitializeDiagnostics(material, state_manager);
+   if (test_case.use_clip_stress_seed)
+   {
+      SeedRemapSelfTestClipStressState(fes_T, quad_order, state_manager);
+   }
+   else
+   {
+      SeedRemapSelfTestState(bounds,
+                             fes_T,
+                             quad_order,
+                             test_case.manufactured_order,
+                             state_manager);
+   }
+   const ReactionStateManager source_state = state_manager;
+
+   ParGridFunction ale_displacement_old(&ale_vector_fes);
+   ParGridFunction ale_displacement_new(&ale_vector_fes);
+   ale_displacement_old = 0.0;
+   if (test_case.use_translated_displacement)
+   {
+      SetRemapSelfTestTranslatedDisplacement(bounds,
+                                            reference_nodes,
+                                            test_case.shift_x,
+                                            test_case.shift_y,
+                                            ale_displacement_new);
+   }
+   else
+   {
+      SetRemapSelfTestDisplacement(bounds, reference_nodes, ale_displacement_new);
+   }
+
+   AlePointLocator2D old_locator(*fes_T.GetParMesh(), fes_T);
+   AleRemapWorkspace workspace;
+   const AleRemapStats remap_stats =
+      RemapExtentsALE(state_manager,
+                      *fes_T.GetParMesh(),
+                      fes_T,
+                      ale_displacement_old,
+                      ale_displacement_new,
+                      quad_order,
+                      test_case.extent_mode,
+                      test_case.extent_l2_order,
+                      old_locator,
+                      workspace);
+
+   const int nr = state_manager.NumReactions();
+   const int ne = fes_T.GetNE();
+   vector<Vector> exact_expected_extents;
+   vector<int> exact_point_found;
+   if (!test_case.use_clip_stress_seed)
+   {
+      if (test_case.extent_mode == "nearest_qp")
+      {
+         SampleAleRemapNearestQPointValuesAtTargetPoints(
+            old_locator,
+            fes_T,
+            quad_order,
+            workspace.target_pts,
+            nr,
+            [&](const int elem_src, const int q_src, Vector &sample_buffer)
+            {
+               sample_buffer = 0.0;
+               const FiniteElement *fe_src = fes_T.GetFE(elem_src);
+               ElementTransformation *Tr_src = fes_T.GetElementTransformation(elem_src);
+               const IntegrationRule &ir_src =
+                  IntRules.Get(fe_src->GetGeomType(), quad_order);
+               const IntegrationPoint &ip_src = ir_src.IntPoint(q_src);
+               Vector x_src;
+               DenseMatrix F, cofactor, invF;
+               double J = 1.0;
+               EvaluateAleMap2D(*Tr_src,
+                                ip_src,
+                                &ale_displacement_old,
+                                x_src,
+                                F,
+                                cofactor,
+                                invF,
+                                J);
+               for (int r = 0; r < nr; ++r)
+               {
+                  sample_buffer(r) = RemapSelfTestManufacturedExtentOfOrder(
+                     bounds,
+                     r,
+                     nr,
+                     test_case.manufactured_order,
+                     x_src(0),
+                     x_src(1));
+               }
+            },
+            exact_expected_extents,
+            exact_point_found);
+      }
+      else
+      {
+         SampleAleRemapPointValuesAtTargetPoints(
+            old_locator,
+            fes_T,
+            workspace.target_pts,
+            nr,
+            [&](const int elem_src, const IntegrationPoint &ip_src, Vector &sample_buffer)
+            {
+               sample_buffer = 0.0;
+               ElementTransformation *Tr_src = fes_T.GetElementTransformation(elem_src);
+               Vector x_src;
+               DenseMatrix F, cofactor, invF;
+               double J = 1.0;
+               EvaluateAleMap2D(*Tr_src,
+                                ip_src,
+                                &ale_displacement_old,
+                                x_src,
+                                F,
+                                cofactor,
+                                invF,
+                                J);
+               for (int r = 0; r < nr; ++r)
+               {
+                  sample_buffer(r) = RemapSelfTestManufacturedExtentOfOrder(
+                     bounds,
+                     r,
+                     nr,
+                     test_case.manufactured_order,
+                     x_src(0),
+                     x_src(1));
+               }
+            },
+            exact_expected_extents,
+            exact_point_found);
+      }
+   }
+
+   vector<Vector> reconstructed_expected_extents;
+   vector<int> reconstructed_point_found;
+   if (test_case.extent_mode != "nearest_qp" ||
+       test_case.check_conservative_integrals ||
+       test_case.expect_some_clipping)
+   {
+      SampleReconstructedRemapSelfTestExtentsAtTargetPoints(test_case.extent_mode,
+                                                            test_case.extent_l2_order,
+                                                            source_state,
+                                                            old_locator,
+                                                            fes_T,
+                                                            quad_order,
+                                                            workspace.target_pts,
+                                                            reconstructed_expected_extents,
+                                                            reconstructed_point_found);
+   }
+
+   const vector<int> &expected_point_found =
+      !exact_point_found.empty() ? exact_point_found : reconstructed_point_found;
+   vector<int> expected_element_skipped(static_cast<size_t>(ne), 0);
+   int local_expected_skipped_elements = 0;
+   if (test_case.extent_mode == "l2_conservative")
+   {
+      for (int k = 0; k < workspace.total_qps; ++k)
+      {
+         if (!expected_point_found.empty() &&
+             expected_point_found[static_cast<size_t>(k)] == 0)
+         {
+            const int elem = workspace.qp_map[static_cast<size_t>(k)].first;
+            expected_element_skipped[static_cast<size_t>(elem)] = 1;
+         }
+      }
+      for (int e = 0; e < ne; ++e)
+      {
+         local_expected_skipped_elements +=
+            expected_element_skipped[static_cast<size_t>(e)];
+      }
+   }
+
+   vector<vector<double>> expected_elem_sum(static_cast<size_t>(nr),
+                                            vector<double>(static_cast<size_t>(ne), 0.0));
+   int local_total_qps = 0;
+   int local_qp_mismatch = 0;
+   int local_qp_old_mismatch = 0;
+   int local_dt_mismatch = 0;
+   int local_elem_avg_mismatch = 0;
+    int local_integral_mismatch = 0;
+   int local_expected_not_found = 0;
+   int local_bounds_mismatch = 0;
+   double local_max_abs_err = 0.0;
+   double local_max_rel_err = 0.0;
+   int col = 0;
+
+   for (int e = 0; e < ne; ++e)
+   {
+      const FiniteElement *fe = fes_T.GetFE(e);
+      const IntegrationRule &ir = IntRules.Get(fe->GetGeomType(), quad_order);
+      for (int q = 0; q < ir.GetNPoints(); ++q, ++col)
+      {
+         ++local_total_qps;
+         const TACOTMaterial::InternalState &st = state_manager.GetState(e, q);
+         if (std::abs(st.dt) > 0.0)
+         {
+            ++local_dt_mismatch;
+         }
+
+         if (!expected_point_found.empty() &&
+             expected_point_found[static_cast<size_t>(col)] == 0)
+         {
+            ++local_expected_not_found;
+         }
+
+         const double tol =
+            10.0 * std::numeric_limits<double>::epsilon();
+         for (int r = 0; r < nr; ++r)
+         {
+            const double actual =
+               (r < static_cast<int>(st.extent.size())) ?
+                  st.extent[static_cast<size_t>(r)] :
+                  0.0;
+            const double actual_old =
+               (r < static_cast<int>(st.extent_old.size())) ?
+                  st.extent_old[static_cast<size_t>(r)] :
+                  0.0;
+            if (actual < -tol || actual > 1.0 + tol ||
+                actual_old < -tol || actual_old > 1.0 + tol)
+            {
+               ++local_bounds_mismatch;
+            }
+            const double threshold =
+               params.remap_self_test.abs_tol +
+               params.remap_self_test.rel_tol * std::max(1.0, std::abs(actual));
+            if (std::abs(actual_old - actual) > threshold)
+            {
+               ++local_qp_old_mismatch;
+            }
+
+            if (!test_case.check_pointwise)
+            {
+               continue;
+            }
+
+            const double unchanged =
+               (r < static_cast<int>(source_state.GetState(e, q).extent.size())) ?
+                  source_state.GetState(e, q).extent[static_cast<size_t>(r)] :
+                  0.0;
+            double expected = unchanged;
+            if (test_case.extent_mode == "l2_conservative")
+            {
+               if (!expected_element_skipped[static_cast<size_t>(e)])
+               {
+                  expected = exact_expected_extents[static_cast<size_t>(r)](col);
+               }
+            }
+            else if (!expected_point_found.empty() &&
+                     expected_point_found[static_cast<size_t>(col)] != 0)
+            {
+               expected = exact_expected_extents[static_cast<size_t>(r)](col);
+            }
+
+            expected_elem_sum[static_cast<size_t>(r)][static_cast<size_t>(e)] += expected;
+            const double abs_err = std::abs(actual - expected);
+            const double rel_err =
+               abs_err / std::max(1.0, std::abs(expected));
+            const double expected_threshold =
+               params.remap_self_test.abs_tol +
+               params.remap_self_test.rel_tol * std::max(1.0, std::abs(expected));
+            local_max_abs_err = std::max(local_max_abs_err, abs_err);
+            local_max_rel_err = std::max(local_max_rel_err, rel_err);
+            if (abs_err > expected_threshold)
+            {
+               ++local_qp_mismatch;
+            }
+         }
+      }
+   }
+
+   if (test_case.check_pointwise)
+   {
+      for (int r = 0; r < nr; ++r)
+      {
+         for (int e = 0; e < ne; ++e)
+         {
+            const int nq = state_manager.NumQPoints(e);
+            MFEM_VERIFY(nq > 0, "ALE remap self-test requires at least one QP per element.");
+            const double inv_nq = 1.0 / static_cast<double>(nq);
+            const double expected_avg =
+               expected_elem_sum[static_cast<size_t>(r)][static_cast<size_t>(e)] * inv_nq;
+            const double actual_avg = state_manager.ExtentElement(r)[static_cast<size_t>(e)];
+            const double abs_err = std::abs(actual_avg - expected_avg);
+            const double threshold =
+               params.remap_self_test.abs_tol +
+               params.remap_self_test.rel_tol * std::max(1.0, std::abs(expected_avg));
+            local_max_abs_err = std::max(local_max_abs_err, abs_err);
+            local_max_rel_err = std::max(local_max_rel_err,
+                                         abs_err /
+                                            std::max(1.0, std::abs(expected_avg)));
+            if (abs_err > threshold)
+            {
+               ++local_elem_avg_mismatch;
+            }
+         }
+      }
+   }
+
+   if (test_case.check_conservative_integrals)
+   {
+      vector<vector<double>> expected_integrals;
+      ComputeRemapSelfTestElementPhysicalIntegrals(
+         fes_T,
+         ale_displacement_new,
+         quad_order,
+         nr,
+         [&](const int e, const int q, const int col_qp, const int r)
+         {
+            (void)e;
+            (void)q;
+            return reconstructed_expected_extents[static_cast<size_t>(r)](col_qp);
+         },
+         expected_integrals);
+
+      vector<vector<double>> actual_integrals;
+      ComputeRemapSelfTestElementPhysicalIntegrals(
+         fes_T,
+         ale_displacement_new,
+         quad_order,
+         nr,
+         [&](const int e, const int q, const int col_qp, const int r)
+         {
+            (void)col_qp;
+            const TACOTMaterial::InternalState &st = state_manager.GetState(e, q);
+            return (r < static_cast<int>(st.extent.size())) ?
+                      st.extent[static_cast<size_t>(r)] :
+                      0.0;
+         },
+         actual_integrals);
+
+      for (int e = 0; e < ne; ++e)
+      {
+         if (expected_element_skipped[static_cast<size_t>(e)] != 0 ||
+             workspace.element_clipped[static_cast<size_t>(e)] != 0)
+         {
+            continue;
+         }
+         for (int r = 0; r < nr; ++r)
+         {
+            const double expected =
+               expected_integrals[static_cast<size_t>(r)][static_cast<size_t>(e)];
+            const double actual =
+               actual_integrals[static_cast<size_t>(r)][static_cast<size_t>(e)];
+            const double abs_err = std::abs(actual - expected);
+            const double rel_err =
+               abs_err / std::max(1.0, std::abs(expected));
+            const double threshold =
+               params.remap_self_test.abs_tol +
+               params.remap_self_test.rel_tol * std::max(1.0, std::abs(expected));
+            local_max_abs_err = std::max(local_max_abs_err, abs_err);
+            local_max_rel_err = std::max(local_max_rel_err, rel_err);
+            if (abs_err > threshold)
+            {
+               ++local_integral_mismatch;
+            }
+         }
+      }
+   }
+
+   int global_total_qps = 0;
+   int global_qp_mismatch = 0;
+   int global_qp_old_mismatch = 0;
+   int global_dt_mismatch = 0;
+   int global_elem_avg_mismatch = 0;
+   int global_integral_mismatch = 0;
+   int global_expected_not_found = 0;
+   int global_expected_skipped_elements = 0;
+   int global_bounds_mismatch = 0;
+   double global_max_abs_err = 0.0;
+   double global_max_rel_err = 0.0;
+   MPI_Allreduce(&local_total_qps, &global_total_qps, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+   MPI_Allreduce(&local_qp_mismatch, &global_qp_mismatch, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+   MPI_Allreduce(&local_qp_old_mismatch,
+                 &global_qp_old_mismatch,
+                 1,
+                 MPI_INT,
+                 MPI_SUM,
+                 MPI_COMM_WORLD);
+   MPI_Allreduce(&local_dt_mismatch, &global_dt_mismatch, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+   MPI_Allreduce(&local_elem_avg_mismatch,
+                 &global_elem_avg_mismatch,
+                 1,
+                 MPI_INT,
+                 MPI_SUM,
+                 MPI_COMM_WORLD);
+   MPI_Allreduce(&local_integral_mismatch,
+                 &global_integral_mismatch,
+                 1,
+                 MPI_INT,
+                 MPI_SUM,
+                 MPI_COMM_WORLD);
+   MPI_Allreduce(&local_expected_not_found,
+                 &global_expected_not_found,
+                 1,
+                 MPI_INT,
+                 MPI_SUM,
+                 MPI_COMM_WORLD);
+   MPI_Allreduce(&local_expected_skipped_elements,
+                 &global_expected_skipped_elements,
+                 1,
+                 MPI_INT,
+                 MPI_SUM,
+                 MPI_COMM_WORLD);
+   MPI_Allreduce(&local_bounds_mismatch,
+                 &global_bounds_mismatch,
+                 1,
+                 MPI_INT,
+                 MPI_SUM,
+                 MPI_COMM_WORLD);
+   MPI_Allreduce(&local_max_abs_err,
+                 &global_max_abs_err,
+                 1,
+                 MPI_DOUBLE,
+                 MPI_MAX,
+                 MPI_COMM_WORLD);
+   MPI_Allreduce(&local_max_rel_err,
+                 &global_max_rel_err,
+                 1,
+                 MPI_DOUBLE,
+                 MPI_MAX,
+                 MPI_COMM_WORLD);
+
+   const bool expect_some_not_found = test_case.expect_some_not_found;
+   const bool not_found_behavior_ok =
+      expect_some_not_found ?
+         (remap_stats.global_not_found > 0 &&
+          remap_stats.global_not_found < global_total_qps) :
+         (remap_stats.global_not_found == 0);
+   const bool skipped_behavior_ok =
+      (test_case.extent_mode == "l2_conservative") ?
+         (remap_stats.global_skipped_elements == global_expected_skipped_elements) :
+         (remap_stats.global_skipped_elements == 0);
+   const bool clipping_behavior_ok =
+      test_case.expect_some_clipping ?
+         (remap_stats.global_clipped_values > 0) :
+         (remap_stats.global_clipped_values == 0);
+
+   if (!not_found_behavior_ok ||
+       !skipped_behavior_ok ||
+       !clipping_behavior_ok ||
+       remap_stats.global_not_found != global_expected_not_found ||
+       global_qp_mismatch != 0 ||
+       global_qp_old_mismatch != 0 ||
+       global_dt_mismatch != 0 ||
+       global_elem_avg_mismatch != 0 ||
+       global_integral_mismatch != 0 ||
+       global_bounds_mismatch != 0)
+   {
+      ostringstream oss;
+      oss << "ALE remap self-test case \"" << test_case.name << "\" failed: "
+          << "mode=" << test_case.extent_mode
+          << ", l2_order=" << test_case.extent_l2_order
+          << ", not_found=" << remap_stats.global_not_found
+          << ", expected_not_found=" << global_expected_not_found
+          << ", skipped_elements=" << remap_stats.global_skipped_elements
+          << ", expected_skipped_elements=" << global_expected_skipped_elements
+          << ", clipped_values=" << remap_stats.global_clipped_values
+          << ", qp_mismatch=" << global_qp_mismatch
+          << ", extent_old_mismatch=" << global_qp_old_mismatch
+          << ", dt_mismatch=" << global_dt_mismatch
+          << ", elem_avg_mismatch=" << global_elem_avg_mismatch
+          << ", integral_mismatch=" << global_integral_mismatch
+          << ", bounds_mismatch=" << global_bounds_mismatch
+          << ", max_abs_err=" << global_max_abs_err
+          << ", max_rel_err=" << global_max_rel_err;
+      throw runtime_error(oss.str());
+   }
+
+   const int myid = Mpi::WorldRank();
+   if (myid == 0)
+   {
+      cout << "ALE remap self-test passed: case=" << test_case.name
+           << ", qps=" << global_total_qps
+           << ", reactions=" << nr
+           << ", not_found=" << remap_stats.global_not_found
+           << ", skipped_elements=" << remap_stats.global_skipped_elements
+           << ", clipped_values=" << remap_stats.global_clipped_values
+           << ", max_abs_err=" << global_max_abs_err
+           << ", max_rel_err=" << global_max_rel_err << endl;
    }
 }
 
@@ -5809,17 +7732,9 @@ int RunAleRemapSelfTest(const DriverParams &params)
    }
 
    const Bounds bounds = GetGlobalBounds(*pmesh);
-   const int quad_order = max(2, 2 * params.order + 2);
-
    H1_FECollection fec(params.order, 2);
    ParFiniteElementSpace fes_T(pmesh.get(), &fec);
 
-   ReactionStateManager state_manager;
-   state_manager.Initialize(fes_T, quad_order, material);
-   InitializeDiagnostics(material, state_manager);
-   SeedRemapSelfTestState(bounds, fes_T, quad_order, state_manager);
-
-   unique_ptr<ParMesh> old_lookup_mesh = make_unique<ParMesh>(*pmesh, true);
    auto *ale_vector_fes =
       dynamic_cast<ParFiniteElementSpace *>(pmesh->GetNodes()->FESpace());
    MFEM_VERIFY(ale_vector_fes != nullptr,
@@ -5828,197 +7743,48 @@ int RunAleRemapSelfTest(const DriverParams &params)
       dynamic_cast<ParGridFunction *>(pmesh->GetNodes());
    MFEM_VERIFY(reference_nodes != nullptr,
                "ALE remap self-test requires nodal mesh coordinates.");
-   ParGridFunction ale_displacement_new(ale_vector_fes);
-   SetRemapSelfTestDisplacement(bounds, *reference_nodes, ale_displacement_new);
 
-   AleRemapWorkspace workspace;
-   const AleRemapStats remap_stats =
-      RemapExtentsALE(state_manager,
-                      *pmesh,
-                      *old_lookup_mesh,
-                      fes_T,
-                      ale_displacement_new,
-                      quad_order,
-                      workspace);
+   const double lx = bounds.xmax - bounds.xmin;
+   vector<AleRemapSelfTestCase> cases = {
+      {"nearest_qp_legacy", "nearest_qp", 1, 1, false, 0.0, 0.0,
+       true, false, false, false, false},
+      {"l2_point_eval_p0", "l2_point_eval", 0, 0, false, 0.0, 0.0,
+       true, false, false, false, false},
+      {"l2_point_eval_p1", "l2_point_eval", 1, 1, false, 0.0, 0.0,
+       true, false, false, false, false},
+      {"l2_point_eval_p2", "l2_point_eval", 2, 2, false, 0.0, 0.0,
+       true, false, false, false, false},
+      {"h1_point_eval_p1", "h1_point_eval", 1, 1, false, 0.0, 0.0,
+       true, false, false, false, false},
+      {"h1_point_eval_p2", "h1_point_eval", 2, 2, false, 0.0, 0.0,
+       true, false, false, false, false},
+      {"l2_point_eval_missing_points", "l2_point_eval", 1, 1, true, 0.6 * lx, 0.0,
+       true, false, true, false, false},
+      {"h1_point_eval_missing_points", "h1_point_eval", 1, 1, true, 0.6 * lx, 0.0,
+       true, false, true, false, false},
+      {"l2_conservative_p0_exact", "l2_conservative", 0, 0, false, 0.0, 0.0,
+       true, false, false, false, false},
+      {"l2_conservative_p1_exact", "l2_conservative", 1, 1, false, 0.0, 0.0,
+       true, false, false, false, false},
+      {"l2_conservative_p2_exact", "l2_conservative", 2, 2, false, 0.0, 0.0,
+       true, false, false, false, false},
+      {"l2_conservative_integral_p1_from_p2", "l2_conservative", 1, 2, false, 0.0, 0.0,
+       false, true, false, false, false},
+      {"l2_conservative_missing_points", "l2_conservative", 1, 1, true, 0.6 * lx, 0.0,
+       true, false, true, false, false},
+      {"l2_conservative_clipping", "l2_conservative", 2, 1, false, 0.0, 0.0,
+       false, false, false, true, true}
+   };
 
-   const int nr = state_manager.NumReactions();
-   const int ne = fes_T.GetNE();
-   vector<Vector> expected_extents;
-   vector<int> expected_point_found;
-   SampleAleRemapNearestQPointValuesAtTargetPoints(
-      *old_lookup_mesh,
-      fes_T,
-      quad_order,
-      workspace.target_pts,
-      nr,
-      [&](const int elem_src, const int q_src, Vector &sample_buffer)
-      {
-         sample_buffer = 0.0;
-         const FiniteElement *fe_src = fes_T.GetFE(elem_src);
-         ElementTransformation *Tr_src =
-            old_lookup_mesh->GetElementTransformation(elem_src);
-         const IntegrationRule &ir_src =
-            IntRules.Get(fe_src->GetGeomType(), quad_order);
-         const IntegrationPoint &ip_src = ir_src.IntPoint(q_src);
-         Vector x_src(2);
-         Tr_src->SetIntPoint(&ip_src);
-         Tr_src->Transform(ip_src, x_src);
-         for (int r = 0; r < nr; ++r)
-         {
-            sample_buffer(r) = RemapSelfTestManufacturedExtent(bounds,
-                                                               r,
-                                                               nr,
-                                                               x_src(0),
-                                                               x_src(1));
-         }
-      },
-      expected_extents,
-      expected_point_found);
-
-   vector<vector<double>> expected_elem_sum(static_cast<size_t>(nr),
-                                            vector<double>(static_cast<size_t>(ne), 0.0));
-   int local_total_qps = 0;
-   int local_qp_mismatch = 0;
-   int local_qp_old_mismatch = 0;
-   int local_dt_mismatch = 0;
-   int local_elem_avg_mismatch = 0;
-   double local_max_abs_err = 0.0;
-   double local_max_rel_err = 0.0;
-   int col = 0;
-
-   for (int e = 0; e < ne; ++e)
+   for (const AleRemapSelfTestCase &test_case : cases)
    {
-      const FiniteElement *fe = fes_T.GetFE(e);
-      const IntegrationRule &ir = IntRules.Get(fe->GetGeomType(), quad_order);
-      for (int q = 0; q < ir.GetNPoints(); ++q)
-      {
-         ++local_total_qps;
-         const TACOTMaterial::InternalState &st = state_manager.GetState(e, q);
-         if (std::abs(st.dt) > 0.0)
-         {
-            ++local_dt_mismatch;
-         }
-         if (expected_point_found[static_cast<size_t>(col)] == 0)
-         {
-            ++col;
-            continue;
-         }
-         for (int r = 0; r < nr; ++r)
-         {
-            const double expected =
-               expected_extents[static_cast<size_t>(r)](col);
-            expected_elem_sum[static_cast<size_t>(r)][static_cast<size_t>(e)] += expected;
-            const double actual =
-               (r < static_cast<int>(st.extent.size())) ?
-                  st.extent[static_cast<size_t>(r)] :
-                  0.0;
-            const double actual_old =
-               (r < static_cast<int>(st.extent_old.size())) ?
-                  st.extent_old[static_cast<size_t>(r)] :
-                  0.0;
-            const double abs_err = std::abs(actual - expected);
-            const double rel_err =
-               abs_err / std::max(1.0, std::abs(expected));
-            const double threshold =
-               params.remap_self_test.abs_tol +
-               params.remap_self_test.rel_tol * std::max(1.0, std::abs(expected));
-            local_max_abs_err = std::max(local_max_abs_err, abs_err);
-            local_max_rel_err = std::max(local_max_rel_err, rel_err);
-            if (abs_err > threshold)
-            {
-               ++local_qp_mismatch;
-            }
-            if (std::abs(actual_old - actual) > threshold)
-            {
-               ++local_qp_old_mismatch;
-            }
-         }
-         ++col;
-      }
-   }
-
-   for (int e = 0; e < ne; ++e)
-   {
-      const int nq = state_manager.NumQPoints(e);
-      MFEM_VERIFY(nq > 0, "ALE remap self-test requires at least one QP per element.");
-      const double inv_nq = 1.0 / static_cast<double>(nq);
-      for (int r = 0; r < nr; ++r)
-      {
-         const double expected_avg =
-            expected_elem_sum[static_cast<size_t>(r)][static_cast<size_t>(e)] * inv_nq;
-         const double actual_avg = state_manager.ExtentElement(r)[static_cast<size_t>(e)];
-         const double abs_err = std::abs(actual_avg - expected_avg);
-         const double threshold =
-            params.remap_self_test.abs_tol +
-            params.remap_self_test.rel_tol * std::max(1.0, std::abs(expected_avg));
-         local_max_abs_err = std::max(local_max_abs_err, abs_err);
-         local_max_rel_err = std::max(local_max_rel_err,
-                                      abs_err / std::max(1.0, std::abs(expected_avg)));
-         if (abs_err > threshold)
-         {
-            ++local_elem_avg_mismatch;
-         }
-      }
-   }
-
-   int global_total_qps = 0;
-   int global_qp_mismatch = 0;
-   int global_qp_old_mismatch = 0;
-   int global_dt_mismatch = 0;
-   int global_elem_avg_mismatch = 0;
-   double global_max_abs_err = 0.0;
-   double global_max_rel_err = 0.0;
-   MPI_Allreduce(&local_total_qps, &global_total_qps, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
-   MPI_Allreduce(&local_qp_mismatch, &global_qp_mismatch, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
-   MPI_Allreduce(&local_qp_old_mismatch,
-                 &global_qp_old_mismatch,
-                 1,
-                 MPI_INT,
-                 MPI_SUM,
-                 MPI_COMM_WORLD);
-   MPI_Allreduce(&local_dt_mismatch, &global_dt_mismatch, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
-   MPI_Allreduce(&local_elem_avg_mismatch,
-                 &global_elem_avg_mismatch,
-                 1,
-                 MPI_INT,
-                 MPI_SUM,
-                 MPI_COMM_WORLD);
-   MPI_Allreduce(&local_max_abs_err,
-                 &global_max_abs_err,
-                 1,
-                 MPI_DOUBLE,
-                 MPI_MAX,
-                 MPI_COMM_WORLD);
-   MPI_Allreduce(&local_max_rel_err,
-                 &global_max_rel_err,
-                 1,
-                 MPI_DOUBLE,
-                 MPI_MAX,
-                 MPI_COMM_WORLD);
-
-   if (remap_stats.global_not_found != 0 ||
-       global_qp_mismatch != 0 ||
-       global_qp_old_mismatch != 0 ||
-       global_dt_mismatch != 0 ||
-       global_elem_avg_mismatch != 0)
-   {
-      ostringstream oss;
-      oss << "ALE remap self-test failed: not_found=" << remap_stats.global_not_found
-          << ", qp_mismatch=" << global_qp_mismatch
-          << ", extent_old_mismatch=" << global_qp_old_mismatch
-          << ", dt_mismatch=" << global_dt_mismatch
-          << ", elem_avg_mismatch=" << global_elem_avg_mismatch
-          << ", max_abs_err=" << global_max_abs_err
-          << ", max_rel_err=" << global_max_rel_err;
-      throw runtime_error(oss.str());
-   }
-
-   if (myid == 0)
-   {
-      cout << "ALE remap self-test passed: qps=" << global_total_qps
-           << ", reactions=" << nr
-           << ", max_abs_err=" << global_max_abs_err
-           << ", max_rel_err=" << global_max_rel_err << endl;
+      RunAleRemapSelfTestCase(params,
+                              bounds,
+                              material,
+                              fes_T,
+                              *reference_nodes,
+                              *ale_vector_fes,
+                              test_case);
    }
    return 0;
 }
@@ -6214,6 +7980,7 @@ int main(int argc, char *argv[])
       }
 
       const int quad_order = max(2, 2 * params.order + 2);
+      ValidateAleRemapExtentReconstructionConfig(params, fes_T, quad_order);
 
       ReactionStateManager state_manager;
       state_manager.Initialize(fes_T, quad_order, material);
@@ -6282,17 +8049,8 @@ int main(int argc, char *argv[])
       unique_ptr<ParGridFunction> ale_displacement_old;
       unique_ptr<ParGridFunction> ale_jacobian_gf;
       unique_ptr<ParGridFunction> recession_gf;
-      unique_ptr<ParMesh> diagnostic_pmesh;
-      unique_ptr<ParFiniteElementSpace> fes_T_diag;
-      unique_ptr<ParFiniteElementSpace> fes_p_diag;
-      unique_ptr<ParFiniteElementSpace> fes_diag_live;
-      unique_ptr<ParGridFunction> reference_nodes_diag;
-      unique_ptr<ParGridFunction> T_diag;
-      unique_ptr<ParGridFunction> p_diag;
-      unique_ptr<ParGridFunction> tau_diag;
       unique_ptr<AleRemapWorkspace> ale_remap_workspace;
-      unique_ptr<ParGridFunction> mesh_velocity_diag;
-      unique_ptr<ParGridFunction> ale_displacement_diag;
+      unique_ptr<AlePointLocator2D> ale_remap_old_locator;
       double diagnostic_initial_min_quality = 1.0;
       const bool ale_mass_active =
          (params.ale_enabled && params.ale_mass_enabled && params.moving_mesh);
@@ -6341,47 +8099,15 @@ int main(int argc, char *argv[])
          *ale_jacobian_gf = 1.0;
          *recession_gf = 0.0;
 
-         diagnostic_pmesh = make_unique<ParMesh>(*pmesh, true);
-         diagnostic_initial_min_quality = ComputeMinElementQuality(*diagnostic_pmesh);
+         diagnostic_initial_min_quality = ComputeMinAleElementQuality(*pmesh, nullptr);
          if (!(diagnostic_initial_min_quality > 0.0))
          {
             throw runtime_error(
-               "Invalid initial diagnostic mesh quality for ALE output.");
+               "Invalid initial ALE mesh quality.");
          }
 
-         auto *diag_nodes =
-            dynamic_cast<ParGridFunction *>(diagnostic_pmesh->GetNodes());
-         auto *diag_nodes_fes =
-            diag_nodes ?
-               dynamic_cast<ParFiniteElementSpace *>(diag_nodes->FESpace()) :
-               nullptr;
-         MFEM_VERIFY(diag_nodes != nullptr && diag_nodes_fes != nullptr,
-                     "Diagnostic ALE mesh requires nodal ParGridFunction coordinates.");
-
-         reference_nodes_diag = make_unique<ParGridFunction>(diag_nodes_fes);
-         *reference_nodes_diag = *diag_nodes;
-         ale_displacement_diag = make_unique<ParGridFunction>(diag_nodes_fes);
-         mesh_velocity_diag = make_unique<ParGridFunction>(diag_nodes_fes);
-         *ale_displacement_diag = 0.0;
-         *mesh_velocity_diag = 0.0;
-
-         fes_T_diag = make_unique<ParFiniteElementSpace>(diagnostic_pmesh.get(), &fec);
-         fes_p_diag = make_unique<ParFiniteElementSpace>(diagnostic_pmesh.get(), &fec);
-         fes_diag_live = make_unique<ParFiniteElementSpace>(diagnostic_pmesh.get(), &l2_fec);
-         T_diag = make_unique<ParGridFunction>(fes_T_diag.get());
-         p_diag = make_unique<ParGridFunction>(fes_p_diag.get());
-         tau_diag = make_unique<ParGridFunction>(fes_diag_live.get());
          ale_remap_workspace = make_unique<AleRemapWorkspace>();
-         ale_remap_workspace->Initialize(state_manager,
-                                         fes_T,
-                                         *diagnostic_pmesh,
-                                         quad_order);
-         CopyParGridFunctionByTrueDofs(T, *T_diag);
-         CopyParGridFunctionByTrueDofs(p, *p_diag);
-         ApplyElementScalar(*fes_diag_live, state_manager.TauElement(), *tau_diag);
-         UpdateDiagnosticMeshGeometry(*reference_nodes_diag,
-                                      *ale_displacement_diag,
-                                      *diagnostic_pmesh);
+         ale_remap_old_locator = make_unique<AlePointLocator2D>(*pmesh, fes_T);
       }
 
       auto *tp_integrator =
@@ -6608,28 +8334,13 @@ int main(int argc, char *argv[])
             }
          }
 
-         if (diagnostic_pmesh)
-         {
-            CopyParGridFunctionByTrueDofs(T, *T_diag);
-            CopyParGridFunctionByTrueDofs(p, *p_diag);
-            CopyParGridFunctionByTrueDofs(*ale_displacement,
-                                          *ale_displacement_diag);
-            ApplyElementScalar(*fes_diag_live, state_manager.TauElement(), *tau_diag);
-            UpdateDiagnosticMeshGeometry(*reference_nodes_diag,
-                                         *ale_displacement_diag,
-                                         *diagnostic_pmesh);
-         }
-
-         ParMesh &sample_mesh = diagnostic_pmesh ? *diagnostic_pmesh : *pmesh;
-         const ParGridFunction &sample_T = diagnostic_pmesh ? *T_diag : T;
-         const ParGridFunction &sample_p = diagnostic_pmesh ? *p_diag : p;
-
          const SurfaceBoundaryDiagnostics bdiag =
-            ComputeTopBoundaryDiagnostics(sample_mesh,
-                                          diagnostic_pmesh ? *fes_T_diag : fes_T,
-                                          diagnostic_pmesh ? *fes_p_diag : fes_p,
-                                          sample_T,
-                                          sample_p,
+            ComputeTopBoundaryDiagnostics(*pmesh,
+                                          fes_T,
+                                          fes_p,
+                                          T,
+                                          p,
+                                          ale_displacement.get(),
                                           material,
                                           state_manager,
                                           bprime_table,
@@ -6741,6 +8452,7 @@ int main(int argc, char *argv[])
                                                     recession_handler->ScalarSpace(),
                                                     T,
                                                     p,
+                                                    ale_displacement.get(),
                                                     material,
                                                     state_manager,
                                                     bprime_table,
@@ -6775,40 +8487,34 @@ int main(int argc, char *argv[])
                                         ale_displacement.get(),
                                         &recession_handler->MeshVelocity());
 
-            if (diagnostic_pmesh && params.ale_remap_enabled)
+            if (ale_remap_old_locator && params.ale_remap_enabled)
             {
                RemapExtentsALE(state_manager,
                                *pmesh,
-                               *diagnostic_pmesh,
                                fes_T,
+                               *ale_displacement_old,
                                *ale_displacement,
                                quad_order,
+                               params.ale_remap_extent_mode,
+                               params.ale_remap_extent_l2_order,
+                               *ale_remap_old_locator,
                                *ale_remap_workspace);
             }
 
-            if (diagnostic_pmesh)
+            const double diagnostic_min_quality =
+               ComputeMinAleElementQuality(*pmesh, ale_displacement.get());
+            if (!(diagnostic_min_quality > 0.0))
             {
-               CopyParGridFunctionByTrueDofs(*ale_displacement,
-                                             *ale_displacement_diag);
-               UpdateDiagnosticMeshGeometry(*reference_nodes_diag,
-                                            *ale_displacement_diag,
-                                            *diagnostic_pmesh);
+               throw runtime_error(
+                  "Mesh quality failure: non-positive element Jacobian detected.");
+            }
 
-               const double diagnostic_min_quality =
-                  ComputeMinElementQuality(*diagnostic_pmesh);
-               if (!(diagnostic_min_quality > 0.0))
-               {
-                  throw runtime_error(
-                     "Mesh quality failure: non-positive element Jacobian detected.");
-               }
-
-               const double diagnostic_quality_ratio =
-                  diagnostic_min_quality / diagnostic_initial_min_quality;
-               if (diagnostic_quality_ratio < params.min_quality_ratio)
-               {
-                  throw runtime_error(
-                     "Mesh quality ratio below configured minimum threshold.");
-               }
+            const double diagnostic_quality_ratio =
+               diagnostic_min_quality / diagnostic_initial_min_quality;
+            if (diagnostic_quality_ratio < params.min_quality_ratio)
+            {
+               throw runtime_error(
+                  "Mesh quality ratio below configured minimum threshold.");
             }
          }
 

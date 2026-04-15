@@ -1,0 +1,11 @@
+mesh_file: Mesh/ablation_strip.msh
+material_file: Input/material_tacot_case2_2.yaml
+
+order: 1
+serial_ref_levels: 0
+par_ref_levels: 0
+
+remap_self_test:
+  enabled: true
+  abs_tol: 1.0e-11
+  rel_tol: 1.0e-10

@@ -226,6 +226,53 @@ def warp_dataset_points_by_vector_field(ds, field_name: str):
     return warped
 
 
+def warp_dataset_points_by_external_vector_field(ds, vec_ds, field_name: str):
+    point_data = getattr(vec_ds, "point_data", None)
+    if point_data is None or field_name not in point_data:
+        raise RuntimeError(f"Missing {field_name} in auxiliary vector dataset.")
+
+    warped = ds.copy(deep=True)
+    pts = np.asarray(warped.points, dtype=float).copy()
+    vec_pts = np.asarray(vec_ds.points, dtype=float)
+    disp = np.asarray(point_data[field_name], dtype=float)
+    if pts.ndim != 2 or vec_pts.ndim != 2 or disp.ndim != 2:
+        raise RuntimeError(f"Invalid point/vector array shape for {field_name}.")
+    if pts.shape[0] != vec_pts.shape[0] or disp.shape[0] != vec_pts.shape[0]:
+        raise RuntimeError(
+            f"Point-count mismatch while aligning auxiliary field {field_name}: "
+            f"{pts.shape[0]} vs {vec_pts.shape[0]}."
+        )
+
+    ncomp = min(pts.shape[1], vec_pts.shape[1], disp.shape[1])
+    if ncomp <= 0:
+        raise RuntimeError(f"Auxiliary field {field_name} has no usable components.")
+
+    if not np.allclose(pts[:, :ncomp], vec_pts[:, :ncomp], atol=1.0e-12, rtol=0.0):
+        pts_round = np.round(pts[:, :ncomp], decimals=12)
+        vec_round = np.round(vec_pts[:, :ncomp], decimals=12)
+        sort_keys_pts = tuple(pts_round[:, i] for i in reversed(range(ncomp)))
+        sort_keys_vec = tuple(vec_round[:, i] for i in reversed(range(ncomp)))
+        order_pts = np.lexsort(sort_keys_pts)
+        order_vec = np.lexsort(sort_keys_vec)
+        if not np.allclose(
+            pts[:, :ncomp][order_pts],
+            vec_pts[:, :ncomp][order_vec],
+            atol=1.0e-12,
+            rtol=0.0,
+        ):
+            raise RuntimeError(
+                f"Point coordinates do not align between dataset and auxiliary "
+                f"field {field_name}."
+            )
+        inv_order_pts = np.empty(order_pts.size, dtype=int)
+        inv_order_pts[order_pts] = np.arange(order_pts.size, dtype=int)
+        disp = disp[order_vec[inv_order_pts]]
+
+    pts[:, :ncomp] += disp[:, :ncomp]
+    warped.points = pts
+    return warped
+
+
 def resolve_input_relative_path(input_yaml: Path, raw_path: str) -> Path:
     path = Path(raw_path).expanduser()
     if path.is_absolute():
@@ -510,7 +557,7 @@ def sample_temperature_probes_from_paraview(
 
 def sample_fronts_from_paraview(
     output_dir: Path, input_yaml: Path, max_time_steps: int | None = None
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Dict[str, np.ndarray | float]]:
     try:
         import pyvista as pv
     except ImportError as exc:
@@ -525,6 +572,13 @@ def sample_fronts_from_paraview(
             "front columns are missing from mass_metrics.csv and no MFEM "
             f"ParaView .pvd collection was found under {output_dir}"
         )
+    rho_v, rho_c = load_material_density_limits(input_yaml)
+    rho_delta = max(1.0e-14, rho_v - rho_c)
+    # Match the legacy tau-based thresholds via the affine rho_s <-> tau map
+    # used for post-processing. This preserves the old front definitions while
+    # using rho_s_qp / rho_s instead of tau_qp / tau.
+    rho_threshold_98 = rho_c + 0.98 * rho_delta
+    rho_threshold_02 = rho_c + 0.02 * rho_delta
 
     time_entries = filter_available_time_entries(
         load_pvd_time_entries(pvd_path), "mesh", str(pvd_path)
@@ -542,21 +596,41 @@ def sample_fronts_from_paraview(
     )
 
     def read_datasets_for_entry(entry: Dict[str, Path]):
-        mesh = select_dataset_with_point_fields(pv.read(entry["mesh"]), "tau")
+        mesh = select_dataset_with_point_fields(pv.read(entry["mesh"]), "rho_s")
         if mesh is None:
-            raise RuntimeError(f"Missing tau field in {entry['mesh']}")
+            raise RuntimeError(f"Missing rho_s field in {entry['mesh']}")
         mesh = warp_dataset_points_by_vector_field(mesh, "ale_displacement")
 
         qcloud = None
-        tau_qp_path = entry.get("tau_qp")
-        if tau_qp_path is not None and tau_qp_path.exists():
+        rho_qp_path = entry.get("rho_s_qp")
+        if rho_qp_path is not None and rho_qp_path.exists():
             try:
-                qcloud = select_dataset_with_point_fields(pv.read(tau_qp_path), "tau_qp")
+                qcloud = select_dataset_with_point_fields(
+                    pv.read(rho_qp_path), "rho_s_qp"
+                )
                 if qcloud is not None:
-                    qcloud = warp_dataset_points_by_vector_field(
-                        qcloud, "ale_displacement_qp"
-                    )
-            except Exception:
+                    qdisp_path = entry.get("ale_displacement_qp")
+                    if qdisp_path is not None and qdisp_path.exists():
+                        qdisp = select_dataset_with_point_fields(
+                            pv.read(qdisp_path), "ale_displacement_qp"
+                        )
+                        if qdisp is None:
+                            raise RuntimeError(
+                                f"Missing ale_displacement_qp field in {qdisp_path}"
+                            )
+                        qcloud = warp_dataset_points_by_external_vector_field(
+                            qcloud, qdisp, "ale_displacement_qp"
+                        )
+                    else:
+                        qcloud = warp_dataset_points_by_vector_field(
+                            qcloud, "ale_displacement_qp"
+                        )
+            except Exception as exc:
+                print(
+                    f"Warning: failed to warp rho_s_qp cloud for {rho_qp_path}: {exc}. "
+                    "Falling back to mesh-based front sampling.",
+                    flush=True,
+                )
                 qcloud = None
         return mesh, qcloud
 
@@ -573,7 +647,7 @@ def sample_fronts_from_paraview(
             [np.full_like(ys, x), ys, np.zeros_like(ys)]
         )
         sampled = pv.PolyData(pts).sample(mesh)
-        vals = np.asarray(sampled.point_data.get("tau", []), dtype=float).reshape(-1)
+        vals = np.asarray(sampled.point_data.get("rho_s", []), dtype=float).reshape(-1)
         mask = np.asarray(
             sampled.point_data.get("vtkValidPointMask", np.ones(ys.size)),
             dtype=int,
@@ -602,7 +676,7 @@ def sample_fronts_from_paraview(
         threshold: float,
     ) -> Tuple[float | None, float]:
         pts = np.asarray(qcloud.points, dtype=float)
-        vals = np.asarray(qcloud.point_data.get("tau_qp", []), dtype=float).reshape(-1)
+        vals = np.asarray(qcloud.point_data.get("rho_s_qp", []), dtype=float).reshape(-1)
         if pts.ndim != 2 or pts.shape[1] < 2 or vals.size != pts.shape[0]:
             return None, float("nan")
 
@@ -638,6 +712,11 @@ def sample_fronts_from_paraview(
 
     front98 = np.zeros(time_values.size, dtype=float)
     front2 = np.zeros(time_values.size, dtype=float)
+    y98_values = np.full(time_values.size, np.nan, dtype=float)
+    y2_values = np.full(time_values.size, np.nan, dtype=float)
+    y_top_live_values = np.full(time_values.size, np.nan, dtype=float)
+    y_bottom_live_values = np.full(time_values.size, np.nan, dtype=float)
+    rho_surface_values = np.full(time_values.size, np.nan, dtype=float)
 
     initial_mesh, _ = read_datasets_for_entry(time_entries[0][1])
     _, _, _, initial_y_top, _, _ = initial_mesh.bounds
@@ -649,16 +728,20 @@ def sample_fronts_from_paraview(
             xmin, xmax, _, _, _, _ = mesh.bounds
             xmid = 0.5 * (float(xmin) + float(xmax))
         xmin, xmax, y_bottom_live, y_top_live, _, _ = mesh.bounds
+        y_top_live_values[i_time] = float(y_top_live)
+        y_bottom_live_values[i_time] = float(y_bottom_live)
         recession = max(0.0, float(initial_y_top - y_top_live))
         if qcloud is not None:
-            y98, tau_surface = compute_front_crossing_y_from_qcloud(
-                qcloud, xmid, 0.98
+            y98, rho_surface = compute_front_crossing_y_from_qcloud(
+                qcloud, xmid, rho_threshold_98
             )
         else:
-            y98, tau_surface = compute_front_crossing_y_from_mesh(
-                mesh, xmid, 0.98
+            y98, rho_surface = compute_front_crossing_y_from_mesh(
+                mesh, xmid, rho_threshold_98
             )
-        if np.isfinite(tau_surface) and tau_surface < 0.98:
+        rho_surface_values[i_time] = rho_surface
+        y98_values[i_time] = np.nan if y98 is None else float(y98)
+        if np.isfinite(rho_surface) and rho_surface < rho_threshold_98:
             if y98 is None:
                 front98[i_time] = max(0.0, float(initial_y_top - y_bottom_live))
             else:
@@ -666,15 +749,16 @@ def sample_fronts_from_paraview(
         else:
             front98[i_time] = 0.0
 
-        if np.isfinite(tau_surface) and tau_surface < 0.02:
+        if np.isfinite(rho_surface) and rho_surface < rho_threshold_02:
             if qcloud is not None:
                 y2, _ = compute_front_crossing_y_from_qcloud(
-                    qcloud, xmid, 0.02
+                    qcloud, xmid, rho_threshold_02
                 )
             else:
                 y2, _ = compute_front_crossing_y_from_mesh(
-                    mesh, xmid, 0.02
+                    mesh, xmid, rho_threshold_02
                 )
+            y2_values[i_time] = np.nan if y2 is None else float(y2)
             if y2 is None:
                 front2[i_time] = max(0.0, float(initial_y_top - y_bottom_live))
             else:
@@ -682,7 +766,21 @@ def sample_fronts_from_paraview(
         else:
             front2[i_time] = 0.0
 
-    return time_values, front98, front2
+    front_geometry = {
+        "time": time_values,
+        "xmid": float("nan") if xmid is None else float(xmid),
+        "initial_y_top": float(initial_y_top),
+        "y_top_live": y_top_live_values,
+        "y_bottom_live": y_bottom_live_values,
+        "y98": y98_values,
+        "y2": y2_values,
+        "rho_surface": rho_surface_values,
+        "front98_depth_initial": front98,
+        "front2_depth_initial": front2,
+        "front98_depth_live": np.maximum(0.0, y_top_live_values - y98_values),
+        "front2_depth_live": np.maximum(0.0, y_top_live_values - y2_values),
+    }
+    return time_values, front98, front2, front_geometry
 
 
 def rmse(a: np.ndarray, b: np.ndarray) -> float:
@@ -692,6 +790,46 @@ def rmse(a: np.ndarray, b: np.ndarray) -> float:
 
 def max_abs(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.max(np.abs(a - b)))
+
+
+def overlap_mask_for_reference_time(
+    ref_time: np.ndarray,
+    available_times: List[np.ndarray],
+    label: str,
+) -> np.ndarray:
+    if ref_time.size == 0:
+        raise RuntimeError(f"{label}: reference time array is empty.")
+    if not available_times:
+        raise RuntimeError(f"{label}: no available MFEM time arrays were provided.")
+
+    t0 = float(ref_time[0])
+    t1 = float(ref_time[-1])
+    for arr in available_times:
+        if arr.size == 0:
+            raise RuntimeError(f"{label}: an MFEM time array is empty.")
+        t0 = max(t0, float(arr[0]))
+        t1 = min(t1, float(arr[-1]))
+
+    if t1 < t0 - 1.0e-12:
+        raise RuntimeError(
+            f"{label}: no overlapping time interval between MFEM output and reference."
+        )
+
+    mask = (ref_time >= (t0 - 1.0e-12)) & (ref_time <= (t1 + 1.0e-12))
+    if not np.any(mask):
+        raise RuntimeError(f"{label}: overlap mask is empty.")
+
+    ref_start = float(ref_time[0])
+    ref_end = float(ref_time[-1])
+    if t0 > ref_start + 1.0e-12 or t1 < ref_end - 1.0e-12:
+        print(
+            f"Warning: {label} truncated to common time window "
+            f"[{t0:.6g}, {t1:.6g}] s because MFEM output does not cover the full "
+            f"reference interval [{ref_start:.6g}, {ref_end:.6g}] s.",
+            flush=True,
+        )
+
+    return mask
 
 
 def segmented_rmse_max(
@@ -1002,10 +1140,13 @@ def main() -> None:
     mfem_time = probes["time"]
     am_time = am_energy[:, 0]
     probe_pairs = list(zip(mfem_by_depth[:n_common], am_by_depth[:n_common]))
+    temp_cmp_mask = overlap_mask_for_reference_time(
+        am_time, [mfem_time], "temperature comparison"
+    )
 
     temp_metrics: List[Tuple[str, float, float, bool]] = []
     for (d_mf, name_mf, sig_mf), (_, name_am, sig_am) in probe_pairs:
-        valid = sig_am > 1.0  # Ignore Amaryllis sentinel zeros.
+        valid = (sig_am > 1.0) & temp_cmp_mask  # Ignore Amaryllis sentinel zeros.
         if np.any(valid):
             mfem_interp = np.interp(am_time[valid], mfem_time, sig_mf)
             am_sig = sig_am[valid]
@@ -1024,7 +1165,7 @@ def main() -> None:
     # Segmented wall-temperature metrics for cooldown/heating analysis.
     wall_mf = np.interp(am_time, mfem_time, probe_pairs[0][0][2])
     wall_ref = probe_pairs[0][1][2]
-    wall_valid = wall_ref > 1.0
+    wall_valid = (wall_ref > 1.0) & temp_cmp_mask
     heat_rmse, heat_max = segmented_rmse_max(
         am_time, wall_mf, wall_ref, 0.1, 60.0, wall_valid
     )
@@ -1060,6 +1201,7 @@ def main() -> None:
         mass["m_dot_g_centerline"] if "m_dot_g_centerline" in mass.dtype.names else None
     )
     mfem_front_source = "mass_metrics.csv"
+    mfem_front_geometry: Dict[str, np.ndarray | float] | None = None
     if (
         "front_98_virgin" in mass.dtype.names
         and "front_2_char" in mass.dtype.names
@@ -1073,48 +1215,79 @@ def main() -> None:
             "front columns not found in mass_metrics.csv; "
             "sampling fronts from ParaView output instead."
         )
-        mfem_front_t, mfem_front98, mfem_front2 = sample_fronts_from_paraview(
+        (
+            mfem_front_t,
+            mfem_front98,
+            mfem_front2,
+            mfem_front_geometry,
+        ) = sample_fronts_from_paraview(
             out_dir, Path(args.input), max_time_steps=args.max_time_steps
         )
     mfem_mdot_c = mass["m_dot_c"]
     mfem_recession = mass["recession"]
     mfem_recession_rate = time_derivative(mfem_mass_t, mfem_recession)
-    ref_recession_rate = time_derivative(t_ref, ref_recession)
+    ref_recession_rate_full = time_derivative(t_ref, ref_recession)
 
-    mfem_mdot_i = np.interp(t_ref, mfem_mass_t, mfem_mdot)
-    mfem_mdot_c_i = np.interp(t_ref, mfem_mass_t, mfem_mdot_c)
-    mfem_front98_i = np.interp(t_ref, mfem_front_t, mfem_front98)
-    mfem_front2_i = np.interp(t_ref, mfem_front_t, mfem_front2)
-    mfem_recession_i = np.interp(t_ref, mfem_mass_t, mfem_recession)
+    mass_front_cmp_mask = overlap_mask_for_reference_time(
+        t_ref, [mfem_mass_t, mfem_front_t], "mass/front comparison"
+    )
+    t_ref_cmp = t_ref[mass_front_cmp_mask]
+    ref_mdot_cmp = ref_mdot[mass_front_cmp_mask]
+    ref_mdot_c_cmp = ref_mdot_c[mass_front_cmp_mask]
+    ref_front98_cmp = ref_front98[mass_front_cmp_mask]
+    ref_front2_cmp = ref_front2[mass_front_cmp_mask]
+    ref_recession_cmp = ref_recession[mass_front_cmp_mask]
 
-    mdot_rmse = rmse(mfem_mdot_i, ref_mdot)
-    mdot_max = max_abs(mfem_mdot_i, ref_mdot)
+    mfem_mass_cmp_mask = (
+        (mfem_mass_t >= (t_ref_cmp[0] - 1.0e-12))
+        & (mfem_mass_t <= (t_ref_cmp[-1] + 1.0e-12))
+    )
+    mfem_front_cmp_mask = (
+        (mfem_front_t >= (t_ref_cmp[0] - 1.0e-12))
+        & (mfem_front_t <= (t_ref_cmp[-1] + 1.0e-12))
+    )
+    mfem_mass_t_cmp = mfem_mass_t[mfem_mass_cmp_mask]
+    mfem_mdot_cmp = mfem_mdot[mfem_mass_cmp_mask]
+    mfem_mdot_c_cmp = mfem_mdot_c[mfem_mass_cmp_mask]
+    mfem_recession_cmp = mfem_recession[mfem_mass_cmp_mask]
+    mfem_front_t_cmp = mfem_front_t[mfem_front_cmp_mask]
+    mfem_front98_cmp = mfem_front98[mfem_front_cmp_mask]
+    mfem_front2_cmp = mfem_front2[mfem_front_cmp_mask]
 
-    i_mf = int(np.argmax(mfem_mdot))
-    i_ref = int(np.argmax(ref_mdot))
-    mf_peak = float(mfem_mdot[i_mf])
-    ref_peak = float(ref_mdot[i_ref])
-    mf_peak_t = float(mfem_mass_t[i_mf])
-    ref_peak_t = float(t_ref[i_ref])
+    mfem_mdot_i = np.interp(t_ref_cmp, mfem_mass_t_cmp, mfem_mdot_cmp)
+    mfem_mdot_c_i = np.interp(t_ref_cmp, mfem_mass_t_cmp, mfem_mdot_c_cmp)
+    mfem_front98_i = np.interp(t_ref_cmp, mfem_front_t_cmp, mfem_front98_cmp)
+    mfem_front2_i = np.interp(t_ref_cmp, mfem_front_t_cmp, mfem_front2_cmp)
+    mfem_recession_i = np.interp(t_ref_cmp, mfem_mass_t_cmp, mfem_recession_cmp)
+
+    mdot_rmse = rmse(mfem_mdot_i, ref_mdot_cmp)
+    mdot_max = max_abs(mfem_mdot_i, ref_mdot_cmp)
+
+    i_mf = int(np.argmax(mfem_mdot_cmp))
+    i_ref = int(np.argmax(ref_mdot_cmp))
+    mf_peak = float(mfem_mdot_cmp[i_mf])
+    ref_peak = float(ref_mdot_cmp[i_ref])
+    mf_peak_t = float(mfem_mass_t_cmp[i_mf])
+    ref_peak_t = float(t_ref_cmp[i_ref])
 
     peak_rel = abs(mf_peak - ref_peak) / max(abs(ref_peak), 1.0e-12)
     peak_time_err = abs(mf_peak_t - ref_peak_t)
 
-    front98_rmse = rmse(mfem_front98_i, ref_front98)
-    front98_max = max_abs(mfem_front98_i, ref_front98)
-    front2_rmse = rmse(mfem_front2_i, ref_front2)
-    front2_max = max_abs(mfem_front2_i, ref_front2)
+    front98_rmse = rmse(mfem_front98_i, ref_front98_cmp)
+    front98_max = max_abs(mfem_front98_i, ref_front98_cmp)
+    front2_rmse = rmse(mfem_front2_i, ref_front2_cmp)
+    front2_max = max_abs(mfem_front2_i, ref_front2_cmp)
 
-    mdot_c_rmse = rmse(mfem_mdot_c_i, ref_mdot_c)
-    i_mf_c = int(np.argmax(mfem_mdot_c))
-    i_ref_c = int(np.argmax(ref_mdot_c))
-    mf_peak_c = float(mfem_mdot_c[i_mf_c])
-    ref_peak_c = float(ref_mdot_c[i_ref_c])
+    mdot_c_rmse = rmse(mfem_mdot_c_i, ref_mdot_c_cmp)
+    i_mf_c = int(np.argmax(mfem_mdot_c_cmp))
+    i_ref_c = int(np.argmax(ref_mdot_c_cmp))
+    mf_peak_c = float(mfem_mdot_c_cmp[i_mf_c])
+    ref_peak_c = float(ref_mdot_c_cmp[i_ref_c])
     mdot_c_peak_rel = abs(mf_peak_c - ref_peak_c) / max(abs(ref_peak_c), 1.0e-12)
 
-    recession_rmse = rmse(mfem_recession_i, ref_recession)
-    recession_final_rel = abs(mfem_recession_i[-1] - ref_recession[-1]) / max(
-        abs(ref_recession[-1]), 1.0e-12
+    recession_rmse = rmse(mfem_recession_i, ref_recession_cmp)
+    recession_final_rel = abs(mfem_recession_i[-1] - ref_recession_cmp[-1]) / max(
+        abs(ref_recession_cmp[-1]), 1.0e-12
     )
 
     clamp_counts = {"pressure": np.nan, "BprimeG": np.nan, "temperature": np.nan}
@@ -1235,7 +1408,13 @@ def main() -> None:
             ref_98,
             mfem_2,
             ref_2,
-        ) in zip(t_ref, mfem_front98_i, ref_front98, mfem_front2_i, ref_front2):
+        ) in zip(
+            t_ref_cmp,
+            mfem_front98_i,
+            ref_front98_cmp,
+            mfem_front2_i,
+            ref_front2_cmp,
+        ):
             w.writerow(
                 [
                     t_val,
@@ -1248,6 +1427,45 @@ def main() -> None:
                     mfem_front_source,
                 ]
             )
+
+    front_geom_csv = None
+    if mfem_front_geometry is not None:
+        front_geom_csv = out_dir / "amaryllis_front_geometry.csv"
+        with front_geom_csv.open("w", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(
+                [
+                    "time",
+                    "xmid",
+                    "initial_y_top",
+                    "y_top_live",
+                    "y_bottom_live",
+                    "y98",
+                    "y2",
+                    "rho_surface",
+                    "front98_depth_initial",
+                    "front2_depth_initial",
+                    "front98_depth_live",
+                    "front2_depth_live",
+                ]
+            )
+            for i in range(len(mfem_front_geometry["time"])):
+                w.writerow(
+                    [
+                        mfem_front_geometry["time"][i],
+                        mfem_front_geometry["xmid"],
+                        mfem_front_geometry["initial_y_top"],
+                        mfem_front_geometry["y_top_live"][i],
+                        mfem_front_geometry["y_bottom_live"][i],
+                        mfem_front_geometry["y98"][i],
+                        mfem_front_geometry["y2"][i],
+                        mfem_front_geometry["rho_surface"][i],
+                        mfem_front_geometry["front98_depth_initial"][i],
+                        mfem_front_geometry["front2_depth_initial"][i],
+                        mfem_front_geometry["front98_depth_live"][i],
+                        mfem_front_geometry["front2_depth_live"][i],
+                    ]
+                )
 
     # Plot 1: temperature history.
     plt.figure(figsize=(14, 5))
@@ -1304,6 +1522,45 @@ def main() -> None:
     plt.savefig(out_dir / f"{args.out_prefix}_fronts.png", dpi=180, bbox_inches="tight")
     plt.close()
 
+    front_geom_plot = None
+    if mfem_front_geometry is not None:
+        plt.figure(figsize=(13, 5.2))
+        geom_t = np.asarray(mfem_front_geometry["time"], dtype=float)
+        y_top_live = np.asarray(mfem_front_geometry["y_top_live"], dtype=float)
+        y_bottom_live = np.asarray(mfem_front_geometry["y_bottom_live"], dtype=float)
+        y98 = np.asarray(mfem_front_geometry["y98"], dtype=float)
+        y2 = np.asarray(mfem_front_geometry["y2"], dtype=float)
+        initial_y_top = float(mfem_front_geometry["initial_y_top"])
+
+        plt.plot(
+            geom_t,
+            np.full_like(geom_t, initial_y_top),
+            color="black",
+            lw=1.8,
+            ls="--",
+            label="Initial top surface",
+        )
+        plt.plot(geom_t, y_top_live, color="tab:blue", lw=2, label="Live top surface")
+        plt.plot(
+            geom_t,
+            y_bottom_live,
+            color="tab:blue",
+            lw=1.4,
+            ls=":",
+            label="Live bottom surface",
+        )
+        plt.plot(geom_t, y98, color="tab:red", lw=2, label="y98 crossing")
+        plt.plot(geom_t, y2, color="tab:orange", lw=2, label="y2 crossing")
+        plt.xlabel("Time (s)")
+        plt.ylabel("y coordinate (m)")
+        plt.xlim(0.0, float(geom_t[-1]))
+        plt.grid(True, alpha=0.25)
+        plt.legend(loc="center left", bbox_to_anchor=(1.02, 0.5), ncol=1)
+        plt.tight_layout(rect=(0.0, 0.0, 0.78, 1.0))
+        front_geom_plot = out_dir / f"{args.out_prefix}_front_geometry.png"
+        plt.savefig(front_geom_plot, dpi=180, bbox_inches="tight")
+        plt.close()
+
     # Plot 4: recession amount and recession rate comparison.
     fig, (ax_rec, ax_rate) = plt.subplots(
         2, 1, figsize=(13, 7.5), sharex=True, constrained_layout=True
@@ -1315,7 +1572,7 @@ def main() -> None:
     ax_rec.legend(loc="center left", bbox_to_anchor=(1.02, 0.5), ncol=1)
 
     ax_rate.plot(mfem_mass_t, mfem_recession_rate, color="black", lw=2, label="MFEM")
-    ax_rate.plot(t_ref, ref_recession_rate, color="black", lw=2, ls="--", label="Amaryllis")
+    ax_rate.plot(t_ref, ref_recession_rate_full, color="black", lw=2, ls="--", label="Amaryllis")
     ax_rate.set_xlabel("Time (s)")
     ax_rate.set_ylabel("Recession rate (m/s)")
     ax_rate.grid(True, alpha=0.25)
@@ -2063,6 +2320,10 @@ def main() -> None:
     print(f"Wrote: {metrics_csv}")
     print(f"Wrote: {tol_csv}")
     print(f"Wrote: {fronts_csv}")
+    if front_geom_csv is not None:
+        print(f"Wrote: {front_geom_csv}")
+    if front_geom_plot is not None:
+        print(f"Wrote: {front_geom_plot}")
     print(f"Wrote: {out_dir / f'{args.out_prefix}_recession_comparison.png'}")
     if pato_diag_plot is not None:
         print(f"Wrote: {pato_diag_plot}")
