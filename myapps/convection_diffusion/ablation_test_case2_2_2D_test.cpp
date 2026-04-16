@@ -100,6 +100,7 @@ struct DriverParams
    string petsc_options_file = "Input/petsc_ablation_case2_2.opts";
    string ksp_prefix = "ablation22_ls_";
    int petsc_ksp_print_level = 0;
+   bool petsc_use_matnest = false;
 
    int output_every = 10;
    string output_path = "ParaView/ablation_case2_2";
@@ -604,6 +605,7 @@ void LoadParams(const string &path, DriverParams &p)
    if (n["petsc_options_file"]) { p.petsc_options_file = n["petsc_options_file"].as<string>(); }
    if (n["ksp_prefix"]) { p.ksp_prefix = n["ksp_prefix"].as<string>(); }
    if (n["petsc_ksp_print_level"]) { p.petsc_ksp_print_level = n["petsc_ksp_print_level"].as<int>(); }
+   if (n["petsc_use_matnest"]) { p.petsc_use_matnest = n["petsc_use_matnest"].as<bool>(); }
 
    if (n["output_every"]) { p.output_every = n["output_every"].as<int>(); }
    if (n["output_path"]) { p.output_path = n["output_path"].as<string>(); }
@@ -6798,6 +6800,7 @@ void PrintConfig(const DriverParams &p)
    cout << "  petsc_options_file: " << p.petsc_options_file << endl;
    cout << "  ksp_prefix: " << p.ksp_prefix << endl;
    cout << "  petsc_ksp_print_level: " << p.petsc_ksp_print_level << endl;
+   cout << "  petsc_use_matnest: " << (p.petsc_use_matnest ? "true" : "false") << endl;
    cout << "  output_every: " << p.output_every << endl;
    cout << "  output_path: " << p.output_path << endl;
    cout << "  collection_name: " << p.collection_name << endl;
@@ -8169,6 +8172,7 @@ int main(int argc, char *argv[])
       newton_utils::PetscLinearConfig linear_cfg;
       linear_cfg.ksp_prefix = params.ksp_prefix;
       linear_cfg.ksp_print_level = params.petsc_ksp_print_level;
+      linear_cfg.use_block_matnest = params.petsc_use_matnest;
 
       newton_utils::PetscNewtonSolver newton_solver(MPI_COMM_WORLD,
                                                     newton_cfg,

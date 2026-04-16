@@ -43,6 +43,7 @@ struct PetscLinearConfig
 {
    std::string ksp_prefix = "newton_ls_";
    int ksp_print_level = 0;
+   bool use_block_matnest = false;
 };
 
 struct NewtonIterationInfo
@@ -159,6 +160,22 @@ public:
    }
 
 private:
+   struct PetscLinearSolveContext
+   {
+      std::unique_ptr<mfem::HypreParMatrix> owned_hypre_matrix;
+      std::unique_ptr<mfem::PetscParMatrix> owned_petsc_matrix;
+      std::unique_ptr<mfem::PetscLinearSolver> linear_solver;
+
+      void Reset()
+      {
+         linear_solver.reset();
+         owned_petsc_matrix.reset();
+         owned_hypre_matrix.reset();
+      }
+
+      bool Ready() const { return linear_solver != nullptr; }
+   };
+
    template <typename NonlinearOperatorType,
              typename EnforceBCFunc,
              typename IterationLoggerFunc,
@@ -176,6 +193,7 @@ private:
       double du0 = 1.0;
       mfem::Operator *jacobian = nullptr;
       const int jacobian_rebuild_freq = std::max(1, newton_cfg_.jacobian_rebuild_freq);
+      PetscLinearSolveContext linear_context;
 
       for (int iter = 0; iter < newton_cfg_.max_iter; ++iter)
       {
@@ -221,15 +239,23 @@ private:
          mfem::Vector dx(x.Size());
          dx = 0.0;
 
+         bool rebuilt_jacobian = false;
          if (iter == 0 || (iter % jacobian_rebuild_freq) == 0 || jacobian == nullptr)
          {
             const auto jac_t0 = steady_clock_t::now();
             jacobian = &residual_operator.GetGradient(x);
             result.timing.jacobian_sec += ElapsedSec(jac_t0, steady_clock_t::now());
+            rebuilt_jacobian = true;
          }
 
          const auto lin_t0 = steady_clock_t::now();
-         SolveLinearSystem(*jacobian, rhs, dx, step, iter);
+         SolveLinearSystem(*jacobian,
+                           rhs,
+                           dx,
+                           step,
+                           iter,
+                           rebuilt_jacobian,
+                           linear_context);
          result.timing.linear_sec += ElapsedSec(lin_t0, steady_clock_t::now());
 
          const auto update_t0 = steady_clock_t::now();
@@ -266,30 +292,50 @@ private:
 
       return result;
    }
-   void SolveLinearSystem(mfem::Operator &jacobian,
-                          const mfem::Vector &rhs,
-                          mfem::Vector &dx,
-                          const int step,
-                          const int iter) const
+   void ConfigureLinearSolver(const mfem::PetscParMatrix &A,
+                              PetscLinearSolveContext &context) const
    {
+      context.linear_solver =
+         std::make_unique<mfem::PetscLinearSolver>(A, linear_cfg_.ksp_prefix, false);
+      context.linear_solver->SetPrintLevel(linear_cfg_.ksp_print_level);
+   }
+
+   void BuildLinearSolver(mfem::Operator &jacobian,
+                          PetscLinearSolveContext &context) const
+   {
+      context.Reset();
+
       if (mfem::PetscParMatrix *J_petsc =
              dynamic_cast<mfem::PetscParMatrix *>(&jacobian))
       {
-         SolveWithPetscMatrix(*J_petsc, rhs, dx, step, iter);
+         ConfigureLinearSolver(*J_petsc, context);
          return;
       }
 
       if (mfem::HypreParMatrix *J_hypre =
              dynamic_cast<mfem::HypreParMatrix *>(&jacobian))
       {
-         mfem::PetscParMatrix Jpetsc(J_hypre, mfem::Operator::PETSC_MATAIJ);
-         SolveWithPetscMatrix(Jpetsc, rhs, dx, step, iter);
+         context.owned_petsc_matrix =
+            std::make_unique<mfem::PetscParMatrix>(J_hypre,
+                                                   mfem::Operator::PETSC_MATAIJ);
+         ConfigureLinearSolver(*context.owned_petsc_matrix, context);
          return;
       }
 
       if (mfem::BlockOperator *J_block =
              dynamic_cast<mfem::BlockOperator *>(&jacobian))
       {
+         if (linear_cfg_.use_block_matnest)
+         {
+            // Preserve the 2x2 block structure for PETSc PCFIELDSPLIT.
+            context.owned_petsc_matrix =
+               std::make_unique<mfem::PetscParMatrix>(comm_,
+                                                      J_block,
+                                                      mfem::Operator::PETSC_MATAIJ);
+            ConfigureLinearSolver(*context.owned_petsc_matrix, context);
+            return;
+         }
+
          const int n_row = J_block->NumRowBlocks();
          const int n_col = J_block->NumColBlocks();
          mfem::Array2D<const mfem::HypreParMatrix *> hypre_blocks(n_row, n_col);
@@ -324,16 +370,20 @@ private:
 
          if (all_hypre_blocks)
          {
-            std::unique_ptr<mfem::HypreParMatrix> J_hypre_merged(
+            context.owned_hypre_matrix.reset(
                mfem::HypreParMatrixFromBlocks(hypre_blocks, &block_coeff));
-            mfem::PetscParMatrix Jpetsc(J_hypre_merged.get(),
-                                        mfem::Operator::PETSC_MATAIJ);
-            SolveWithPetscMatrix(Jpetsc, rhs, dx, step, iter);
+            context.owned_petsc_matrix =
+               std::make_unique<mfem::PetscParMatrix>(context.owned_hypre_matrix.get(),
+                                                      mfem::Operator::PETSC_MATAIJ);
+            ConfigureLinearSolver(*context.owned_petsc_matrix, context);
             return;
          }
 
-         mfem::PetscParMatrix Jpetsc(comm_, J_block, mfem::Operator::PETSC_MATAIJ);
-         SolveWithPetscMatrix(Jpetsc, rhs, dx, step, iter);
+         context.owned_petsc_matrix =
+            std::make_unique<mfem::PetscParMatrix>(comm_,
+                                                   J_block,
+                                                   mfem::Operator::PETSC_MATAIJ);
+         ConfigureLinearSolver(*context.owned_petsc_matrix, context);
          return;
       }
 
@@ -341,24 +391,31 @@ private:
          "Unsupported Jacobian operator type in PETSc Newton linear solve.");
    }
 
-   void SolveWithPetscMatrix(const mfem::PetscParMatrix &A,
-                             const mfem::Vector &rhs,
-                             mfem::Vector &dx,
-                             const int step,
-                             const int iter) const
+   void SolveLinearSystem(mfem::Operator &jacobian,
+                          const mfem::Vector &rhs,
+                          mfem::Vector &dx,
+                          const int step,
+                          const int iter,
+                          const bool rebuild_solver,
+                          PetscLinearSolveContext &context) const
    {
-      mfem::PetscLinearSolver linear_solver(A, linear_cfg_.ksp_prefix, false);
-      linear_solver.SetPrintLevel(linear_cfg_.ksp_print_level);
-      linear_solver.Mult(rhs, dx);
+      if (rebuild_solver || !context.Ready())
+      {
+         BuildLinearSolver(jacobian, context);
+      }
 
-      if (!linear_solver.GetConverged())
+      context.linear_solver->Mult(rhs, dx);
+
+      if (!context.linear_solver->GetConverged())
       {
          throw std::runtime_error(
             "PETSc linear solve did not converge. step=" +
             std::to_string(step) +
             ", iter=" + std::to_string(iter) +
-            ", iterations=" + std::to_string(linear_solver.GetNumIterations()) +
-            ", residual=" + std::to_string(linear_solver.GetFinalNorm()));
+            ", iterations=" +
+            std::to_string(context.linear_solver->GetNumIterations()) +
+            ", residual=" +
+            std::to_string(context.linear_solver->GetFinalNorm()));
       }
    }
 

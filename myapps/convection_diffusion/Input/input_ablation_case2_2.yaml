@@ -11,12 +11,15 @@ t_final: 120.0
 newton_abs_tol: 1.0e-8
 newton_rel_tol: 1.0e-6
 newton_max_iter: 20
-newton_jacobian_rebuild_freq: 1
+newton_jacobian_rebuild_freq: 2
 newton_print_level: 1
 jacobian_check: false
 jacobian_check_abs_tol: 1.0e-6
 jacobian_check_rel_tol: 1.0e-4
 
+# Experimental block-iterative path:
+#   petsc_options_file: Input/petsc_ablation_case2_2_iterative.opts
+#   petsc_use_matnest: true
 petsc_options_file: Input/petsc_ablation_case2_2.opts
 ksp_prefix: ablation22_ls_
 petsc_ksp_print_level: 0
