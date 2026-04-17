@@ -54,7 +54,7 @@ T_background: 300.0
 T_edge: 300.0
 hconv: 0.0
 stefan_boltzmann: 5.670374419e-8
-strict_case2_2: false
+disable_bprime_c: false
 pato_compat_mode: cooling_exact
 
 gravity_x: 0.0

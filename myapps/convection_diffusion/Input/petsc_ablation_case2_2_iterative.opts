@@ -1,0 +1,22 @@
+# Experimental PETSc options for block-iterative Newton linear solves in
+# ablation_test_case2_2_2D / ablation_test_case2_2_2D_test.
+#
+# Requires:
+#   petsc_use_matnest: true
+#
+# This keeps the 2x2 (temperature, pressure) Jacobian as a MATNEST so PETSc
+# can apply a fieldsplit preconditioner instead of factoring the full coupled
+# matrix directly.
+-ablation22_ls_ksp_type fgmres
+-ablation22_ls_ksp_rtol 1.0e-6
+-ablation22_ls_ksp_atol 1.0e-10
+-ablation22_ls_ksp_max_it 100
+-ablation22_ls_pc_type fieldsplit
+-ablation22_ls_pc_fieldsplit_type schur
+-ablation22_ls_pc_fieldsplit_schur_fact_type lower
+-ablation22_ls_pc_fieldsplit_schur_precondition selfp
+-ablation22_ls_fieldsplit_0_ksp_type preonly
+-ablation22_ls_fieldsplit_0_pc_type lu
+-ablation22_ls_fieldsplit_0_pc_factor_mat_solver_type mumps
+-ablation22_ls_fieldsplit_1_ksp_type preonly
+-ablation22_ls_fieldsplit_1_pc_type hypre

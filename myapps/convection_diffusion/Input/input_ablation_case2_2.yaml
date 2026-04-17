@@ -11,7 +11,7 @@ t_final: 120.0
 newton_abs_tol: 1.0e-8
 newton_rel_tol: 1.0e-6
 newton_max_iter: 20
-newton_jacobian_rebuild_freq: 2
+newton_jacobian_rebuild_freq: 1
 newton_print_level: 1
 jacobian_check: false
 jacobian_check_abs_tol: 1.0e-6
@@ -58,9 +58,12 @@ max_step_recession: 2.0e-4
 min_quality_ratio: 0.2
 
 bprime_table_file: /home/quinnchr/Downloads/pato-3.1/data/Environments/Tables/TACOT-Earth-1atm
-boundary_conditions_file: Input/boundary_conditions_ablation_case2_2.dat
+boundary_conditions_file: Input/boundary_conditions_ablation_case2_1.dat
 top_thermal_bc: surface_energy_balance
+top_temperature_file: Input/top_temperature_ablation_case2_1.dat
 top_temperature_value: 300.0
+top_recession_bc: computed_surface_mass_loss
+top_recession_file: Input/top_recession_ablation_case2_1.dat
 
 lambda: 0.5
 q_rad: 0.0
@@ -68,7 +71,7 @@ T_background: 300.0
 T_edge: 300.0
 hconv: 0.0
 stefan_boltzmann: 5.670374419e-8
-strict_case2_2: false
+disable_bprime_c: true
 pato_compat_mode: cooling_exact
 
 gravity_x: 0.0
