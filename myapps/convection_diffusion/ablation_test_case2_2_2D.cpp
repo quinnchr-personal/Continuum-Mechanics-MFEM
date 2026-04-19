@@ -1118,7 +1118,9 @@ bool EvaluateCurrentFaceGeometry2D(FaceElementTransformations &FT,
    face_geom.area_vector.SetSize(2);
    if (ale_displacement)
    {
-      cofactor.Mult(ref_area, face_geom.area_vector);
+      // BuildAleDeformationMap2D stores cofactor = J * F^{-1}, so mapped
+      // current-area vectors require cofactor^T * ref_area.
+      cofactor.MultTranspose(ref_area, face_geom.area_vector);
    }
    else
    {
@@ -3825,6 +3827,10 @@ public:
    {}
 
    void SetTime(const double t) { time_ = t; }
+   void SetAleDisplacement(const ParGridFunction *ale_displacement)
+   {
+      ale_displacement_ = ale_displacement;
+   }
 
    void AssembleFaceVector(const Array<const FiniteElement *> &el1,
                            const Array<const FiniteElement *> &el2,
@@ -3880,6 +3886,79 @@ public:
    }
 
 private:
+   bool ComputeFaceTransportGeometry(FaceElementTransformations &Tr,
+                                     const IntegrationPoint &fip,
+                                     const IntegrationPoint &eip,
+                                     const Vector &gradp_ref,
+                                     Vector &gradp_cur,
+                                     Vector &unit_normal,
+                                     DenseMatrix &invF,
+                                     double &ds) const
+   {
+      const int dim = gradp_ref.Size();
+      gradp_cur.SetSize(dim);
+      unit_normal.SetSize(dim);
+      invF.SetSize(dim, dim);
+      invF = 0.0;
+      for (int d = 0; d < dim; ++d)
+      {
+         invF(d, d) = 1.0;
+      }
+
+      const bool use_ale_face_geometry = (dim == 2 && ale_displacement_ != nullptr);
+      if (!use_ale_face_geometry)
+      {
+         gradp_cur = gradp_ref;
+         Tr.Face->SetIntPoint(&fip);
+         if (dim == 1)
+         {
+            unit_normal[0] = 1.0;
+            ds = fip.weight;
+            return true;
+         }
+
+         CalcOrtho(Tr.Face->Jacobian(), normal_);
+         const double nmag = normal_.Norml2();
+         if (!(nmag > 1.0e-20))
+         {
+            ds = 0.0;
+            return false;
+         }
+
+         unit_normal = normal_;
+         unit_normal /= nmag;
+         ds = fip.weight * nmag;
+         return true;
+      }
+
+      Vector x_current;
+      DenseMatrix F, cofactor;
+      double J = 1.0;
+      EvaluateAleMap2D(*Tr.Elem1, eip, ale_displacement_,
+                       x_current, F, cofactor, invF, J);
+      ApplyInverseTranspose2D(invF, gradp_ref, gradp_cur);
+
+      Vector ref_area(dim);
+      Vector area_vector(dim);
+      Tr.Face->SetIntPoint(&fip);
+      CalcOrtho(Tr.Face->Jacobian(), ref_area);
+      // BuildAleDeformationMap2D stores cofactor = J * F^{-1}, so mapped
+      // current-area vectors require cofactor^T * ref_area.
+      cofactor.MultTranspose(ref_area, area_vector);
+
+      const double area_mag = area_vector.Norml2();
+      if (!(area_mag > 1.0e-20))
+      {
+         ds = 0.0;
+         return false;
+      }
+
+      unit_normal = area_vector;
+      unit_normal /= area_mag;
+      ds = fip.weight * area_mag;
+      return true;
+   }
+
    void ComputeFaceGradAnalytic(const FiniteElement &fe_T,
                                 const FiniteElement &fe_p,
                                 FaceElementTransformations &Tr,
@@ -3916,7 +3995,6 @@ private:
       shape_p_.SetSize(dof_p);
       dshape_p_.SetSize(dof_p, dim);
       gradp_.SetSize(dim);
-      normal_.SetSize(dim);
 
       const int face_int_order = max(quad_order_,
                                      2 * max(fe_T.GetOrder(), fe_p.GetOrder()) + 2);
@@ -3987,31 +4065,24 @@ private:
             gas_deriv.rho.dp * rho_darcy +
             gas_deriv.rho.value * drho_darcy_dp;
 
-         Tr.Face->SetIntPoint(&fip);
-         if (dim == 1)
-         {
-            normal_[0] = 1.0;
-         }
-         else
-         {
-            CalcOrtho(Tr.Face->Jacobian(), normal_);
-         }
-
-         const double nmag = normal_.Norml2();
-         if (nmag <= 1.0e-20)
+         Vector gradp_cur;
+         Vector unit_normal;
+         DenseMatrix invF;
+         double ds = 0.0;
+         if (!ComputeFaceTransportGeometry(Tr,
+                                           fip,
+                                           eip,
+                                           gradp_,
+                                           gradp_cur,
+                                           unit_normal,
+                                           invF,
+                                           ds))
          {
             continue;
          }
-         const double ds = fip.weight * nmag;
 
-         double gradp_n = 0.0;
-         double g_n = 0.0;
-         for (int d = 0; d < dim; ++d)
-         {
-            const double nd = normal_[d] / nmag;
-            gradp_n += gradp_[d] * nd;
-            g_n += gravity_[d] * nd;
-         }
+         const double gradp_n = gradp_cur * unit_normal;
+         const double g_n = gravity_ * unit_normal;
 
          const double m_dot_g_w = -rho_darcy * gradp_n + rho2_darcy * g_n;
          const double dm_dot_dT = -drho_darcy_dT * gradp_n + drho2_darcy_dT * g_n;
@@ -4078,9 +4149,23 @@ private:
             for (int j = 0; j < dof_p; ++j)
             {
                double dgradp_n_j = 0.0;
-               for (int d = 0; d < dim; ++d)
+               if (dim == 2 && ale_displacement_ != nullptr)
                {
-                  dgradp_n_j += dshape_p_(j, d) * normal_[d] / nmag;
+                  Vector dgradp_ref_j(dim);
+                  Vector dgradp_cur_j(dim);
+                  for (int d = 0; d < dim; ++d)
+                  {
+                     dgradp_ref_j[d] = dshape_p_(j, d);
+                  }
+                  ApplyInverseTranspose2D(invF, dgradp_ref_j, dgradp_cur_j);
+                  dgradp_n_j = dgradp_cur_j * unit_normal;
+               }
+               else
+               {
+                  for (int d = 0; d < dim; ++d)
+                  {
+                     dgradp_n_j += dshape_p_(j, d) * unit_normal[d];
+                  }
                }
                const double dm_dot_j = dm_dot_dp * shape_p_[j] - rho_darcy * dgradp_n_j;
                const double dh_g_j = gas_deriv.h.dp * shape_p_[j];
@@ -4188,7 +4273,6 @@ private:
       shape_p_.SetSize(dof_p);
       dshape_p_.SetSize(dof_p, dim);
       gradp_.SetSize(dim);
-      normal_.SetSize(dim);
 
       const int face_int_order = max(quad_order_,
                                      2 * max(fe_T.GetOrder(), fe_p.GetOrder()) + 2);
@@ -4235,30 +4319,29 @@ private:
          const double rho_darcy = gas.rho * solid.K / mu;
          const double rho2_darcy = gas.rho * rho_darcy;
 
-         mflux_.SetSize(dim);
-         for (int d = 0; d < dim; ++d)
-         {
-            mflux_[d] = -rho_darcy * gradp_[d] + rho2_darcy * gravity_[d];
-         }
-
-         Tr.Face->SetIntPoint(&fip);
-         if (dim == 1)
-         {
-            normal_[0] = 1.0;
-         }
-         else
-         {
-            CalcOrtho(Tr.Face->Jacobian(), normal_);
-         }
-
-         const double nmag = normal_.Norml2();
-         if (nmag <= 1.0e-20)
+         Vector gradp_cur;
+         Vector unit_normal;
+         DenseMatrix invF;
+         double ds = 0.0;
+         if (!ComputeFaceTransportGeometry(Tr,
+                                           fip,
+                                           eip,
+                                           gradp_,
+                                           gradp_cur,
+                                           unit_normal,
+                                           invF,
+                                           ds))
          {
             continue;
          }
-         const double ds = fip.weight * nmag;
 
-         const double m_dot_g_w = (mflux_ * normal_) / nmag;
+         mflux_.SetSize(dim);
+         for (int d = 0; d < dim; ++d)
+         {
+            mflux_[d] = -rho_darcy * gradp_cur[d] + rho2_darcy * gravity_[d];
+         }
+
+         const double m_dot_g_w = mflux_ * unit_normal;
          const double T_eval = T_w;
          const SurfaceFluxTerms terms = EvaluateSurfaceFluxTerms(m_dot_g_w,
                                                                  gas.h,
@@ -4289,6 +4372,7 @@ private:
    mutable std::array<bool, 4> jacobian_checked_branch_ =
       {false, false, false, false};
    const ParGridFunction *cooling_temperature_lag_ = nullptr;
+   const ParGridFunction *ale_displacement_ = nullptr;
 
    mutable Vector shape_T_;
    mutable Vector shape_p_;
@@ -8114,6 +8198,7 @@ int main(int argc, char *argv[])
                                                quad_order,
                                                jac_check_opts,
                                                nullptr);
+         surf_integrator->SetAleDisplacement(ale_displacement.get());
          surf_integrator->SetTime(restart_time);
       }
 
