@@ -2526,6 +2526,20 @@ private:
    TACOTMaterial::InternalState state_;
 };
 
+TACOTMaterial::InternalState AdvanceFaceReactionState(
+   const TACOTMaterial &material,
+   const double T,
+   const double dt,
+   const TACOTMaterial::InternalState &old_face_state)
+{
+   // Keep the wall chemistry update aligned with the implicit volume operator.
+   if (!(dt > 0.0))
+   {
+      return old_face_state;
+   }
+   return material.SolveReactionExtents(T, dt, old_face_state);
+}
+
 class AblationTPIntegrator : public BlockNonlinearFormIntegrator
 {
 public:
@@ -3827,6 +3841,7 @@ public:
    {}
 
    void SetTime(const double t) { time_ = t; }
+   void SetTimeStep(const double dt) { time_step_ = dt; }
    void SetAleDisplacement(const ParGridFunction *ale_displacement)
    {
       ale_displacement_ = ale_displacement;
@@ -4031,11 +4046,21 @@ private:
             }
          }
 
-         const TACOTMaterial::InternalState &state = face_state_recon.Evaluate(eip);
-         const TACOTMaterial::SolidSurfaceDerivatives solid_deriv =
-            material_.EvaluateSolidSurfaceDerivatives(T_w, p_w, state);
+         const TACOTMaterial::InternalState &old_face_state =
+            face_state_recon.Evaluate(eip);
+         const TACOTMaterial::InternalState face_state =
+            AdvanceFaceReactionState(material_, T_w, time_step_, old_face_state);
+         const vector<double> face_dextent_dT =
+            material_.EvaluateExtentTemperatureDerivative(T_w, face_state);
+         const TACOTMaterial::SolidBulkDerivatives solid_bulk_deriv =
+            material_.EvaluateSolidBulkDerivatives(T_w,
+                                                   p_w,
+                                                   face_state,
+                                                   face_dextent_dT);
+         const TACOTMaterial::SolidSurfaceDerivatives solid_surface_deriv =
+            material_.EvaluateSolidSurfaceDerivatives(T_w, p_w, face_state);
          const TACOTMaterial::GasSurfaceDerivatives gas_deriv =
-            material_.EvaluateGasSurfaceDerivatives(T_w, p_w, state);
+            material_.EvaluateGasSurfaceDerivatives(T_w, p_w, face_state);
 
          const double mu_eff = max(gas_deriv.mu.value, 1.0e-12);
          const double dmu_eff_dT = (gas_deriv.mu.value > 1.0e-12) ? gas_deriv.mu.dT : 0.0;
@@ -4045,16 +4070,16 @@ private:
             *has_nonsmooth = true;
          }
 
-         const double rho_darcy = gas_deriv.rho.value * solid_deriv.K.value / mu_eff;
+         const double rho_darcy = gas_deriv.rho.value * solid_bulk_deriv.K.value / mu_eff;
          const double drho_darcy_dT =
-            gas_deriv.rho.dT * solid_deriv.K.value / mu_eff +
-            gas_deriv.rho.value * solid_deriv.K.dT / mu_eff -
-            gas_deriv.rho.value * solid_deriv.K.value /
+            gas_deriv.rho.dT * solid_bulk_deriv.K.value / mu_eff +
+            gas_deriv.rho.value * solid_bulk_deriv.K.dT / mu_eff -
+            gas_deriv.rho.value * solid_bulk_deriv.K.value /
                (mu_eff * mu_eff) * dmu_eff_dT;
          const double drho_darcy_dp =
-            gas_deriv.rho.dp * solid_deriv.K.value / mu_eff +
-            gas_deriv.rho.value * solid_deriv.K.dp / mu_eff -
-            gas_deriv.rho.value * solid_deriv.K.value /
+            gas_deriv.rho.dp * solid_bulk_deriv.K.value / mu_eff +
+            gas_deriv.rho.value * solid_bulk_deriv.K.dp / mu_eff -
+            gas_deriv.rho.value * solid_bulk_deriv.K.value /
                (mu_eff * mu_eff) * dmu_eff_dp;
 
          const double rho2_darcy = gas_deriv.rho.value * rho_darcy;
@@ -4094,20 +4119,24 @@ private:
          const double emissivity =
             surface_model_.use_emissivity_override ?
                surface_model_.emissivity :
-               solid_deriv.emissivity.value;
+               solid_surface_deriv.emissivity.value;
          const double absorptivity =
             surface_model_.use_absorptivity_override ?
                surface_model_.absorptivity :
-               solid_deriv.absorptivity.value;
-         const double reflectivity = solid_deriv.reflectivity.value;
+               solid_surface_deriv.absorptivity.value;
+         const double reflectivity = solid_surface_deriv.reflectivity.value;
          const double demissivity_dT =
-            surface_model_.use_emissivity_override ? 0.0 : solid_deriv.emissivity.dT;
+            surface_model_.use_emissivity_override ? 0.0 :
+                                                     solid_surface_deriv.emissivity.dT;
          const double demissivity_dp =
-            surface_model_.use_emissivity_override ? 0.0 : solid_deriv.emissivity.dp;
+            surface_model_.use_emissivity_override ? 0.0 :
+                                                     solid_surface_deriv.emissivity.dp;
          const double dabsorptivity_dT =
-            surface_model_.use_absorptivity_override ? 0.0 : solid_deriv.absorptivity.dT;
+            surface_model_.use_absorptivity_override ? 0.0 :
+                                                        solid_surface_deriv.absorptivity.dT;
          const double dabsorptivity_dp =
-            surface_model_.use_absorptivity_override ? 0.0 : solid_deriv.absorptivity.dp;
+            surface_model_.use_absorptivity_override ? 0.0 :
+                                                        solid_surface_deriv.absorptivity.dp;
 
          const SurfaceFluxLinearization flux = EvaluateSurfaceFluxTermsLinearized(
             m_dot_g_w,
@@ -4309,11 +4338,14 @@ private:
             }
          }
 
-         const TACOTMaterial::InternalState &state = face_state_recon.Evaluate(eip);
+         const TACOTMaterial::InternalState &old_face_state =
+            face_state_recon.Evaluate(eip);
+         const TACOTMaterial::InternalState face_state =
+            AdvanceFaceReactionState(material_, T_w, time_step_, old_face_state);
          const TACOTMaterial::SolidProperties solid =
-            material_.EvaluateSolid(T_w, p_w, state);
+            material_.EvaluateSolid(T_w, p_w, face_state);
          const TACOTMaterial::GasProperties gas =
-            material_.EvaluateGas(T_w, p_w, state);
+            material_.EvaluateGas(T_w, p_w, face_state);
 
          const double mu = max(gas.mu, 1.0e-12);
          const double rho_darcy = gas.rho * solid.K / mu;
@@ -4373,6 +4405,7 @@ private:
       {false, false, false, false};
    const ParGridFunction *cooling_temperature_lag_ = nullptr;
    const ParGridFunction *ale_displacement_ = nullptr;
+   double time_step_ = 0.0;
 
    mutable Vector shape_T_;
    mutable Vector shape_p_;
@@ -5310,6 +5343,7 @@ void AssembleTopBoundaryRecessionVelocity(
    const int quad_order,
    const int top_bdr_attr,
    const double time,
+   const double dt,
    const string &recession_density_mode,
    const double recession_density_constant,
    Vector &top_recession_velocity_true)
@@ -5406,11 +5440,14 @@ void AssembleTopBoundaryRecessionVelocity(
                           J);
          ApplyInverseTranspose2D(invF, gradp, gradp_cur);
 
-         const TACOTMaterial::InternalState &state = face_state_recon.Evaluate(eip);
+         const TACOTMaterial::InternalState &old_face_state =
+            face_state_recon.Evaluate(eip);
+         const TACOTMaterial::InternalState face_state =
+            AdvanceFaceReactionState(material, Tq, dt, old_face_state);
          const TACOTMaterial::SolidProperties solid =
-            material.EvaluateSolid(Tq, pq, state);
+            material.EvaluateSolid(Tq, pq, face_state);
          const TACOTMaterial::GasProperties gas =
-            material.EvaluateGas(Tq, pq, state);
+            material.EvaluateGas(Tq, pq, face_state);
 
          const double mu = max(gas.mu, 1.0e-12);
          const double rho_darcy = gas.rho * solid.K / mu;
@@ -8527,6 +8564,7 @@ int main(int argc, char *argv[])
                                                     quad_order,
                                                     params.bdr_attr_top,
                                                     time,
+                                                    dt_step,
                                                     params.recession_density_mode,
                                                     params.recession_density_constant,
                                                     top_recession_velocity_true);
@@ -8589,6 +8627,7 @@ int main(int argc, char *argv[])
          if (surf_integrator)
          {
             surf_integrator->SetTime(time);
+            surf_integrator->SetTimeStep(dt_step);
          }
 
          // Build the initial Newton iterate from previous solution with updated BCs.
