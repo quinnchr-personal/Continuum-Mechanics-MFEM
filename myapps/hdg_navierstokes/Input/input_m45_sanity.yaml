@@ -1,0 +1,37 @@
+case_name: hdg_m45_sanity
+
+mesh:
+  source: exasim
+  exasim_dir: /home/quinnchr/dv/Exasim-apps/runs/nsmach8-baseline
+
+bc:
+  boundaryconditions: [3, 2, 1]
+
+physics:
+  mu: [1.4, 1000.0, 0.71, 4.5, 1.0, 1.0, 0.0,
+       0.5881834215167548, 0.08818342151675485, 124.49, 294.44]
+  tau: 1.0
+
+av:
+  mode: tanh
+  lambda: 0.05
+  c: 5.0
+
+init:
+  mode: damped_freestream
+  c: 10.0
+
+newton:
+  max_iters: 80
+  tol: 1.0e-6
+
+ptc:
+  enabled: true
+  initial_dt: 1.5e1
+
+linear:
+  type: petsc_direct
+
+output:
+  path: ParaView
+  paraview_every: 0

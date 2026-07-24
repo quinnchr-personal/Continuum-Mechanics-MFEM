@@ -22,3 +22,27 @@
 - Parsing rank-local `datain/mesh*.bin` permutations and `dataout/outuhat`
   face maps remains deferred to M3 as specified; the M1 generic 3-double
   array reader already covers the simple `outudg`/`outuhat` container layout.
+
+## M2 findings needed by M3
+
+- MFEM's `Ordering::byVDIM` makes global vector IDs component-fast, but
+  `GetFaceVDofs` and `GetElementVDofs` return arrays grouped by component
+  (`dof + scalar_dofs*component`). Transfers must explicitly distinguish the
+  returned-list layout from the HDG local trace layout
+  `component + 4*(face_dof + 5*local_face)`.
+- Do not retain an `ElementTransformation*` across a call to
+  `GetFaceElementTransformations`: MFEM reuses mutable transformation storage.
+  Face physical coordinates (and analytic face AV) must be evaluated through
+  `FaceElementTransformations::Face`. Using the stale element pointer left
+  volume AV correct but corrupted face AV on two local sides; this produced a
+  false asymmetric M=4.5 branch while all inviscid and stabilization terms
+  remained reflection-equivariant.
+- With that face-coordinate issue fixed, the M=4.5, Re=1000 actual-mesh case
+  converges through the ordinary unrestricted condensed solve in 11 Newton
+  iterations using SER-PTC with `initial_dt=15`. The M2 acceptance run reached
+  residual `7.1986503333782181e-7`, minimum density
+  `1.0000000013684818`, minimum pressure `0.035273368672036558`, and
+  y-symmetry error `2.3489903626741273e-10`.
+- The M2 output path writes high-order binary ParaView data with conservative
+  and primitive fields at the initial and final Newton states. M3 can add wall
+  and reference-comparison postprocessing without changing this writer.

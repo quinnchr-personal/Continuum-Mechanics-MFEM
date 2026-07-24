@@ -316,6 +316,50 @@ void CheckFiniteDifferences()
              << " fb_jac_uh=" << max_fb_uh_fd_error << '\n';
 }
 
+void CheckYReflectionEquivariance()
+{
+   NSParams params;
+   std::mt19937_64 rng(0x7259464c5558ULL);
+   std::uniform_real_distribution<double> av_dist(0.0, 0.08);
+   double maximum_error = 0.0;
+   for (int sample = 0; sample < 1000; ++sample)
+   {
+      double state[12], unused_trace[4];
+      FillAdmissibleState(rng, state, unused_trace);
+      double reflected[12];
+      for (int component = 0; component < 4; ++component)
+      {
+         const double state_sign = component == 2 ? -1.0 : 1.0;
+         reflected[component] = state_sign * state[component];
+         reflected[4 + component] =
+            state_sign * state[4 + component];
+         reflected[8 + component] =
+            -state_sign * state[8 + component];
+      }
+      double flux[8], reflected_flux[8];
+      const double av = av_dist(rng);
+      hdg_ns::NSFlux(state, av, params, flux);
+      hdg_ns::NSFlux(reflected, av, params, reflected_flux);
+      for (int direction = 0; direction < 2; ++direction)
+      {
+         for (int component = 0; component < 4; ++component)
+         {
+            double sign = component == 2 ? -1.0 : 1.0;
+            if (direction == 1) { sign *= -1.0; }
+            const int index = component + 4 * direction;
+            maximum_error = std::max(
+               maximum_error,
+               std::abs(reflected_flux[index] - sign * flux[index]) /
+               std::max(1.0, std::abs(flux[index])));
+         }
+      }
+   }
+   Require(maximum_error <= 1.0e-13,
+           "flux is not equivariant under y reflection");
+   std::cout << "PASS y-reflection flux equivariance:"
+             << " max_error=" << maximum_error << '\n';
+}
+
 void CheckDissipativity()
 {
    NSParams params;
@@ -448,6 +492,7 @@ int main()
       std::cout << std::setprecision(17);
       CheckReferenceParity();
       CheckFiniteDifferences();
+      CheckYReflectionEquivariance();
       CheckDissipativity();
       CheckFreestreamIdentities();
       std::cout << "ALL test_physics M1 GATES PASSED\n";

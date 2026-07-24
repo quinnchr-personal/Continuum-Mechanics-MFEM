@@ -43,25 +43,33 @@ YAML_CXXFLAGS ?= $(shell pkg-config --cflags yaml-cpp 2>/dev/null)
 YAML_LIBS ?= $(shell pkg-config --libs yaml-cpp 2>/dev/null)
 
 M1_TARGETS := test_physics mesh_convert_check
+M2_TARGETS := hdg_ns_driver test_hdg_mms
 COMMON_OBJECTS := exasim_io.o exasim_mesh.o hdg_ns_operator.o
 
-.PHONY: all test clean hdg_ns_driver test_hdg_mms
+.PHONY: all test test_m1 test_m2 clean
 
-all: $(M1_TARGETS)
+all: $(M1_TARGETS) $(M2_TARGETS)
 
-test: $(M1_TARGETS)
+test: test_m1 test_m2
+
+test_m1: $(M1_TARGETS)
 	./test_physics
 	./mesh_convert_check $(EXASIM_RUN_DIR)
 
-# These names are reserved by PLAN_HDG.md for M2. They deliberately do not
-# build placeholders during M1.
-hdg_ns_driver test_hdg_mms:
-	$(error $@ belongs to Milestone M2; this checkout implements M1 only)
+test_m2: test_hdg_mms hdg_ns_driver
+	./test_hdg_mms
+	./hdg_ns_driver -i Input/input_m45_sanity.yaml --acceptance
 
 test_physics: test_physics.o
 	$(MFEM_CXX) $(MFEM_FLAGS) $(YAML_CXXFLAGS) $^ -o $@ $(MFEM_LIBS) $(YAML_LIBS) -lyaml-cpp
 
 mesh_convert_check: mesh_convert_check.o $(COMMON_OBJECTS)
+	$(MFEM_CXX) $(MFEM_FLAGS) $(YAML_CXXFLAGS) $^ -o $@ $(MFEM_LIBS) $(YAML_LIBS) -lyaml-cpp
+
+test_hdg_mms: test_hdg_mms.o $(COMMON_OBJECTS)
+	$(MFEM_CXX) $(MFEM_FLAGS) $(YAML_CXXFLAGS) $^ -o $@ $(MFEM_LIBS) $(YAML_LIBS) -lyaml-cpp
+
+hdg_ns_driver: hdg_ns_driver.o $(COMMON_OBJECTS)
 	$(MFEM_CXX) $(MFEM_FLAGS) $(YAML_CXXFLAGS) $^ -o $@ $(MFEM_LIBS) $(YAML_LIBS) -lyaml-cpp
 
 %.o: %.cpp
@@ -72,6 +80,8 @@ exasim_io.o: exasim_io.cpp exasim_io.hpp
 exasim_mesh.o: exasim_mesh.cpp exasim_mesh.hpp exasim_io.hpp
 hdg_ns_operator.o: hdg_ns_operator.cpp hdg_ns_operator.hpp exasim_io.hpp exasim_mesh.hpp
 mesh_convert_check.o: mesh_convert_check.cpp exasim_io.hpp exasim_mesh.hpp hdg_ns_operator.hpp
+test_hdg_mms.o: test_hdg_mms.cpp hdg_newton.hpp hdg_ns_operator.hpp ns_physics.hpp exasim_mesh.hpp
+hdg_ns_driver.o: hdg_ns_driver.cpp hdg_newton.hpp hdg_ns_operator.hpp ns_physics.hpp exasim_mesh.hpp
 
 clean:
-	rm -f $(M1_TARGETS) *.o *~
+	rm -f $(M1_TARGETS) $(M2_TARGETS) *.o *~
