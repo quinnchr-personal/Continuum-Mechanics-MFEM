@@ -4,6 +4,7 @@
 
 #include "mfem.hpp"
 
+#include <chrono>
 #include <cmath>
 #include <functional>
 #include <iostream>
@@ -34,6 +35,9 @@ struct NewtonReport
    bool converged = false;
    int iterations = 0;
    double residual = 0.0;
+   double assembly_seconds = 0.0;
+   double linear_solve_seconds = 0.0;
+   double total_seconds = 0.0;
    std::vector<NewtonIteration> history;
 };
 
@@ -82,14 +86,19 @@ inline NewtonReport DampedNewtonSolve(
    }
 
    NewtonReport report;
+   const auto solve_start = std::chrono::steady_clock::now();
    double pseudo_time_step =
       config.pseudo_transient ? config.initial_pseudo_time_step : 0.0;
    for (int iteration = 0; iteration <= config.max_iterations; ++iteration)
    {
       const double inverse_step =
          pseudo_time_step > 0.0 ? 1.0 / pseudo_time_step : 0.0;
+      const auto assembly_start = std::chrono::steady_clock::now();
       const HDGResidualNorms old_norms =
          op.Assemble(state, true, inverse_step);
+      report.assembly_seconds +=
+         std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - assembly_start).count();
       const double old_residual = old_norms.Total();
       if (!std::isfinite(old_residual))
       {
@@ -106,13 +115,20 @@ inline NewtonReport DampedNewtonSolve(
       if (old_residual < config.tolerance)
       {
          report.converged = true;
+         report.total_seconds =
+            std::chrono::duration<double>(
+               std::chrono::steady_clock::now() - solve_start).count();
          return report;
       }
       if (iteration == config.max_iterations) { break; }
 
       mfem::Vector trace_increment;
+      const auto linear_start = std::chrono::steady_clock::now();
       SolveCondensedPetscDirect(
          op.CondensedMatrix(), op.CondensedRHS(), trace_increment);
+      report.linear_solve_seconds +=
+         std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - linear_start).count();
       mfem::Vector volume_increment;
       op.RecoverIncrement(trace_increment, volume_increment);
 
@@ -125,7 +141,11 @@ inline NewtonReport DampedNewtonSolve(
          state.u.Add(alpha, volume_increment);
          state.uhat.Add(alpha, trace_increment);
          op.RecomputeGradient(state);
+         const auto residual_start = std::chrono::steady_clock::now();
          const HDGResidualNorms new_norms = op.Assemble(state, false);
+         report.assembly_seconds +=
+            std::chrono::duration<double>(
+               std::chrono::steady_clock::now() - residual_start).count();
          new_residual = new_norms.Total();
 
          if (!std::isfinite(new_residual))
@@ -164,6 +184,9 @@ inline NewtonReport DampedNewtonSolve(
       report.history.push_back(
          {iteration + 1, new_residual, alpha, pseudo_time_step});
    }
+   report.total_seconds =
+      std::chrono::duration<double>(
+         std::chrono::steady_clock::now() - solve_start).count();
    return report;
 }
 

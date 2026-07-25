@@ -1,0 +1,36 @@
+case_name: hdg_mach8_baseline
+
+mesh:
+  source: exasim
+  exasim_dir: /home/quinnchr/dv/Exasim-apps/runs/nsmach8-baseline
+
+bc:
+  boundaryconditions: [3, 2, 1]
+
+physics:
+  mu: [1.4, 183500.0, 0.71, 8.03, 1.0, 1.0, 0.0,
+       0.52769, 0.027694, 124.49, 294.44]
+  tau: 1.0
+
+av:
+  mode: file
+
+init:
+  mode: udg_file
+
+newton:
+  max_iters: 30
+  tol: 1.0e-6
+
+ptc:
+  enabled: false
+  initial_dt: 1.0e-3
+
+linear:
+  type: petsc_direct
+
+output:
+  path: ParaView/mach8_baseline
+  wall_csv: wall_data.csv
+  comparison_report: comparison_report.md
+  paraview_every: 0

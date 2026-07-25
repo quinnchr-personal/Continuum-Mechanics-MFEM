@@ -224,6 +224,11 @@ ExasimArray ReadExasimArray(const std::string &path)
    return array;
 }
 
+std::vector<double> ReadExasimDoubles(const std::string &path)
+{
+   return ReadDoubles(path);
+}
+
 ExasimGrid ReadExasimGrid(const std::string &path)
 {
    const std::vector<double> raw = ReadDoubles(path);

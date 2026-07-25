@@ -38,6 +38,7 @@ struct ExasimGrid
 
 ExasimArray ReadExasimArray(const std::string &path);
 ExasimGrid ReadExasimGrid(const std::string &path);
+std::vector<double> ReadExasimDoubles(const std::string &path);
 
 const std::array<double, kNodes1D> &ExasimNodes1D();
 std::array<double, kNodes1D> Lagrange1D(double coordinate);

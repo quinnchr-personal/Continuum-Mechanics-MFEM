@@ -44,13 +44,14 @@ YAML_LIBS ?= $(shell pkg-config --libs yaml-cpp 2>/dev/null)
 
 M1_TARGETS := test_physics mesh_convert_check
 M2_TARGETS := hdg_ns_driver test_hdg_mms
+M3_TARGETS := test_m3_reference
 COMMON_OBJECTS := exasim_io.o exasim_mesh.o hdg_ns_operator.o
 
-.PHONY: all test test_m1 test_m2 clean
+.PHONY: all test test_m1 test_m2 test_m3 clean
 
-all: $(M1_TARGETS) $(M2_TARGETS)
+all: $(M1_TARGETS) $(M2_TARGETS) $(M3_TARGETS)
 
-test: test_m1 test_m2
+test: test_m1 test_m2 test_m3
 
 test_m1: $(M1_TARGETS)
 	./test_physics
@@ -59,6 +60,10 @@ test_m1: $(M1_TARGETS)
 test_m2: test_hdg_mms hdg_ns_driver
 	./test_hdg_mms
 	./hdg_ns_driver -i Input/input_m45_sanity.yaml --acceptance
+
+test_m3: test_m3_reference hdg_ns_driver
+	./test_m3_reference $(EXASIM_RUN_DIR)
+	./hdg_ns_driver -i Input/input_mach8_baseline.yaml --acceptance
 
 test_physics: test_physics.o
 	$(MFEM_CXX) $(MFEM_FLAGS) $(YAML_CXXFLAGS) $^ -o $@ $(MFEM_LIBS) $(YAML_LIBS) -lyaml-cpp
@@ -69,7 +74,10 @@ mesh_convert_check: mesh_convert_check.o $(COMMON_OBJECTS)
 test_hdg_mms: test_hdg_mms.o $(COMMON_OBJECTS)
 	$(MFEM_CXX) $(MFEM_FLAGS) $(YAML_CXXFLAGS) $^ -o $@ $(MFEM_LIBS) $(YAML_LIBS) -lyaml-cpp
 
-hdg_ns_driver: hdg_ns_driver.o $(COMMON_OBJECTS)
+hdg_ns_driver: hdg_ns_driver.o exasim_reference.o wall_post.o $(COMMON_OBJECTS)
+	$(MFEM_CXX) $(MFEM_FLAGS) $(YAML_CXXFLAGS) $^ -o $@ $(MFEM_LIBS) $(YAML_LIBS) -lyaml-cpp
+
+test_m3_reference: test_m3_reference.o exasim_reference.o $(COMMON_OBJECTS)
 	$(MFEM_CXX) $(MFEM_FLAGS) $(YAML_CXXFLAGS) $^ -o $@ $(MFEM_LIBS) $(YAML_LIBS) -lyaml-cpp
 
 %.o: %.cpp
@@ -81,7 +89,10 @@ exasim_mesh.o: exasim_mesh.cpp exasim_mesh.hpp exasim_io.hpp
 hdg_ns_operator.o: hdg_ns_operator.cpp hdg_ns_operator.hpp exasim_io.hpp exasim_mesh.hpp
 mesh_convert_check.o: mesh_convert_check.cpp exasim_io.hpp exasim_mesh.hpp hdg_ns_operator.hpp
 test_hdg_mms.o: test_hdg_mms.cpp hdg_newton.hpp hdg_ns_operator.hpp ns_physics.hpp exasim_mesh.hpp
-hdg_ns_driver.o: hdg_ns_driver.cpp hdg_newton.hpp hdg_ns_operator.hpp ns_physics.hpp exasim_mesh.hpp
+exasim_reference.o: exasim_reference.cpp exasim_reference.hpp exasim_mesh.hpp hdg_ns_operator.hpp
+test_m3_reference.o: test_m3_reference.cpp exasim_reference.hpp
+wall_post.o: wall_post.cpp wall_post.hpp hdg_ns_operator.hpp
+hdg_ns_driver.o: hdg_ns_driver.cpp hdg_newton.hpp hdg_ns_operator.hpp ns_physics.hpp exasim_mesh.hpp exasim_reference.hpp wall_post.hpp
 
 clean:
-	rm -f $(M1_TARGETS) $(M2_TARGETS) *.o *~
+	rm -f $(M1_TARGETS) $(M2_TARGETS) $(M3_TARGETS) *.o *~

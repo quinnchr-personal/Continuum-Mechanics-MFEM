@@ -1,6 +1,8 @@
 #include "exasim_mesh.hpp"
+#include "exasim_reference.hpp"
 #include "hdg_newton.hpp"
 #include "hdg_ns_operator.hpp"
+#include "wall_post.hpp"
 
 #include "mfem.hpp"
 #include "yaml-cpp/yaml.h"
@@ -24,12 +26,16 @@ struct DriverParams
    std::string exasim_directory;
    std::array<int, 3> boundary_conditions;
    hdg_ns::NSParams physics;
+   std::string av_mode;
    double av_lambda = 0.0;
    double av_c = 0.0;
+   std::string init_mode;
    double damping_c = 0.0;
    hdg_ns::NewtonConfig newton;
    std::string linear_type;
    std::string output_path;
+   std::string wall_csv;
+   std::string comparison_report;
    int paraview_every = 0;
 };
 
@@ -82,20 +88,28 @@ DriverParams LoadParams(const std::string &path)
    params.physics.tau = Required<double>(physics, "tau");
 
    const YAML::Node av = root["av"];
-   if (Required<std::string>(av, "mode") != "tanh")
+   params.av_mode = Required<std::string>(av, "mode");
+   if (params.av_mode == "tanh")
    {
-      throw std::runtime_error("M2 sanity driver requires av.mode=tanh");
+      params.av_lambda = Required<double>(av, "lambda");
+      params.av_c = Required<double>(av, "c");
    }
-   params.av_lambda = Required<double>(av, "lambda");
-   params.av_c = Required<double>(av, "c");
+   else if (params.av_mode != "file")
+   {
+      throw std::runtime_error("av.mode must be tanh or file");
+   }
 
    const YAML::Node init = root["init"];
-   if (Required<std::string>(init, "mode") != "damped_freestream")
+   params.init_mode = Required<std::string>(init, "mode");
+   if (params.init_mode == "damped_freestream")
+   {
+      params.damping_c = Required<double>(init, "c");
+   }
+   else if (params.init_mode != "udg_file")
    {
       throw std::runtime_error(
-         "M2 sanity driver requires init.mode=damped_freestream");
+         "init.mode must be damped_freestream or udg_file");
    }
-   params.damping_c = Required<double>(init, "c");
 
    const YAML::Node newton = root["newton"];
    params.newton.max_iterations = Required<int>(newton, "max_iters");
@@ -117,18 +131,43 @@ DriverParams LoadParams(const std::string &path)
    const YAML::Node output = root["output"];
    params.output_path = Required<std::string>(output, "path");
    params.paraview_every = Required<int>(output, "paraview_every");
+   if (output["wall_csv"])
+   {
+      params.wall_csv = output["wall_csv"].as<std::string>();
+   }
+   if (output["comparison_report"])
+   {
+      params.comparison_report =
+         output["comparison_report"].as<std::string>();
+   }
    return params;
+}
+
+std::string ReferenceCSVPath(const std::string &path)
+{
+   const std::size_t extension = path.rfind('.');
+   if (extension == std::string::npos)
+   {
+      return path + "_exasim";
+   }
+   return path.substr(0, extension) + "_exasim" +
+          path.substr(extension);
 }
 
 void PrintConfig(const DriverParams &params)
 {
-   std::cout << "HDG M2 configuration:"
+   std::cout << "HDG configuration:"
              << " case=" << params.case_name
              << " mesh=" << params.exasim_directory
              << " M=" << params.physics.mu[3]
              << " Re=" << params.physics.mu[1]
-             << " av=" << params.av_lambda
-             << "*tanh(" << params.av_c << "*(r-1))"
+             << " av_mode=" << params.av_mode;
+   if (params.av_mode == "tanh")
+   {
+      std::cout << " av=" << params.av_lambda
+                << "*tanh(" << params.av_c << "*(r-1))";
+   }
+   std::cout << " init_mode=" << params.init_mode
              << " tau=" << params.physics.tau
              << " NewtonTol=" << params.newton.tolerance
              << " max_iters=" << params.newton.max_iterations
@@ -169,14 +208,7 @@ public:
       collection_.RegisterField("p", &pressure_);
       collection_.RegisterField("av", &av_);
 
-      mfem::FunctionCoefficient av_coefficient(
-         [params](const mfem::Vector &x)
-         {
-            return params.av_lambda *
-                   std::tanh(params.av_c *
-                             (std::hypot(x[0], x[1]) - 1.0));
-         });
-      av_.ProjectCoefficient(av_coefficient);
+      op_.FillArtificialViscosityGridFunction(av_);
    }
 
    void Save(int cycle, const hdg_ns::HDGState &state)
@@ -240,7 +272,7 @@ int main(int argc, char *argv[])
    {
       if (mfem::Mpi::WorldSize() != 1)
       {
-         throw std::runtime_error("M2 driver supports np=1 only");
+         throw std::runtime_error("HDG driver supports np=1 only");
       }
       const DriverParams params = LoadParams(input_file);
       std::cout << std::setprecision(17);
@@ -248,32 +280,59 @@ int main(int argc, char *argv[])
 
       hdg_ns::ExasimMesh converted =
          hdg_ns::BuildExasimMesh(params.exasim_directory);
-      const auto av_function = [params](const mfem::Vector &x)
+      hdg_ns::ExasimArray vdg;
+      std::unique_ptr<hdg_ns::HDGNavierStokesOperator> op_pointer;
+      if (params.av_mode == "file")
       {
-         return params.av_lambda *
-                std::tanh(params.av_c *
-                          (std::hypot(x[0], x[1]) - 1.0));
-      };
-      hdg_ns::HDGNavierStokesOperator op(
-         *converted.mesh, converted.orientations, av_function,
-         params.physics, params.boundary_conditions);
+         vdg = hdg_ns::ReadExasimArray(
+            params.exasim_directory + "/vdg.bin");
+         op_pointer =
+            std::make_unique<hdg_ns::HDGNavierStokesOperator>(
+               *converted.mesh, vdg, converted.orientations,
+               params.physics, params.boundary_conditions);
+      }
+      else
+      {
+         const auto av_function = [params](const mfem::Vector &x)
+         {
+            return params.av_lambda *
+                   std::tanh(params.av_c *
+                             (std::hypot(x[0], x[1]) - 1.0));
+         };
+         op_pointer =
+            std::make_unique<hdg_ns::HDGNavierStokesOperator>(
+               *converted.mesh, converted.orientations, av_function,
+               params.physics, params.boundary_conditions);
+      }
+      hdg_ns::HDGNavierStokesOperator &op = *op_pointer;
 
-      const auto initial_condition = [params](
-         const mfem::Vector &x, double state[4])
-      {
-         const double distance = std::hypot(x[0], x[1]) - 1.0;
-         const double velocity = std::tanh(params.damping_c * distance);
-         state[0] = params.physics.mu[4];
-         state[1] = state[0] * velocity;
-         state[2] = 0.0;
-         state[3] =
-            state[0] * params.physics.mu[8] *
-               ((params.physics.mu[10] / params.physics.mu[9] - 1.0) *
-                   std::exp(-params.damping_c * distance) + 1.0) +
-            0.5 * state[0] * velocity * velocity;
-      };
       hdg_ns::HDGState state;
-      op.ProjectState(initial_condition, state);
+      if (params.init_mode == "udg_file")
+      {
+         const hdg_ns::ExasimArray input_udg =
+            hdg_ns::ReadExasimArray(
+               params.exasim_directory + "/udg.bin");
+         op.LoadExasimVolumeState(input_udg, false, state);
+         op.InitializeTraceFromInterior(state);
+      }
+      else
+      {
+         const auto initial_condition = [params](
+            const mfem::Vector &x, double value[4])
+         {
+            const double distance = std::hypot(x[0], x[1]) - 1.0;
+            const double velocity = std::tanh(params.damping_c * distance);
+            value[0] = params.physics.mu[4];
+            value[1] = value[0] * velocity;
+            value[2] = 0.0;
+            value[3] =
+               value[0] * params.physics.mu[8] *
+                  ((params.physics.mu[10] / params.physics.mu[9] - 1.0) *
+                      std::exp(-params.damping_c * distance) + 1.0) +
+               0.5 * value[0] * velocity * velocity;
+         };
+         op.ProjectState(initial_condition, state);
+      }
 
       ParaViewWriter writer(params, op, *converted.mesh);
       writer.Save(0, state);
@@ -301,35 +360,143 @@ int main(int argc, char *argv[])
       const double minimum_density = op.MinimumDensity(state);
       const double minimum_pressure = op.MinimumPressure(state);
       const double symmetry_error = op.YSymmetryError(state);
-      std::cout << "M2(e) result:"
+      const bool mach8_baseline =
+         params.av_mode == "file" && params.init_mode == "udg_file";
+      int damped_steps = 0;
+      double minimum_alpha = 1.0;
+      for (const hdg_ns::NewtonIteration &iteration : report.history)
+      {
+         if (iteration.iteration > 0)
+         {
+            minimum_alpha = std::min(minimum_alpha, iteration.alpha);
+            if (iteration.alpha < 1.0) { ++damped_steps; }
+         }
+      }
+      std::cout << (mach8_baseline ? "M3(b)" : "M2(e)") << " result:"
                 << " converged=" << (report.converged ? "yes" : "no")
                 << " iterations=" << report.iterations
                 << " residual=" << report.residual
                 << " min_rho=" << minimum_density
                 << " min_p=" << minimum_pressure
-                << " y_symmetry=" << symmetry_error << '\n';
+                << " y_symmetry=" << symmetry_error
+                << " damped_steps=" << damped_steps
+                << " min_alpha=" << minimum_alpha
+                << " assembly_seconds=" << report.assembly_seconds
+                << " linear_seconds=" << report.linear_solve_seconds
+                << " total_seconds=" << report.total_seconds << '\n';
 
       if (acceptance)
       {
          if (!report.converged || report.residual > 1.0e-6)
          {
             throw std::runtime_error(
-               "M2(e) Newton did not converge to 1e-6");
+               (mach8_baseline ? "M3(b)" : "M2(e)") +
+               std::string(" Newton did not converge to 1e-6"));
          }
-         if (!(minimum_density > 0.0) || !(minimum_pressure > 0.0))
+         if (!mach8_baseline &&
+             (!(minimum_density > 0.0) || !(minimum_pressure > 0.0)))
          {
             throw std::runtime_error("M2(e) fields are not positive");
          }
-         if (symmetry_error > 1.0e-8)
+         if (!mach8_baseline && symmetry_error > 1.0e-8)
          {
             throw std::runtime_error(
                "M2(e) fields are not y-symmetric to 1e-8");
          }
-         std::cout << "PASS M2(e) M=4.5 Re=1e3 actual-geometry sanity:"
+         std::cout << (mach8_baseline ?
+            "PASS M3(b) Mach 8 Newton from udg.bin IC:" :
+            "PASS M2(e) M=4.5 Re=1e3 actual-geometry sanity:")
                    << " residual=" << report.residual
                    << " min_rho=" << minimum_density
                    << " min_p=" << minimum_pressure
                    << " y_symmetry=" << symmetry_error << '\n';
+         if (mach8_baseline)
+         {
+            const hdg_ns::ExasimReferenceData reference =
+               hdg_ns::ReadExasimReferenceData(
+                  params.exasim_directory, converted);
+            hdg_ns::HDGState reference_state;
+            hdg_ns::LoadExasimReferenceState(
+               reference, op, true, reference_state);
+            const std::array<double, 4> relative_l2 =
+               op.ComponentRelativeL2(state, reference_state);
+            std::cout << "M3(c) field relative L2:"
+                      << " rho=" << relative_l2[0]
+                      << " rhou=" << relative_l2[1]
+                      << " rhov=" << relative_l2[2]
+                      << " rhoE=" << relative_l2[3] << '\n';
+            for (double error : relative_l2)
+            {
+               if (error > 1.0e-5)
+               {
+                  throw std::runtime_error(
+                     "M3(c) field relative L2 exceeds 1e-5");
+               }
+            }
+            std::cout << "PASS M3(c) field relative L2 comparison\n";
+
+            if (params.wall_csv.empty() ||
+                params.comparison_report.empty())
+            {
+               throw std::runtime_error(
+                  "M3 output requires wall_csv and comparison_report");
+            }
+            const std::vector<hdg_ns::WallSample> wall =
+               hdg_ns::ComputeWallSamples(
+                  *converted.mesh, op, state, params.physics);
+            const std::vector<hdg_ns::WallSample> reference_wall =
+               hdg_ns::ComputeWallSamples(
+                  *converted.mesh, op, reference_state, params.physics);
+            const std::string reference_csv =
+               ReferenceCSVPath(params.wall_csv);
+            hdg_ns::WriteWallCSV(params.wall_csv, wall);
+            hdg_ns::WriteWallCSV(reference_csv, reference_wall);
+
+            const hdg_ns::ShockStandoff shock =
+               hdg_ns::ComputeShockStandoff(
+                  *converted.mesh, op, state);
+            const hdg_ns::ShockStandoff reference_shock =
+               hdg_ns::ComputeShockStandoff(
+                  *converted.mesh, op, reference_state);
+            const hdg_ns::M3Comparison comparison =
+               hdg_ns::CompareWallAndShock(
+                  wall, reference_wall, shock, reference_shock);
+            std::cout << "M3(d) wall/shock comparison:"
+                      << " Cp_max_rel="
+                      << comparison.cp_max_relative_difference
+                      << " Fint_max_rel="
+                      << comparison.heat_flux_max_relative_difference
+                      << " shock_hdg=" << shock.distance
+                      << " shock_exasim=" << reference_shock.distance
+                      << " shock_abs_diff="
+                      << comparison.shock_standoff_difference
+                      << " radial_cell="
+                      << reference_shock.radial_cell_width
+                      << " csv_hdg=" << params.wall_csv
+                      << " csv_exasim=" << reference_csv << '\n';
+            if (comparison.cp_max_relative_difference > 1.0e-4)
+            {
+               throw std::runtime_error(
+                  "M3(d) wall Cp difference exceeds 1e-4");
+            }
+            if (comparison.heat_flux_max_relative_difference > 1.0e-3)
+            {
+               throw std::runtime_error(
+                  "M3(d) wall Fint heat-flux difference exceeds 1e-3");
+            }
+            if (comparison.shock_standoff_difference >
+                reference_shock.radial_cell_width)
+            {
+               throw std::runtime_error(
+                  "M3(d) shock standoff differs by more than one radial cell");
+            }
+            hdg_ns::WriteM3ComparisonReport(
+               params.comparison_report, relative_l2, comparison,
+               shock, reference_shock);
+            std::cout << "PASS M3(d) wall Cp, Fint heat flux, and shock"
+                      << " standoff comparison; report="
+                      << params.comparison_report << '\n';
+         }
       }
    }
    catch (const std::exception &error)

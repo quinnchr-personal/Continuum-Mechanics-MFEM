@@ -79,6 +79,18 @@ public:
    void ProjectState(const StateFunction &function, HDGState &solution) const;
    void InitializeTraceFromInterior(HDGState &solution) const;
    void RecomputeGradient(HDGState &solution) const;
+   void LoadExasimVolumeState(const ExasimArray &udg,
+                              bool load_gradient,
+                              HDGState &solution) const;
+   void SetTraceFaceState(int face,
+                          const std::array<double, 20> &values,
+                          HDGState &solution) const;
+   void EvaluateElementState(const HDGState &solution, int element,
+                             const mfem::IntegrationPoint &point,
+                             double uq[12]) const;
+   void EvaluateTraceState(const HDGState &solution, int face,
+                           const mfem::IntegrationPoint &point,
+                           double uhat[4]) const;
 
    // The source is a test-only manufactured-source hook. Physical runs leave
    // it empty, which is exactly source = 0.
@@ -105,6 +117,8 @@ public:
 
    double L2Error(const HDGState &solution,
                   const StateFunction &exact) const;
+   std::array<double, 4> ComponentRelativeL2(
+      const HDGState &solution, const HDGState &reference) const;
    double MinimumDensity(const HDGState &solution) const;
    double MinimumPressure(const HDGState &solution) const;
    double YSymmetryError(const HDGState &solution) const;
@@ -114,6 +128,8 @@ public:
       const HDGState &solution, mfem::GridFunction &field) const;
    void FillPrimitiveGridFunction(
       const HDGState &solution, mfem::GridFunction &field) const;
+   void FillArtificialViscosityGridFunction(
+      mfem::GridFunction &field) const;
 
 private:
    static constexpr int kComponents = 4;

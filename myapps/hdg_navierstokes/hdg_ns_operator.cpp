@@ -1,4 +1,5 @@
 #include "hdg_ns_operator.hpp"
+#include "exasim_mesh.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -767,14 +768,20 @@ void HDGNavierStokesOperator::InitializeTraceFromInterior(
    {
       mfem::FaceElementTransformations *transformation =
          mesh_.GetFaceElementTransformations(face, 31);
-      const int element = transformation->Elem1No;
+      const bool use_first =
+         transformation->Elem2No < 0 ||
+         transformation->Elem1No < transformation->Elem2No;
+      const int element = use_first ?
+         transformation->Elem1No : transformation->Elem2No;
       mfem::Array<int> vdofs;
       trace_fes_.GetFaceVDofs(face, vdofs);
       for (int dof = 0; dof < 5; ++dof)
       {
          transformation->SetAllIntPoints(&face_nodes.IntPoint(dof));
          volume_fe_->CalcShape(
-            transformation->GetElement1IntPoint(), shape);
+            use_first ? transformation->GetElement1IntPoint() :
+                        transformation->GetElement2IntPoint(),
+            shape);
          for (int component = 0; component < 4; ++component)
          {
             double value = 0.0;
@@ -788,6 +795,127 @@ void HDGNavierStokesOperator::InitializeTraceFromInterior(
       }
    }
    RecomputeGradient(solution);
+}
+
+void HDGNavierStokesOperator::LoadExasimVolumeState(
+   const ExasimArray &udg, bool load_gradient, HDGState &solution) const
+{
+   const int required_components = load_gradient ? 12 : 4;
+   if (udg.nnode != 25 || udg.ncomp < required_components ||
+       udg.nelem != mesh_.GetNE())
+   {
+      throw std::runtime_error(
+         "Exasim volume state has the wrong [25,ncomp,ne] layout");
+   }
+   solution = NewState();
+   const auto target_points = FiniteElementNodes(*volume_fe_);
+   for (int element = 0; element < mesh_.GetNE(); ++element)
+   {
+      const TensorBasisTransform transform =
+         BuildTensorBasisTransform(target_points, orientations_[element]);
+      for (int component = 0; component < required_components; ++component)
+      {
+         double source[25], target[25];
+         for (int node = 0; node < 25; ++node)
+         {
+            source[node] = udg(node, component, element);
+         }
+         transform.ToTarget(source, target);
+         if (component < 4)
+         {
+            for (int dof = 0; dof < 25; ++dof)
+            {
+               solution.u[UIndex(element, component, dof)] = target[dof];
+            }
+         }
+         else
+         {
+            const int direction = (component - 4) / 4;
+            const int q_component = (component - 4) % 4;
+            for (int dof = 0; dof < 25; ++dof)
+            {
+               solution.q[
+                  QIndex(element, direction, q_component, dof)] =
+                     target[dof];
+            }
+         }
+      }
+   }
+}
+
+void HDGNavierStokesOperator::SetTraceFaceState(
+   int face, const std::array<double, 20> &values,
+   HDGState &solution) const
+{
+   if (face < 0 || face >= mesh_.GetNumFaces() ||
+       solution.uhat.Size() != trace_fes_.GetVSize())
+   {
+      throw std::runtime_error("invalid trace face state assignment");
+   }
+   mfem::Array<int> vdofs;
+   trace_fes_.GetFaceVDofs(face, vdofs);
+   for (int component = 0; component < 4; ++component)
+   {
+      for (int dof = 0; dof < 5; ++dof)
+      {
+         solution.uhat[vdofs[FaceVDofListIndex(component, dof)]] =
+            values[component + 4 * dof];
+      }
+   }
+}
+
+void HDGNavierStokesOperator::EvaluateElementState(
+   const HDGState &solution, int element,
+   const mfem::IntegrationPoint &point, double uq[12]) const
+{
+   if (element < 0 || element >= mesh_.GetNE() ||
+       solution.u.Size() != mesh_.GetNE() * kElementUnknowns ||
+       solution.q.Size() != mesh_.GetNE() * 2 * kElementUnknowns)
+   {
+      throw std::runtime_error("invalid element state evaluation");
+   }
+   std::fill(uq, uq + 12, 0.0);
+   mfem::Vector shape(25);
+   volume_fe_->CalcShape(point, shape);
+   for (int component = 0; component < 4; ++component)
+   {
+      for (int dof = 0; dof < 25; ++dof)
+      {
+         uq[component] += shape[dof] *
+            solution.u[UIndex(element, component, dof)];
+         for (int direction = 0; direction < 2; ++direction)
+         {
+            uq[4 + 4 * direction + component] += shape[dof] *
+               solution.q[QIndex(
+                  element, direction, component, dof)];
+         }
+      }
+   }
+}
+
+void HDGNavierStokesOperator::EvaluateTraceState(
+   const HDGState &solution, int face,
+   const mfem::IntegrationPoint &point, double uhat[4]) const
+{
+   if (face < 0 || face >= mesh_.GetNumFaces() ||
+       solution.uhat.Size() != trace_fes_.GetVSize())
+   {
+      throw std::runtime_error("invalid trace state evaluation");
+   }
+   std::fill(uhat, uhat + 4, 0.0);
+   mfem::Vector shape(5);
+   trace_fe_->CalcShape(point, shape);
+   mfem::Array<int> vdofs;
+   trace_fes_.GetFaceVDofs(face, vdofs);
+   for (int component = 0; component < 4; ++component)
+   {
+      for (int dof = 0; dof < 5; ++dof)
+      {
+         uhat[component] += shape[dof] *
+            solution.uhat[
+               vdofs[FaceVDofListIndex(component, dof)]];
+      }
+   }
 }
 
 void HDGNavierStokesOperator::GetElementTraceVDofs(
@@ -1559,6 +1687,64 @@ double HDGNavierStokesOperator::L2Error(
    return std::sqrt(error_squared);
 }
 
+std::array<double, 4>
+HDGNavierStokesOperator::ComponentRelativeL2(
+   const HDGState &solution, const HDGState &reference) const
+{
+   const int expected_size = mesh_.GetNE() * kElementUnknowns;
+   if (solution.u.Size() != expected_size ||
+       reference.u.Size() != expected_size)
+   {
+      throw std::runtime_error(
+         "relative L2 comparison received an incorrectly sized state");
+   }
+   std::array<double, 4> error_squared{};
+   std::array<double, 4> reference_squared{};
+   const int nq = volume_rule_->GetNPoints();
+   for (int element = 0; element < mesh_.GetNE(); ++element)
+   {
+      for (int qpoint = 0; qpoint < nq; ++qpoint)
+      {
+         const std::size_t index = VolumeIndex(element, qpoint, nq);
+         const double weight =
+            volume_rule_->IntPoint(qpoint).weight * volume_det_j_[index];
+         for (int component = 0; component < 4; ++component)
+         {
+            double value = 0.0;
+            double expected = 0.0;
+            for (int dof = 0; dof < 25; ++dof)
+            {
+               const double shape =
+                  volume_shape_[static_cast<std::size_t>(
+                     dof + 25 * qpoint)];
+               value += shape *
+                  solution.u[UIndex(element, component, dof)];
+               expected += shape *
+                  reference.u[UIndex(element, component, dof)];
+            }
+            const double difference = value - expected;
+            error_squared[component] +=
+               weight * difference * difference;
+            reference_squared[component] +=
+               weight * expected * expected;
+         }
+      }
+   }
+   std::array<double, 4> relative{};
+   for (int component = 0; component < 4; ++component)
+   {
+      if (!(reference_squared[component] > 0.0))
+      {
+         throw std::runtime_error(
+            "reference field has zero L2 norm");
+      }
+      relative[component] =
+         std::sqrt(error_squared[component] /
+                   reference_squared[component]);
+   }
+   return relative;
+}
+
 double HDGNavierStokesOperator::MinimumDensity(
    const HDGState &solution) const
 {
@@ -1833,6 +2019,51 @@ void HDGNavierStokesOperator::FillPrimitiveGridFunction(
       }
       volume_fes_.GetElementVDofs(element, vdofs);
       field.SetSubVector(vdofs, local);
+   }
+}
+
+void HDGNavierStokesOperator::FillArtificialViscosityGridFunction(
+   mfem::GridFunction &field) const
+{
+   mfem::FiniteElementSpace *space = field.FESpace();
+   if (!space || space->GetVDim() != 1 ||
+       space->GetNE() != mesh_.GetNE() ||
+       space->GetFE(0)->GetDof() != 25)
+   {
+      throw std::runtime_error(
+         "artificial-viscosity GridFunction uses the wrong space");
+   }
+   const auto target_points = FiniteElementNodes(*space->GetFE(0));
+   mfem::Array<int> dofs;
+   mfem::Vector local(25), physical(2);
+   for (int element = 0; element < mesh_.GetNE(); ++element)
+   {
+      if (vdg_)
+      {
+         const TensorBasisTransform transform =
+            BuildTensorBasisTransform(target_points,
+                                      orientations_[element]);
+         double source[25], target[25];
+         for (int node = 0; node < 25; ++node)
+         {
+            source[node] = (*vdg_)(node, 0, element);
+         }
+         transform.ToTarget(source, target);
+         for (int dof = 0; dof < 25; ++dof) { local[dof] = target[dof]; }
+      }
+      else
+      {
+         mfem::ElementTransformation *transformation =
+            mesh_.GetElementTransformation(element);
+         const mfem::IntegrationRule &nodes = space->GetFE(element)->GetNodes();
+         for (int dof = 0; dof < 25; ++dof)
+         {
+            transformation->Transform(nodes.IntPoint(dof), physical);
+            local[dof] = artificial_viscosity_(physical);
+         }
+      }
+      space->GetElementDofs(element, dofs);
+      field.SetSubVector(dofs, local);
    }
 }
 
