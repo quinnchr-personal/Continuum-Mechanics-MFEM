@@ -5,6 +5,7 @@
 #include <fstream>
 #include <iomanip>
 #include <limits>
+#include <sstream>
 #include <stdexcept>
 #include <vector>
 
@@ -164,6 +165,45 @@ void WriteWallCSV(const std::string &path,
    }
 }
 
+std::vector<WallSample> ReadWallCSV(const std::string &path)
+{
+   std::ifstream input(path);
+   if (!input)
+   {
+      throw std::runtime_error("cannot open wall CSV: " + path);
+   }
+   std::string line;
+   if (!std::getline(input, line) || line != "theta,x,y,Cp,q_w")
+   {
+      throw std::runtime_error("wall CSV has an unexpected header: " + path);
+   }
+   std::vector<WallSample> samples;
+   while (std::getline(input, line))
+   {
+      if (line.empty()) { continue; }
+      std::replace(line.begin(), line.end(), ',', ' ');
+      std::istringstream values(line);
+      WallSample sample;
+      if (!(values >> sample.theta >> sample.x >> sample.y >>
+            sample.cp >> sample.heat_flux))
+      {
+         throw std::runtime_error("malformed wall CSV row: " + path);
+      }
+      std::string trailing;
+      if (values >> trailing)
+      {
+         throw std::runtime_error(
+            "wall CSV row has extra columns: " + path);
+      }
+      samples.push_back(sample);
+   }
+   if (samples.empty())
+   {
+      throw std::runtime_error("wall CSV contains no samples: " + path);
+   }
+   return samples;
+}
+
 ShockStandoff ComputeShockStandoff(
    mfem::Mesh &mesh, const HDGNavierStokesOperator &op,
    const HDGState &state, int sample_count)
@@ -251,7 +291,8 @@ M3Comparison CompareWallAndShock(
    const std::vector<WallSample> &computed,
    const std::vector<WallSample> &reference,
    const ShockStandoff &computed_shock,
-   const ShockStandoff &reference_shock)
+   const ShockStandoff &reference_shock,
+   bool require_matching_coordinates)
 {
    if (computed.size() != reference.size())
    {
@@ -260,8 +301,15 @@ M3Comparison CompareWallAndShock(
    M3Comparison comparison;
    for (std::size_t i = 0; i < computed.size(); ++i)
    {
-      if (RelativeDifference(computed[i].x, reference[i].x) > 1.0e-13 ||
-          RelativeDifference(computed[i].y, reference[i].y) > 1.0e-13)
+      const double coordinate_difference =
+         std::hypot(computed[i].x - reference[i].x,
+                    computed[i].y - reference[i].y);
+      comparison.wall_coordinate_maximum_difference =
+         std::max(comparison.wall_coordinate_maximum_difference,
+                  coordinate_difference);
+      if (require_matching_coordinates &&
+          (RelativeDifference(computed[i].x, reference[i].x) > 1.0e-13 ||
+           RelativeDifference(computed[i].y, reference[i].y) > 1.0e-13))
       {
          throw std::runtime_error(
             "wall sample coordinates do not match");

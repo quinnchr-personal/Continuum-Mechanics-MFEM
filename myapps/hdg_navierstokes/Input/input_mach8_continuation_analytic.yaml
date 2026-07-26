@@ -1,0 +1,58 @@
+case_name: hdg_mach8_continuation_analytic
+
+mesh:
+  source: analytic
+  nr: 31
+  nc: 21
+  order: 4
+
+bc:
+  boundaryconditions: [3, 2, 1]
+
+physics:
+  mu: [1.4, 183500.0, 0.71, 8.03, 1.0, 1.0, 0.0,
+       0.52769, 0.027694, 124.49, 294.44]
+  tau: 1.0
+  regularization: floors
+
+av:
+  mode: tanh
+  lambda: 0.06
+  c: 30.0
+
+init:
+  mode: damped_freestream
+  c: 10.0
+
+newton:
+  max_iters: 30
+  tol: 1.0e-6
+
+ptc:
+  enabled: false
+  initial_dt: 0.5
+
+linear:
+  type: petsc_direct
+
+continuation:
+  enabled: true
+  history_csv: continuation_history_analytic.csv
+  summary_csv: continuation_summary_analytic.csv
+  stages:
+    - {lambda: 0.06, c: 30.0, ptc: {enabled: false, initial_dt: 0.5}}
+    - {lambda: 0.04, c: 30.0, ptc: {enabled: false, initial_dt: 0.5}}
+    - {lambda: 0.025, c: 30.0, ptc: {enabled: false, initial_dt: 0.5}}
+    - {lambda: 0.025, c: 5.0, ptc: {enabled: false, initial_dt: 0.5}}
+
+comparison:
+  reference_wall_csv: wall_data_continuation.csv
+  reference_shock_standoff: 0.002002002002001957
+  require_matching_coordinates: false
+  gate: false
+
+output:
+  path: ParaView/mach8_continuation_analytic
+  wall_csv: wall_data_continuation_analytic.csv
+  comparison_report: m4_analytic_comparison_report.md
+  paraview_every: 0

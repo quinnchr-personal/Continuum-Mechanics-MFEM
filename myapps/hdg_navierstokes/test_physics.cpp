@@ -24,6 +24,21 @@ using std::sqrt;
 #undef KOKKOS_INLINE_FUNCTION
 } // namespace exasim_reference
 
+namespace exasim_reference_floored
+{
+template <typename T> struct ModelDefaults {};
+using dstype = double;
+namespace Kokkos
+{
+using std::atan;
+using std::pow;
+using std::sqrt;
+}
+#define KOKKOS_INLINE_FUNCTION inline
+#include "my_model_floored.hpp"
+#undef KOKKOS_INLINE_FUNCTION
+} // namespace exasim_reference_floored
+
 namespace
 {
 
@@ -99,6 +114,41 @@ void ReferenceFlux(const double uq[12], double av, const NSParams &params,
       f, x, uq, v, w, params.mu, uinf, 0.0);
    exasim_reference::PdeModel::flux_jac_uq(
       jac, x, uq, v, w, params.mu, uinf, 0.0);
+}
+
+void ReferenceFluxFloored(const double uq[12], double av,
+                          const NSParams &params, double f[8], double jac[96])
+{
+   const double x[2] = {0.0, 0.0};
+   const double v[2] = {av, 0.0};
+   const double w[1] = {0.0};
+   const double uinf[1] = {0.0};
+   exasim_reference_floored::PdeModel::flux(
+      f, x, uq, v, w, params.mu, uinf, 0.0);
+   exasim_reference_floored::PdeModel::flux_jac_uq(
+      jac, x, uq, v, w, params.mu, uinf, 0.0);
+}
+
+// States straddling the pdemodel_ns.m floors (rmin=1e-2, pmin=1e-3):
+// densities down to 2e-3 and pressures down to -0.05, i.e. including the
+// negative-pressure regime the M4 stage-2 Newton trial actually visits.
+void FillFloorStraddlingState(std::mt19937_64 &rng, double uq[12])
+{
+   std::uniform_real_distribution<double> rho_dist(0.002, 0.5);
+   std::uniform_real_distribution<double> velocity_dist(-2.0, 2.0);
+   std::uniform_real_distribution<double> pressure_dist(-0.05, 0.15);
+   std::uniform_real_distribution<double> gradient_dist(-1.5, 1.5);
+   constexpr double gam1 = 0.4;
+
+   const double rho = rho_dist(rng);
+   const double ux = velocity_dist(rng);
+   const double uy = velocity_dist(rng);
+   const double p = pressure_dist(rng);
+   uq[0] = rho;
+   uq[1] = rho * ux;
+   uq[2] = rho * uy;
+   uq[3] = p / gam1 + 0.5 * rho * (ux * ux + uy * uy);
+   for (int i = 4; i < 12; ++i) { uq[i] = gradient_dist(rng); }
 }
 
 void ReferenceBoundary(int ib, const double uq[12], const double uhat[4],
@@ -483,6 +533,161 @@ void CheckFreestreamIdentities()
              << rounded_pressure_error << '\n';
 }
 
+void CheckRegularizedParity()
+{
+   NSParams params;
+   params.regularized = true;
+   std::mt19937_64 rng(0x4d34464c4f4f52ULL);
+   std::uniform_real_distribution<double> av_dist(0.0, 0.08);
+   double max_value_error = 0.0;
+   double max_jac_error = 0.0;
+
+   for (int sample = 0; sample < 2000; ++sample)
+   {
+      double uq[12], uhat[4];
+      if (sample < 1000) { FillAdmissibleState(rng, uq, uhat); }
+      else { FillFloorStraddlingState(rng, uq); }
+      const double av = av_dist(rng);
+
+      double actual_flux[8], actual_jac[96];
+      double reference_flux[8], reference_jac[96];
+      hdg_ns::NSFlux(uq, av, params, actual_flux, actual_jac);
+      ReferenceFluxFloored(uq, av, params, reference_flux, reference_jac);
+      max_value_error = std::max(
+         max_value_error, ScaledError(actual_flux, reference_flux, 8));
+      max_jac_error = std::max(
+         max_jac_error, ScaledError(actual_jac, reference_jac, 96));
+   }
+
+   constexpr double tolerance = 1.0e-13;
+   Require(max_value_error <= tolerance,
+           "regularized flux values do not match generated floored model");
+   Require(max_jac_error <= tolerance,
+           "regularized flux Jacobian does not match generated floored model");
+   std::cout << "PASS regularized parity (1000 admissible + 1000"
+                " floor-straddling states):"
+             << " flux=" << max_value_error
+             << " flux_jac=" << max_jac_error << '\n';
+}
+
+void CheckRegularizedFiniteDifferences()
+{
+   NSParams params;
+   params.regularized = true;
+   std::mt19937_64 rng(0xfd4d34464c4fULL);
+   std::uniform_real_distribution<double> av_dist(0.0, 0.08);
+   double max_fd_error = 0.0;
+
+   for (int sample = 0; sample < 240; ++sample)
+   {
+      double uq[12], uhat[4];
+      if (sample < 120) { FillAdmissibleState(rng, uq, uhat); }
+      else { FillFloorStraddlingState(rng, uq); }
+      const double av = av_dist(rng);
+      double base_flux[8], analytic[96];
+      hdg_ns::NSFlux(uq, av, params, base_flux, analytic);
+
+      for (int variable = 0; variable < 12; ++variable)
+      {
+         const double h = 1.0e-6 * std::max(1.0, std::abs(uq[variable]));
+         double plus_state[12], minus_state[12];
+         std::copy(uq, uq + 12, plus_state);
+         std::copy(uq, uq + 12, minus_state);
+         plus_state[variable] += h;
+         minus_state[variable] -= h;
+         double plus_flux[8], minus_flux[8];
+         hdg_ns::NSFlux(plus_state, av, params, plus_flux);
+         hdg_ns::NSFlux(minus_state, av, params, minus_flux);
+         for (int output = 0; output < 8; ++output)
+         {
+            const double fd = (plus_flux[output] - minus_flux[output]) /
+                              (2.0 * h);
+            const double exact = analytic[output + 8 * variable];
+            const double scale = std::max({1.0, std::abs(fd),
+                                           std::abs(exact)});
+            max_fd_error =
+               std::max(max_fd_error, std::abs(fd - exact) / scale);
+         }
+      }
+   }
+
+   // Looser than the unregularized FD gate: the smoothed floors carry
+   // curvature ~alpha^2 near the hinge, which central differences at
+   // h=1e-6 resolve to ~1e-6 at best.
+   Require(max_fd_error <= 1.0e-5,
+           "regularized flux Jacobian fails finite-difference check");
+   std::cout << "PASS regularized central finite differences:"
+             << " flux_jac=" << max_fd_error << '\n';
+}
+
+void CheckRegularizedProperties()
+{
+   NSParams params;
+   NSParams floored = params;
+   floored.regularized = true;
+   std::mt19937_64 rng(0x4d344147524545ULL);
+   std::uniform_real_distribution<double> av_dist(0.0, 0.08);
+
+   // (a) The floors are numerically inactive at admissible states.
+   double max_agreement_error = 0.0;
+   for (int sample = 0; sample < 1000; ++sample)
+   {
+      double uq[12], uhat[4];
+      FillAdmissibleState(rng, uq, uhat);
+      const double av = av_dist(rng);
+      double plain_flux[8], plain_jac[96];
+      double reg_flux[8], reg_jac[96];
+      hdg_ns::NSFlux(uq, av, params, plain_flux, plain_jac);
+      hdg_ns::NSFlux(uq, av, floored, reg_flux, reg_jac);
+      max_agreement_error = std::max(
+         max_agreement_error, ScaledError(reg_flux, plain_flux, 8));
+      max_agreement_error = std::max(
+         max_agreement_error, ScaledError(reg_jac, plain_jac, 96));
+   }
+   Require(max_agreement_error <= 1.0e-6,
+           "floors are active at admissible states");
+
+   // (b) The M4 stage-2 failure regime: the trial state that killed the
+   // continuation (p ~ -0.009 at rho ~ 0.96) must be evaluable with the
+   // floors and NaN without them (the Sutherland sqrt(T^3) mechanism).
+   double failure_state[12] = {};
+   const double rho = 0.965, ux = 0.11, uy = 0.0, p = -0.009;
+   failure_state[0] = rho;
+   failure_state[1] = rho * ux;
+   failure_state[2] = rho * uy;
+   failure_state[3] = p / 0.4 + 0.5 * rho * (ux * ux + uy * uy);
+   failure_state[4] = 0.8;
+   failure_state[7] = -0.6;
+   const double av = 0.04;
+   double reg_flux[8], reg_jac[96], plain_flux[8];
+   hdg_ns::NSFlux(failure_state, av, floored, reg_flux, reg_jac);
+   bool regularized_finite = true;
+   for (int i = 0; i < 8; ++i)
+   {
+      regularized_finite =
+         regularized_finite && std::isfinite(reg_flux[i]);
+   }
+   for (int i = 0; i < 96; ++i)
+   {
+      regularized_finite =
+         regularized_finite && std::isfinite(reg_jac[i]);
+   }
+   Require(regularized_finite,
+           "regularized flux is not finite at the M4 failure state");
+   hdg_ns::NSFlux(failure_state, av, params, plain_flux);
+   bool plain_has_nan = false;
+   for (int i = 0; i < 8; ++i)
+   {
+      plain_has_nan = plain_has_nan || std::isnan(plain_flux[i]);
+   }
+   Require(plain_has_nan,
+           "unregularized flux unexpectedly finite at negative pressure");
+
+   std::cout << "PASS regularized properties:"
+             << " admissible_agreement=" << max_agreement_error
+             << " finite_at_p_neg=1 unfloored_nan_at_p_neg=1" << '\n';
+}
+
 } // namespace
 
 int main()
@@ -495,6 +700,9 @@ int main()
       CheckYReflectionEquivariance();
       CheckDissipativity();
       CheckFreestreamIdentities();
+      CheckRegularizedParity();
+      CheckRegularizedFiniteDifferences();
+      CheckRegularizedProperties();
       std::cout << "ALL test_physics M1 GATES PASSED\n";
       return EXIT_SUCCESS;
    }

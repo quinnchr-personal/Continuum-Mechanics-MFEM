@@ -1,0 +1,5 @@
+# Exported Exasim states (~11 MB) are not committed; regenerate them in
+# ~2 minutes with the recipe in README.md.
+states_floored/
+states_floorfree/
+first_step_dump/

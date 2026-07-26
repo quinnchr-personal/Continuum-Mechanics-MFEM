@@ -1,0 +1,437 @@
+Using 1 processors with 0 rank and 0 shmrank to solve the problem on CPU platform...
+Running Exasim with this text file (pdeapp.txt) ... 
+
+Finished parseInputFile.
+exasimpath is not set in pdeapp.txt file.
+We use the working directory to define exasimpath.
+exasimpath = /tmp/claude-1000/-home-quinnchr-dv-Continuum-Mechanics-MFEM-myapps-hdg-navierstokes/850866de-9668-4f05-9268-19838a9ffd22/scratchpad/exasim-continuation
+datapath is not set in pdeapp.txt.
+We set datapath to the working directory.
+datapath = /tmp/claude-1000/-home-quinnchr-dv-Continuum-Mechanics-MFEM-myapps-hdg-navierstokes/850866de-9668-4f05-9268-19838a9ffd22/scratchpad/exasim-continuation
+Finished initializePDE.
+platform: cpu
+vdgfile: vdg.bin
+udgfile: udg.bin
+xdgfile: xdg.bin
+modelfile: pdemodel.txt
+discretization: hdg
+meshfile: grid.bin
+model: ModelD
+time: 0
+NewtonIter: 30
+nvqoi: 0
+mpiprocs: 1
+nten: 0
+nvec: 1
+nsca: 4
+RBdim: 0
+nsurf: 0
+torder: 1
+pgauss: 8
+matvecorder: 1
+writemeshsol: 1
+GMRESrestart: 100
+gendatain: 0
+builtinmodelID: 7
+saveParaview: 0
+gencode: 0
+modelnumber: 0
+runmode: 0
+porder: 4
+nstage: 1
+precMatrixType: 0
+ppdegree: 20
+preconditioner: 0
+nfb: 8192
+debugmode: 1
+GMRESiter: 100
+neb: 4096
+GMRESortho: 0
+matvectol: 1e-06
+GMREStol: 1e-08
+NewtonTol: 1e-06
+boundaryConditions: 3 | 2 | 1 | 
+boundaryExprs: sqrt(x^2+y^2)<1+1e-6 | x>-1e-7 | abs(x)<20 | 
+curvedBoundaries: 0 | 0 | 0 | 
+curvedBoundaryExprs:  |  |  | 
+periodicBoundaries1: 
+periodicExprs1: 
+periodicBoundaries2: 
+periodicExprs2: 
+dt: 0 | 
+dae_dt: 
+tau: 1 | 
+physicsParam: 1.4 | 183500 | 0.71 | 8.03 | 1 | 1 | 0 | 0.52769 | 0.027694 | 124.49 | 294.44 | 10 | 0.5 | 0 | 4 | 0.02 | 2.5 | 
+physicsParamCases: 
+externalParam: 0 | 0 | 
+cartGridPart: 
+interfaceConditions: 
+interfaceFluxmap: 
+builtinmodelID = 7
+Reading xdg file.
+Reading udg file.
+Reading vdg file.
+Finished reading mesh file.
+Finished initializing Master.
+Finished writing pde to /tmp/claude-1000/-home-quinnchr-dv-Continuum-Mechanics-MFEM-myapps-hdg-navierstokes/850866de-9668-4f05-9268-19838a9ffd22/scratchpad/exasim-continuation/datain/app.bin
+Finished writing master to /tmp/claude-1000/-home-quinnchr-dv-Continuum-Mechanics-MFEM-myapps-hdg-navierstokes/850866de-9668-4f05-9268-19838a9ffd22/scratchpad/exasim-continuation/datain/master.bin
+Finished setboundaryfaces.
+Finished building Mesh.
+Finished writing initial solution to /tmp/claude-1000/-home-quinnchr-dv-Continuum-Mechanics-MFEM-myapps-hdg-navierstokes/850866de-9668-4f05-9268-19838a9ffd22/scratchpad/exasim-continuation/datain/sol.bin
+Finished writing mesh to /tmp/claude-1000/-home-quinnchr-dv-Continuum-Mechanics-MFEM-myapps-hdg-navierstokes/850866de-9668-4f05-9268-19838a9ffd22/scratchpad/exasim-continuation/datain/mesh.bin
+Finished writeBinaryFiles.
+CPreprocessing destructor is called successfully.
+exasimpath = /tmp/claude-1000/-home-quinnchr-dv-Continuum-Mechanics-MFEM-myapps-hdg-navierstokes/850866de-9668-4f05-9268-19838a9ffd22/scratchpad/exasim-continuation
+Model 0: provider = BuiltInLibrary, builtinmodelID = 7
+Reading data from binary files 
+Reading app from binary files 
+Reading master from binary files 
+Reading initial solution from binary files 
+Reading xdg from binary files 
+Reading (u,q) from binary files 
+Reading vdg from binary files 
+Reading mesh from binary files 
+Building element and face connectivities 
+Finish reading data from binary files 
+Set res struct... 
+Set temp struct... 
+Run IsMeshCurved... 
+IsMeshCurved = 1 
+Set common struct... 
+Finish setting common struct... 
+Precompute index arrays... 
+finish cpuInit... 
+start compGeometry... 
+start ElemGeom... 
+Finish ElemGeom... 
+finish compGeometry... 
+Init HDG Discretization ... 
+Maximum number of boundary conditions = 3 
+Memory allocation ...
+--------------- Common Struct Information ----------------
+backend: 0
+number of MPI ranks: 1
+number of models: -1075150486
+number of compoments of (u, q): 12
+number of compoments of u: 4
+number of compoments of q: 8
+number of compoments of w: 0
+number of compoments of v: 2
+number of compoments of uhat: 4
+number of compoments of x: 2
+number of compoments of s: 0
+number of compoments of outputs: 0
+spatial dimension: 2
+spatial scheme: 1
+element type: 1
+node type: 1
+polynomial degree: 4
+gauss quadrature degree: 8
+number of nodes on master element: 25
+number of gauss points on master element: 25
+number of nodes on master face: 5
+number of gauss points on master face: 5
+temporal scheme: 0
+temporal order: 1
+number of DIRK stages: 1
+number of time steps: 1
+total number of elements: 651
+number of interior elements: 651
+number of interior+interface elements: 651
+number of interior+interface+exterior elements: 651
+total number of faces: 1354
+number of interior faces: 1250
+number of faces per elements: 4
+number of blocks for elements: 1
+number of blocks for faces: 4
+maximum number of faces per block: 1250
+number of blocks for interior elements: 1
+number of blocks for interior+interface elements: 1
+number of blocks for interior+interface+exterior elements: 1
+number of blocks for interior faces: 1866355941
+number of blocks for interior+interface faces: -1075575917
+number of interface faces: 0
+number of degrees of freedom of u: 65100
+number of degrees of freedom of q: 130200
+number of degrees of freedom of w: 0
+number of degrees of freedom of uhat: 27080
+number of degrees of freedom of udg: 195300
+number of degrees of freedom of sdg: 0
+number of degrees of freedom of odg: 32550
+number of degrees of freedom of edg: 0
+length of the stabilization: 1
+maximum dimension of the reduced basis space: 0
+external uhat function flag: 0
+external fhat function flag: 0
+external stabilization function flag: 0
+curved mesh flag: 1
+debug mode flag: 1
+time-dependent problem flag: 0
+wave problem flag: 0
+linear problem flag: 0
+save solution frequency: 1
+save solution option: 1
+timestep offset to restart simulation: 0
+time-derivative function flag: 1
+source function flag: 1
+model number: 7
+boundary index to save solution: 0
+save solution boundary frequency: 0
+compute time-averaged solution flag: 1
+read time-averaged solution flag: 0
+number of components of artificial viscosity: 0
+number of artificial viscosity smoothing iterations: 2
+frozen artificial viscosity flag: 1
+linear solver type: 0
+nonlinear solver type: -1075438819
+maximum linear solver iterations: 100
+maximum nonlinear solver iterations: 30
+matrix-vector multiplication order: 1
+GMRES restart parameter: 100
+GMRES orthogonalization method: 0
+preconditioner type: 0
+preconditioner matrix type: 0
+PTC matrix type: 0
+run mode: 0
+time step factor: -1.394166
+current simulation time: -1.602406
+matrix-vector multiplication tolerance: 0.000001
+linear solver tolerance: 0.000000
+nonlinear solver tolerance: 0.000001
+artificial viscosity ramp factor: 1.000000
+PTC parameter: 0.000000
+initial stabilization parameter: 1.000000
+DAE alpha parameter: 1.000000
+DAE beta parameter: 0.000000
+DAE gamma parameter: 0.000000
+DAE epsilon parameter: 0.000000
+number of boundary conditions: 3
+number of wall-model configurations: 0
+number of neighboring subdomains: 0
+number of elements to send: 0
+number of elements to receive: 0
+eblks array: 3 by 1
+1  
+651  
+0  
+fblks array: 3 by 4
+1  1251  1272  1334  
+1250  1271  1333  1354  
+0  1  2  3  
+nboufaces array: 3 by 1
+21  
+83  
+104  
+--------------- App Struct Information ----------------
+size of flag: 21
+size of problem: 32
+size of comm: 2
+size of porder: 2
+size of stgib: 0
+size of vindx: 0
+size of interfacefluxmap: 0
+size of wmModelIDs: 0
+size of wmBoundaries: 0
+size of uinf: 2
+size of dt: 1
+size of dae_dt: 0
+size of factor: 5
+size of physicsparam: 17
+size of solversparam: 4
+size of tau: 1
+size of stgdata: 0
+size of stgparam: 0
+size of avparam: 0
+size of wmDistances: 0
+size of fc_u: 4
+size of fc_q: 4
+size of fc_w: 0
+size of dtcoef_u: 4
+size of dtcoef_q: 4
+size of dtcoef_w: 0
+size of int: 57
+size of float: 46
+--------------- Residual Struct Information ----------------
+size of ipiv: 65100
+size of Rq: 260400
+size of Ru: 65100
+size of Rh: 54160
+size of Mass: 0
+size of Minv: 0
+size of Mass2: 0
+size of Minv2: 0
+size of C: 0
+size of E: 0
+size of D: 0
+size of B: 0
+size of F: 5208000
+size of G: 0
+size of K: 35154000
+size of H: 4166400
+size of Ri: 0
+size of Gi: 0
+size of Ki: 0
+size of Hi: 0
+size of int: 65100
+size of float: 44908060
+--------------- Temp Struct Information ----------------
+size of tempn: 6510000
+size of tempg: 2734200
+size of buffrecv: 0
+size of buffsend: 0
+size of bufffacerecv: 0
+size of bufffacesend: 0
+size of int: 0
+size of float: 9244200
+--------------- Solution Struct Information ----------------
+size of xdg: 32550
+size of xcg: 21250
+size of udg: 195300
+size of sdg: 0
+size of odg: 32550
+size of wdg: 0
+size of uh: 27080
+size of uext: 0
+size of xdgint: 0
+size of elemg: 113925
+size of faceg: 33850
+size of elemfaceg: 65100
+size of sdgg: 0
+size of odgg: 32550
+size of og1: 13540
+size of og2: 13540
+size of udgavg: 195301
+size of wsrc: 0
+size of wdual: 0
+size of int: 0
+size of float: 776536
+--------------- Mesh Struct Information ----------------
+size of facecon: 13540
+size of e2f: 0
+size of f2e: 5416
+size of f2f: 0
+size of f2l: 0
+size of elemcon: 13020
+size of perm: 20
+size of bf: 2604
+size of boufaces: 104
+size of intfaces: 0
+size of eblks: 3
+size of fblks: 12
+size of nbsd: 0
+size of elemsend: 0
+size of elemrecv: 0
+size of elemsendpts: 0
+size of elemrecvpts: 0
+size of elempart: 651
+size of elempartpts: 1
+size of cgelcon: 16275
+size of rowent2elem: 10626
+size of cgent2dgent: 16275
+size of colent2elem: 16275
+size of rowe2f1: 6067
+size of cole2f1: 6770
+size of ent2ind1: 16275
+size of rowe2f2: 5651
+size of cole2f2: 6250
+size of ent2ind2: 16275
+size of findxdg1: 13540
+size of findxdgp: 5
+size of findudg1: 81240
+size of findudg2: 81240
+size of findudgp: 5
+size of eindudg1: 195300
+size of eindudgp: 2
+size of elemsendind: 0
+size of elemrecvind: 0
+size of elemsendodg: 0
+size of elemrecvodg: 0
+size of elemsendudg: 0
+size of elemrecvudg: 0
+size of faceperm: 0
+size of nbintf: 0
+size of facesend: 0
+size of facerecv: 0
+size of facesendpts: 0
+size of facerecvpts: 0
+size of int: 523442
+size of float: 0
+--------------- Master Struct Information ----------------
+size of shapegwdotshapeg: 46875
+size of shapfgwdotshapfg: 250
+size of shapegt: 1875
+size of shapegw: 1875
+size of shapfgt: 50
+size of shapfgw: 50
+size of shapent: 1875
+size of shapen: 1875
+size of shapfnt: 50
+size of shapfn: 50
+size of xpe: 50
+size of gpe: 50
+size of gwe: 25
+size of xpf: 5
+size of gpf: 5
+size of gwf: 5
+size of shap1dgt: 50
+size of shap1dgw: 50
+size of shap1dnt: 50
+size of shap1dnl: 50
+size of xp1d: 5
+size of gp1d: 5
+size of gw1d: 5
+size of int: 0
+size of float: 51180
+finish CDiscretization constructor... 
+--------------- Precond Struct Information ----------------
+size of ipiv: 1
+size of W: 0
+size of U: 0
+size of int: 1
+size of float: 0
+finish CPreconditioner constructor... 
+--------------- Sys Struct Information ----------------
+size of ipiv: 10201
+size of x: 27080
+size of u: 27080
+size of r: 27080
+size of b: 27080
+size of v: 0
+size of q: 27080
+size of p: 27080
+size of randvect: 27080
+size of tempmem: 10706
+size of lam: 920
+size of PTCmatrix: 0
+size of utmp: 0
+size of wtmp: 0
+size of udgprev: 0
+size of udgprev1: 0
+size of udgprev2: 0
+size of udgprev3: 0
+size of wprev: 0
+size of wprev1: 0
+size of wprev2: 0
+size of wprev3: 0
+size of int: 10201
+size of float: 200266
+finish CSolver constructor... 
+finish CVisualization constructor... 
+Newton Iteration: 0,  Solution Norm: 523.554
+Newton Iteration: 0,  Residual Norm: 2.08434
+hdgAssembleLinearSystem time: 10974.7 miliseconds
+Old RHS Norm: 0.180678,  New RHS Norm: 0.180678
+
+==============================================
+[Rank 0] ERROR: stop for debugging...
+  Location: /home/quinnchr/dv/Exasim/backend/Main/../Solution/nonlinearsolver.cpp:250
+==============================================
+
+--------------------------------------------------------------------------
+MPI_ABORT was invoked on rank 0 in communicator MPI_COMM_WORLD
+with errorcode 1.
+
+NOTE: invoking MPI_ABORT causes Open MPI to kill all MPI processes.
+You may or may not see output from other processes, depending on
+exactly when Open MPI kills them.
+--------------------------------------------------------------------------

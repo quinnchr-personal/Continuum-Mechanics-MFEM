@@ -1,0 +1,107 @@
+Using 1 processors with 0 rank and 0 shmrank to solve the problem on CPU platform...
+Running Exasim with this text file (pdeapp.txt) ... 
+
+Finished parseInputFile.
+exasimpath = /home/quinnchr/dv/Exasim
+datapath is not set in pdeapp.txt.
+We set datapath to the working directory.
+datapath = /tmp/claude-1000/-home-quinnchr-dv-Continuum-Mechanics-MFEM-myapps-hdg-navierstokes/850866de-9668-4f05-9268-19838a9ffd22/scratchpad/exasim-floored
+Finished initializePDE.
+builtinmodelID = 0
+Reading xdg file.
+Reading udg file.
+Reading vdg file.
+Finished reading mesh file.
+Finished initializing Master.
+Finished writing pde to /tmp/claude-1000/-home-quinnchr-dv-Continuum-Mechanics-MFEM-myapps-hdg-navierstokes/850866de-9668-4f05-9268-19838a9ffd22/scratchpad/exasim-floored/datain/app.bin
+Finished writing master to /tmp/claude-1000/-home-quinnchr-dv-Continuum-Mechanics-MFEM-myapps-hdg-navierstokes/850866de-9668-4f05-9268-19838a9ffd22/scratchpad/exasim-floored/datain/master.bin
+Finished setboundaryfaces.
+Finished building Mesh.
+Finished writing initial solution to /tmp/claude-1000/-home-quinnchr-dv-Continuum-Mechanics-MFEM-myapps-hdg-navierstokes/850866de-9668-4f05-9268-19838a9ffd22/scratchpad/exasim-floored/datain/sol.bin
+Finished writing mesh to /tmp/claude-1000/-home-quinnchr-dv-Continuum-Mechanics-MFEM-myapps-hdg-navierstokes/850866de-9668-4f05-9268-19838a9ffd22/scratchpad/exasim-floored/datain/mesh.bin
+Finished writeBinaryFiles.
+CPreprocessing destructor is called successfully.
+exasimpath = /home/quinnchr/dv/Exasim
+Model 0: provider = KokkosKernel, builtinmodelID = 0
+Reading data from binary files 
+Reading app from binary files 
+Reading master from binary files 
+Reading initial solution from binary files 
+Reading xdg from binary files 
+Reading (u,q) from binary files 
+Reading vdg from binary files 
+Reading mesh from binary files 
+Building element and face connectivities 
+Finish reading data from binary files 
+Set res struct... 
+Set temp struct... 
+Run IsMeshCurved... 
+IsMeshCurved = 1 
+Set common struct... 
+Finish setting common struct... 
+Precompute index arrays... 
+finish cpuInit... 
+start compGeometry... 
+start ElemGeom... 
+Finish ElemGeom... 
+finish compGeometry... 
+Init HDG Discretization ... 
+Maximum number of boundary conditions = 3 
+Memory allocation ...
+finish CDiscretization constructor... 
+finish CPreconditioner constructor... 
+finish CSolver constructor... 
+finish CVisualization constructor... 
+Newton Iteration: 0,  Solution Norm: 554.067
+Newton Iteration: 0,  Residual Norm: 1.14109
+hdgAssembleLinearSystem time: 1478.16 miliseconds
+Old RHS Norm: 0.156664,  New RHS Norm: 0.156664
+Matrix-vector product time: 254.159 miliseconds
+Applying preconditioner time: 5579.69 miliseconds
+Orthgonalization time: 185.466 miliseconds
+Solution update time: 0.057564 miliseconds
+GMRES time: 6153.25 miliseconds
+GMRES(100) converges to the tolerance 1e-08 within  88 iterations and 0 RB dimensions
+Newton Iteration: 1, Alpha: 1, Original Norm: 1.14109,  Updated Norm: 0.0430268
+hdgAssembleLinearSystem time: 1275.29 miliseconds
+Old RHS Norm: 0.0678755,  New RHS Norm: 0.0678755
+Matrix-vector product time: 292.556 miliseconds
+Applying preconditioner time: 6540.84 miliseconds
+Orthgonalization time: 149.795 miliseconds
+Solution update time: 0.071769 miliseconds
+Warning: GMRES(100) does not converge to the tolerance 1e-08 within  100 iterations
+Warning: The current relative error is 8.93859e-08 
+GMRES time: 7208.83 miliseconds
+GMRES(100) converges to the tolerance 1e-08 within  100 iterations and 0 RB dimensions
+Newton Iteration: 2, Alpha: 1, Original Norm: 0.0430268,  Updated Norm: 0.0252778
+hdgAssembleLinearSystem time: 1296.22 miliseconds
+Old RHS Norm: 0.0227014,  New RHS Norm: 0.0227014
+Matrix-vector product time: 298.995 miliseconds
+Applying preconditioner time: 6640.54 miliseconds
+Orthgonalization time: 137.618 miliseconds
+Solution update time: 0.088682 miliseconds
+Warning: GMRES(100) does not converge to the tolerance 1e-08 within  100 iterations
+Warning: The current relative error is 1.14426e-08 
+GMRES time: 7282.2 miliseconds
+GMRES(100) converges to the tolerance 1e-08 within  100 iterations and 0 RB dimensions
+Newton Iteration: 3, Alpha: 1, Original Norm: 0.0252778,  Updated Norm: 0.000484583
+hdgAssembleLinearSystem time: 1265.98 miliseconds
+Old RHS Norm: 0.000602229,  New RHS Norm: 0.000602229
+Matrix-vector product time: 257.691 miliseconds
+Applying preconditioner time: 5759.06 miliseconds
+Orthgonalization time: 314.516 miliseconds
+Solution update time: 0.054881 miliseconds
+GMRES time: 6472.22 miliseconds
+GMRES(100) converges to the tolerance 1e-08 within  84 iterations and 0 RB dimensions
+Newton Iteration: 4, Alpha: 1, Original Norm: 0.000484583,  Updated Norm: 2.95139e-07
+CVisualization is freed successfully.
+CSolver destructor: sys memory is freed successfully.
+CPreconditioner destructor: precond memory is freed successfully.
+CDiscretization destructor: app memory is freed successfully.
+CDiscretization destructor: master memory is freed successfully.
+CDiscretization destructor: mesh memory is freeed successfully.
+CDiscretization destructor: sol memory is freed successfully.
+CDiscretization destructor: tmp memory is freed successfully.
+CDiscretization destructor: res memory is freed successfully.
+CDiscretization destructor: wallmodel memory is freed successfully.
+CDiscretization destructor: common memory is freed successfully.

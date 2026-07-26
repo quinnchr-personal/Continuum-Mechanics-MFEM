@@ -277,6 +277,19 @@ double HDGNavierStokesOperator::MaximumAbsAV() const
    return maximum;
 }
 
+void HDGNavierStokesOperator::SetArtificialViscosity(
+   ScalarFunction artificial_viscosity)
+{
+   if (!artificial_viscosity)
+   {
+      throw std::runtime_error(
+         "cannot retabulate an empty artificial-viscosity function");
+   }
+   vdg_ = nullptr;
+   artificial_viscosity_ = std::move(artificial_viscosity);
+   RetabulateArtificialViscosity();
+}
+
 void HDGNavierStokesOperator::ValidateInputs() const
 {
    if (mesh_.Dimension() != 2 || mesh_.SpaceDimension() != 2 ||
@@ -533,6 +546,28 @@ void HDGNavierStokesOperator::BuildGeometryAndAVTables()
             }
          }
       }
+   }
+}
+
+void HDGNavierStokesOperator::RetabulateArtificialViscosity()
+{
+   if (vdg_ || !artificial_viscosity_)
+   {
+      throw std::runtime_error(
+         "analytic AV retabulation requires an analytic function");
+   }
+   mfem::Vector physical(2);
+   for (std::size_t index = 0; index < volume_av_.size(); ++index)
+   {
+      physical[0] = volume_coordinates_[2 * index];
+      physical[1] = volume_coordinates_[2 * index + 1];
+      volume_av_[index] = artificial_viscosity_(physical);
+   }
+   for (std::size_t index = 0; index < face_av_.size(); ++index)
+   {
+      physical[0] = face_coordinates_[2 * index];
+      physical[1] = face_coordinates_[2 * index + 1];
+      face_av_[index] = artificial_viscosity_(physical);
    }
 }
 

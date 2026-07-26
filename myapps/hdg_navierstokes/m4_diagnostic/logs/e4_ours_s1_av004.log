@@ -1,0 +1,6 @@
+HDG configuration: case=hdg_mach8_scratch_e4_stage2_step mesh_source=exasim mesh=/tmp/claude-1000/-home-quinnchr-dv-Continuum-Mechanics-MFEM-myapps-hdg-navierstokes/850866de-9668-4f05-9268-19838a9ffd22/scratchpad/exasim-continuation M=8.0299999999999994 Re=183500 av_mode=tanh av=0.040000000000000001*tanh(30*(r-1)) init_mode=udg_file tau=1 NewtonTol=9.9999999999999995e-07 max_iters=30 PTC=off initial_dt=0.001 linear=petsc_direct continuation=off
+Newton   0 residual=2.7270887815696123 min_rho=1.000000002566763 min_p=0.011076000036037568 y_sym=5.6801719914428528e-08
+Newton   1 residual=0.014996572919482188 min_rho=0.96438926981959328 min_p=-0.0089912257614254351 y_sym=symmetry maximum detail: component=0 x=-0.00701901 y=-1.00017 value=3.31621 reflected_value=3.31562
+0.00017619773269765684
+symmetry maximum detail: component=0 x=-0.00701901 y=-1.00017 value=3.31621 reflected_value=3.31562
+M2(e) result: converged=no iterations=1 residual=0.014996572919482188 min_rho=0.96438926981959328 min_p=-0.0089912257614254351 y_symmetry=0.00017619773269765684 damped_steps=0 min_alpha=1 assembly_seconds=2.1463658990000001 linear_seconds=0.87872124100000004 total_seconds=3.040903213

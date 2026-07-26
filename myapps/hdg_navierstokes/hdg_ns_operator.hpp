@@ -73,6 +73,7 @@ public:
 
    double MinimumDetJ() const;
    double MaximumAbsAV() const;
+   void SetArtificialViscosity(ScalarFunction artificial_viscosity);
 
    HDGState NewState() const;
    void SetConstantState(const double state[4], HDGState &solution) const;
@@ -190,6 +191,7 @@ private:
    void ValidateInputs() const;
    void BuildReferenceTables();
    void BuildGeometryAndAVTables();
+   void RetabulateArtificialViscosity();
    void BuildGradientElimination();
    void BuildBoundaryFaceMap();
 

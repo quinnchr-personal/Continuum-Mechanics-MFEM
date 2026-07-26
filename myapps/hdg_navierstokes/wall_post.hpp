@@ -31,6 +31,7 @@ struct M3Comparison
    double cp_max_relative_difference = 0.0;
    double heat_flux_max_relative_difference = 0.0;
    double shock_standoff_difference = 0.0;
+   double wall_coordinate_maximum_difference = 0.0;
 };
 
 std::vector<WallSample> ComputeWallSamples(
@@ -39,12 +40,14 @@ std::vector<WallSample> ComputeWallSamples(
 
 void WriteWallCSV(const std::string &path,
                   const std::vector<WallSample> &samples);
+std::vector<WallSample> ReadWallCSV(const std::string &path);
 
 M3Comparison CompareWallAndShock(
    const std::vector<WallSample> &computed,
    const std::vector<WallSample> &reference,
    const ShockStandoff &computed_shock,
-   const ShockStandoff &reference_shock);
+   const ShockStandoff &reference_shock,
+   bool require_matching_coordinates = true);
 
 ShockStandoff ComputeShockStandoff(
    mfem::Mesh &mesh, const HDGNavierStokesOperator &op,

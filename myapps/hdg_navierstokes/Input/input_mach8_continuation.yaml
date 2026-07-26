@@ -1,0 +1,59 @@
+case_name: hdg_mach8_continuation
+
+mesh:
+  source: exasim
+  exasim_dir: /home/quinnchr/dv/Exasim-apps/runs/nsmach8-baseline
+
+bc:
+  boundaryconditions: [3, 2, 1]
+
+physics:
+  mu: [1.4, 183500.0, 0.71, 8.03, 1.0, 1.0, 0.0,
+       0.52769, 0.027694, 124.49, 294.44]
+  tau: 1.0
+  # pdemodel_ns.m smoothed rho/p floors — the model the original Exasim
+  # continuation ran; required to survive the 0.06 -> 0.04 stage.
+  regularization: floors
+
+av:
+  mode: tanh
+  lambda: 0.06
+  c: 30.0
+
+init:
+  mode: damped_freestream
+  c: 10.0
+
+newton:
+  max_iters: 30
+  tol: 1.0e-6
+
+ptc:
+  enabled: false
+  initial_dt: 0.5
+
+linear:
+  type: petsc_direct
+
+continuation:
+  enabled: true
+  history_csv: continuation_history.csv
+  summary_csv: continuation_summary.csv
+  # The prescribed pdeapp_ns.m schedule verbatim: four stages, no PTC.
+  stages:
+    - {lambda: 0.06, c: 30.0, ptc: {enabled: false, initial_dt: 0.5}}
+    - {lambda: 0.04, c: 30.0, ptc: {enabled: false, initial_dt: 0.5}}
+    - {lambda: 0.025, c: 30.0, ptc: {enabled: false, initial_dt: 0.5}}
+    - {lambda: 0.025, c: 5.0, ptc: {enabled: false, initial_dt: 0.5}}
+
+comparison:
+  reference_wall_csv: wall_data.csv
+  reference_shock_standoff: 0.002002002002001957
+  require_matching_coordinates: true
+  gate: true
+
+output:
+  path: ParaView/mach8_continuation
+  wall_csv: wall_data_continuation.csv
+  comparison_report: m4_comparison_report.md
+  paraview_every: 0

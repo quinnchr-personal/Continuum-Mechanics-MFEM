@@ -79,3 +79,63 @@
   relative differences were `7.918626348422956e-10` and
   `5.010155960985892e-10`; the 1,000-point stagnation-line shock locations
   selected the same sample in both states.
+
+## M4 findings (resumed diagnostic; details in M4_FAILURE_REPORT.md)
+
+- The exported model (run-dir `pdemodel.txt` = builtin model 7 = our
+  `ns_physics.hpp`) is **not** the model the original continuation ran.
+  `pdemodel_ns.m` regularizes the flux with smoothed floors
+  `lmax(x,a) = x*(atan(a*x)/pi + 1/2) - atan(a)/pi + 1/2`, `a=1e3`,
+  `rmin=1e-2`, `pmin=1e-3`, plus `dr`/`dp` gradient sensors; these were
+  stripped from the export. They are inactive to ~1e-9 at converged
+  states (all M3 gates blind to them) but required to survive the
+  `0.06 -> 0.04` stage transient, whose first Newton step drives the
+  stagnation-line shock foot to `p ~ -0.009` (Sutherland `sqrt(T^3)`
+  becomes NaN without floors). Exasim's own floor-free binary aborts on
+  that first step; the floored rebuild runs all 4 stages in 9/4/4/4
+  updates with no PTC and reproduces `udg.bin` to ~1e-5.
+- The run-dir text-mode app re-preprocesses from
+  `grid/xdg/udg/vdg.bin` each invocation (`gendatain=0`), so stage
+  continuation is driven by overwriting `udg.bin`/`vdg.bin`
+  (`m4_diagnostic/write_stage.py`) — no MATLAB needed. `writemeshsol=1`
+  is required for `mpiprocs=1` runs (else `datain/mesh.bin` is missing);
+  `debugmode=1` dumps the initial state and first Newton update then
+  stops.
+- Exasim's per-stage restart re-initializes `uhat` to the one-sided
+  trace and recomputes q; this alone produces O(1) initial residuals at
+  a stage's own converged state (2.98 at `(S1, av=0.06)`), and the side
+  convention differs between np1 Exasim and our driver (ours gives 3.89
+  at the same state; both re-converge in 2 full steps). Our M4 driver
+  instead carries the converged trace across stages — a semantic
+  difference from Exasim, but immaterial to the failure: both starts
+  produce the same first-step trial (`min p -0.00899` both codes).
+- Unblocking M4-as-specified means porting the `pdemodel_ns.m`
+  regularized flux + analytic Jacobians into `ns_physics.hpp`
+  (`m4_diagnostic/pdemodel_floored.txt` is the verified text2code
+  source). M3 parity is unaffected (floored stage-4 control matches the
+  floor-free control to 6 digits).
+
+## M4 resolution (done; facts needed by M5/DG)
+
+- `ns_physics.hpp` now has the floored flux + Jacobian transcribed from
+  `m4_diagnostic/my_model_floored.hpp`, behind `NSParams::regularized`
+  (YAML `physics.regularization: floors`, default off). Transcription
+  parity vs the generated model is exactly 0 over 2000 states including
+  negative-pressure ones; floored/unfloored agreement at admissible
+  states is `4.2e-7` (dominated by the sensor tail at p near 0.08, so a
+  1e-6 gate, not 1e-9).
+- The continuation loop re-initializes the trace at each stage start
+  (Exasim per-stage restart semantics); stage histories are then
+  directly comparable to Exasim runs.
+- M4 passes on the prescribed 4-stage schedule with no PTC:
+  9/4/4/4 updates (converted and analytic mesh), final residual
+  `3.2999400258199408e-07`, wall Fint/Cp vs M3 `3.4e-6`/`2.9e-6`,
+  shock-standoff sample identical. Full `make test` (M1-M4) green;
+  M3 recorded values reproduced bit-for-bit with floors off.
+- FD-testing the floored Jacobian needs a ~1e-5 gate: the smoothed
+  hinge carries `alpha^2` curvature, so central differences at h=1e-6
+  bottom out near `5e-7`.
+- Makefile per-object dependency lines must list `ns_physics.hpp` for
+  every TU that includes it — a stale-object `NSParams` ABI mismatch
+  crashes with `free(): invalid pointer` (hit once during this work;
+  deps are fixed now).

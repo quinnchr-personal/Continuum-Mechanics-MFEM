@@ -9,6 +9,7 @@
 #include <functional>
 #include <iostream>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 namespace hdg_ns
@@ -38,6 +39,7 @@ struct NewtonReport
    double assembly_seconds = 0.0;
    double linear_solve_seconds = 0.0;
    double total_seconds = 0.0;
+   std::string failure;
    std::vector<NewtonIteration> history;
 };
 
@@ -124,8 +126,22 @@ inline NewtonReport DampedNewtonSolve(
 
       mfem::Vector trace_increment;
       const auto linear_start = std::chrono::steady_clock::now();
-      SolveCondensedPetscDirect(
-         op.CondensedMatrix(), op.CondensedRHS(), trace_increment);
+      try
+      {
+         SolveCondensedPetscDirect(
+            op.CondensedMatrix(), op.CondensedRHS(), trace_increment);
+      }
+      catch (const std::exception &error)
+      {
+         report.linear_solve_seconds +=
+            std::chrono::duration<double>(
+               std::chrono::steady_clock::now() - linear_start).count();
+         report.failure = error.what();
+         report.total_seconds =
+            std::chrono::duration<double>(
+               std::chrono::steady_clock::now() - solve_start).count();
+         return report;
+      }
       report.linear_solve_seconds +=
          std::chrono::duration<double>(
             std::chrono::steady_clock::now() - linear_start).count();
@@ -150,13 +166,28 @@ inline NewtonReport DampedNewtonSolve(
 
          if (!std::isfinite(new_residual))
          {
-            throw std::runtime_error(
-               "Newton trial residual is NaN or infinite");
+            report.residual = new_residual;
+            report.iterations = iteration + 1;
+            report.history.push_back(
+               {iteration + 1, new_residual, alpha, pseudo_time_step});
+            report.failure = "Newton trial residual is NaN or infinite";
+            report.total_seconds =
+               std::chrono::duration<double>(
+                  std::chrono::steady_clock::now() - solve_start).count();
+            return report;
          }
          if (new_residual > old_residual && new_residual > 1.0e6)
          {
-            throw std::runtime_error(
-               "Newton trial residual increased above 1e6");
+            report.residual = new_residual;
+            report.iterations = iteration + 1;
+            report.history.push_back(
+               {iteration + 1, new_residual, alpha, pseudo_time_step});
+            report.failure =
+               "Newton trial residual increased above 1e6";
+            report.total_seconds =
+               std::chrono::duration<double>(
+                  std::chrono::steady_clock::now() - solve_start).count();
+            return report;
          }
          // Exact Exasim semantics: test alpha before halving. This accepts
          // alpha=0.0625 even when the residual still increases.

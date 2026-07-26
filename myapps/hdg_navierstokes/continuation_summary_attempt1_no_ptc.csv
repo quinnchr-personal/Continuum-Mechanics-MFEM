@@ -1,0 +1,3 @@
+stage,lambda,c,ptc_enabled,converged,iterations,residual,damped_steps,min_alpha,assembly_seconds,linear_seconds,total_seconds,failure
+1,0.06,30,0,1,9,2.520326607699143e-09,5,0.125,10.577626433,2.582460767,13.291791348,
+2,0.04,30,0,0,1,0.01130326815554138,0,1,2.037088102,0.7658636449999999,2.818350383,PETSc direct trace solve did not converge: iterations=0 residual=0.000000
