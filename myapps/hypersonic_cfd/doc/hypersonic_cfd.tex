@@ -1,0 +1,404 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1.1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage[hidelinks]{hyperref}
+\usepackage{xcolor}
+\usepackage{listings}
+
+\lstset{basicstyle=\ttfamily\small, columns=fullflexible,
+        keepspaces=true, frame=single, framerule=0.2pt,
+        backgroundcolor=\color[gray]{0.97}}
+
+\newcommand{\code}[1]{\texttt{#1}}
+\newcommand{\uhat}{\hat{u}}
+
+\title{\code{hycfd}: a general-purpose HDG hypersonic CFD driver\\
+       \large Design, conventions, solver machinery, and validation}
+\author{\code{myapps/hypersonic\_cfd}}
+\date{July 2026}
+
+\begin{document}
+\maketitle
+
+\section{Overview and scope}
+
+\code{hycfd} is an implicit hybridizable discontinuous Galerkin (HDG)
+solver for the steady two-dimensional compressible Navier--Stokes
+equations, aimed at hypersonic perfect-gas flows and structured so that
+a two-temperature thermochemical-nonequilibrium model can be added
+behind the same interfaces. It was seeded from the verified
+\code{myapps/hdg\_navierstokes} Exasim replica, which remains
+\emph{frozen} as this code's permanent regression oracle: every test
+run re-verifies that \code{hycfd} reproduces the frozen app's Mach~8.03
+half-cylinder wall data.
+
+Capabilities: runtime polynomial order $p \ge 1$; triangle, quadrilateral,
+and mixed meshes; MFEM/Gmsh mesh-file input (curved elements supported);
+a boundary-condition catalog of seven types; dilatation-sensor shock
+capturing refreshed every Newton iteration; generic staged continuation
+(Mach/Reynolds homotopy and artificial-viscosity handovers through one
+mechanism); and MPI parallelism with a direct condensed-trace solve.
+Out of scope: three dimensions (assembly is dimension-parameterized but
+untested in 3D), time accuracy (pseudo-transient continuation only),
+and ablation/ALE coupling.
+
+\section{Governing equations and code units}
+
+The solver advances the conservative state $u = (\rho, \rho u_x,
+\rho u_y, \rho E)$ with the first-order system
+\begin{align}
+  q - \nabla u &= 0, \\
+  \nabla \cdot \bigl(F^{\mathrm{inv}}(u) - F^{\mathrm{vis}}(u, q)
+      - \varepsilon\, q\bigr) &= 0,
+\end{align}
+where $\varepsilon(x)$ is the artificial viscosity (AV), applied as a
+Laplacian on \emph{all} components. Note the convention $q = +\nabla u$
+(Exasim uses $q = -\nabla u$; the sign map is confined to the generated
+kernels inside \code{physics/perfect\_gas.hpp}).
+
+Nondimensionalization (all derived at full precision from the typed
+\code{PerfectGasParams}, never from rounded deck literals):
+\begin{itemize}
+  \item $\rho_\infty = 1$, $|u_\infty| = 1$; freestream pressure
+        $p_\infty = 1/(\gamma M^2)$.
+  \item Temperature is carried in internal-energy units:
+        $T_{\mathrm{code}} = e = p /((\gamma-1)\rho)$, with freestream
+        value $T_\infty^{\mathrm{nd}} = 1/(\gamma(\gamma-1)M^2)$
+        (\code{TinfND()}). The physical temperature enters only through
+        Sutherland's law via $T/T_\infty = \gamma M^2 p/\rho$ and the
+        dimensional reference \code{T\_inf\_K}.
+  \item The code viscosity includes the Reynolds division:
+        $\mu_{\mathrm{code}} = \mu_r(T)/\mathrm{Re}$ with the Sutherland
+        ratio $\mu_r(T) = (T/T_\infty)^{3/2}
+        (T_\infty + S)/(T + S)$, $S = 110.4\,$K.
+  \item Conductive heat flux $ = f_c \nabla T_{\mathrm{code}}$ with
+        $f_c = \gamma \mu_{\mathrm{code}} / \mathrm{Pr}$.
+\end{itemize}
+Useful wall relations in these units (derived and verified against the
+flat-plate validation case, Section~\ref{sec:validation}): for a
+boundary layer with freestream edge conditions,
+\begin{equation}
+  c_f \sqrt{\mathrm{Re}_x} = \sqrt{2}\, C_w f''(0), \qquad
+  q_w \sqrt{\mathrm{Re}_x} =
+     \frac{\gamma\, T_\infty^{\mathrm{nd}}\, C_w\, \theta'(0)}
+          {\mathrm{Pr}\,\sqrt{2}},
+\end{equation}
+where $C_w = \rho_w \mu_w / (\rho_e \mu_e) = \mu_r(\theta_w)/\theta_w$
+and $f''(0), \theta'(0)$ are the Lees--Dorodnitsyn similarity slopes.
+
+\section{HDG discretization}
+
+Volume unknowns $(u, q)$ live in per-element $L^2$ spaces of order $p$;
+the trace unknown $\uhat$ lives on mesh faces
+(\code{DG\_Interface\_FECollection}). The numerical flux is
+\begin{equation}
+  \widehat F \cdot n = F(\uhat, q)\cdot n + \tau\,(u - \uhat),
+\end{equation}
+with a constant stabilization $\tau$ (deck key \code{physics.tau};
+$\tau = 1$ is the correct scale here because $|u|+c \le 1 + 1/M < 2$ in
+code units at any Mach number). Element assembly proceeds as: exact
+per-element gradient elimination $q = C u - E \uhat$, elimination of $u$
+by a dense block solve, and static condensation onto $\uhat$. Mixed
+meshes are handled by per-geometry reference tables and per-element
+state offsets; quadrature order is $2p + {}$\code{quadrature\_increment}
+(default increment 1).
+
+In parallel, elements are owned uniquely; the condensed local
+\code{SparseMatrix} is stitched across ranks by
+$P^T A P$ (\code{MakeSquareBlockDiag} + \code{ConvertFrom} +
+\code{MakePtAP}), which sums shared-face contributions. The condensed
+system is solved with MUMPS through PETSc
+(\code{input/petsc.opts}). Exasim-ordered reference data (\code{udg.bin},
+\code{vdg.bin}) is mapped through explicit \code{serial\_element\_ids}
+because \code{ParMesh} renumbers elements.
+
+\section{Physics interface and boundary conditions}
+
+All physics flows through the virtual \code{PhysicsModel} interface
+(runtime component count, flux with analytic Jacobians or an FD
+fallback, admissibility, wave speeds, named outputs) with
+\code{PerfectGasModel} as the sole current implementation. Boundary
+conditions are trace-row residuals $f_b(\,u, q, \uhat, n, x\,) = 0$
+registered per model:
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+\code{bc:} type & Behavior \\
+\midrule
+\code{freestream}            & full-state Dirichlet at $u_\infty$ \\
+\code{supersonic\_outflow}   & full extrapolation $u - \uhat$ \\
+\code{isothermal\_wall}      & no slip; energy pinned to
+                               $T_{\mathrm{wall}}$ (\code{Twall\_K}) \\
+\code{adiabatic\_wall}       & no slip; zero \emph{numerical} energy
+                               flux $F_E\cdot n + \tau(u_E-\uhat_E)=0$ \\
+\code{slip\_wall}            & $n\cdot\uhat_m = 0$, tangential
+                               extrapolation, adiabatic energy row \\
+\code{characteristic\_farfield} & flux splitting
+                               $A_n^+(u-\uhat) + A_n^-(u_\infty-\uhat)$,
+                               frozen at freestream \\
+\code{pressure\_outlet}      & mass/momentum extrapolated; energy row
+                               targets $E(p_{\mathrm{out}})$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Two hard-won facts. First, the adiabatic condition must be imposed on
+the \emph{numerical} flux: constraining only the conductive flux leaves
+$\uhat_E$ without a well-posed trace equation. Second, at high Reynolds
+number the adiabatic (and slip) wall energy level is a near-neutral
+mode with only an $O(1/\mathrm{Re})$ conduction restoring force; cold
+starts against such walls are near-singular for steady Newton (see
+Section~\ref{sec:limitations}).
+
+\section{Nonlinear and linear solvers}
+
+\code{DampedNewtonSolve} (\code{solvers/newton.hpp}) implements damped
+Newton with two acceptance regimes:
+\begin{itemize}
+  \item \textbf{Pure Newton}: Armijo backtracking,
+        $|R(x+\alpha d)| \le (1 - c_1 \alpha)|R(x)|$, halving from
+        $\alpha = 1$ to \code{alpha\_min}; failure aborts the solve.
+  \item \textbf{PTC} (pseudo-transient continuation): backward-Euler
+        volume mass term $M/\Delta\tau$, switched-evolution-relaxation
+        step growth, and \emph{plain-decrease} acceptance --- the
+        exactly-solved damped step reduces the residual by only
+        $O(\Delta\tau)$, so the Armijo test would reject
+        systematically. Rejection at every $\alpha$ shrinks
+        $\Delta\tau$. PTC turns off below
+        \code{newton.ptc\_off\_residual}.
+\end{itemize}
+Optional guard \code{require\_admissible}: line-search trials with
+non-positive minimum density or pressure are rejected exactly like
+non-finite residuals. With the smoothed $\rho/p$ floors active
+(\code{regularization: floors}), a globally decreasing step can
+otherwise park the state in floor-land, where the Jacobian is
+degenerate and Newton stalls.
+
+The \code{NewtonPrepare} hook is called at the top of every iteration,
+before assembly, with the previous iteration's residual; whatever it
+installs stays frozen through that iteration's Jacobian and line
+search. It exists to support adaptive frozen-per-iteration artificial
+viscosity (next section) but is generic.
+
+\section{Shock capturing}
+\label{sec:av}
+
+The dilatation sensor (\code{discretization/av\_sensor}) builds an
+elementwise amplitude
+\begin{equation}
+  \varepsilon_K = \lambda\, h_K \max_{\mathrm{qp}}
+     \Bigl[ (|u| + c)\; s\Bigl(
+        \frac{-\nabla\!\cdot\!u\; h_K}{(p+1)\,\kappa\, c}\Bigr) \Bigr],
+\end{equation}
+with a compact-support smoothstep ramp $s$ (identically zero below
+$0.2$, one above $0.8$) --- resolved smooth flow produces \emph{exactly}
+zero AV --- followed by vertex-max smoothing onto a continuous $H^1$
+order-1 field (parallel via \code{GroupCommunicator} max reduction).
+
+\code{SensorAVController} realizes \emph{adaptive frozen-per-iteration
+AV}: at the top of every Newton iteration the sensor is re-evaluated
+from the current iterate, under-relaxed by an exponential moving
+average (\code{av.relax}), floored by a bootstrap profile that decays
+linearly over \code{av.bootstrap.decay\_iters} iterations (cold starts
+need AV where the shock \emph{will} form), and installed as frozen
+tabulated data. Once the residual drops below
+\code{av.freeze\_residual} (after the bootstrap window) the field
+freezes permanently and Newton closes quadratically. The per-solve
+lagged fixed point this replaced limit-cycled: the shock drifted
+between solves faster than outer under-relaxation could track. At
+Mach~8 the sensor--shock fixed point hovers chaotically around
+$10^{-3}$ without the freeze; with it, the campaign closes in one
+iteration from the freeze point. Setting
+\code{freeze\_residual} $=\infty$ gives install-once frozen-sensor
+semantics (evaluate once from the initial state, never refresh).
+
+Two interaction rules learned the hard way: frozen AV must never
+overlap a damped-initialization layer (it wrecks the first Newton
+directions), and switching AV profiles between warm-started stages is
+itself a shock to the solve --- prefer install-once sensors or
+same-profile stages.
+
+\section{Continuation}
+
+\code{continuation.stages} is a list of YAML \emph{override maps}
+applied on top of the base deck (not cumulatively). Allowed keys:
+\code{physics}, \code{av}, \code{newton}, \code{ptc}. Maps merge
+recursively, except that a map whose \code{mode} differs replaces the
+block wholesale (so stale sibling keys cannot leak across AV modes).
+The physics model, operator, and output writer are rebuilt per stage;
+the state carries over with the trace re-initialized from the interior.
+Mach/Reynolds homotopy, AV ramp-downs, and sensor-to-tanh handovers are
+all expressed through this one mechanism. The flagship campaign
+(\code{input/mach8\_sensor.yaml}) runs a sensor stage from a damped
+freestream followed by three tanh ramp-down stages onto the frozen
+reference AV profile, and reproduces the frozen app's wall data to
+$1.2\times10^{-5}$ (pressure coefficient) and $2.4\times10^{-5}$ (heat
+flux).
+
+\section{Input deck reference}
+
+\begin{center}
+\begin{longtable}{p{0.34\textwidth}p{0.58\textwidth}}
+\toprule
+Key & Meaning \\
+\midrule
+\code{case\_name} & run label for output collections \\
+\midrule
+\code{mesh.source} & \code{exasim} $|$ \code{analytic} $|$ \code{file} \\
+\code{mesh.exasim\_dir} & Exasim run directory (regression only) \\
+\code{mesh.file}, \code{mesh.curved\_order} & MFEM/Gmsh mesh input \\
+\code{mesh.nr}, \code{mesh.nc}, \code{mesh.order} & analytic
+   half-cylinder annulus \\
+\midrule
+\code{discretization.order} & polynomial order $p$ (default 4) \\
+\code{discretization.quadrature\_increment} & rule order $2p+{}$inc \\
+\midrule
+\code{bc:} & list of \code{\{attrs: [..], type, params\}} entries;
+   every boundary attribute must be covered exactly once \\
+\midrule
+\code{physics.model} & \code{perfect\_gas} \\
+\code{physics.gamma, reynolds, prandtl, mach} & nondimensional group \\
+\code{physics.T\_inf\_K, Twall\_K} & Sutherland reference and wall
+   temperature [K] \\
+\code{physics.tau} & HDG stabilization \\
+\code{physics.regularization} & \code{floors} enables the smoothed
+   $\rho/p$ floors (recommended for AV transients) \\
+\midrule
+\code{av.mode} & \code{tanh} $|$ \code{sensor} $|$ \code{file} \\
+\code{av.lambda}, \code{av.c} & tanh profile
+   $\lambda \tanh(c\,(r-1))$ \\
+\code{av.lambda}, \code{av.kappa} & sensor amplitude and ramp scale \\
+\code{av.relax} & EMA weight on the fresh sensor field, $(0,1]$ \\
+\code{av.freeze\_residual} & permanent sensor freeze threshold
+   (0 disables) \\
+\code{av.bootstrap.\{lambda,c,decay\_iters\}} & decaying tanh floor for
+   cold starts \\
+\midrule
+\code{init.mode} & \code{damped\_freestream} (with \code{c}) $|$
+   \code{udg\_file} \\
+\midrule
+\code{newton.max\_iters, tol} & iteration controls \\
+\code{newton.armijo\_c1, alpha\_min} & line-search controls \\
+\code{newton.ptc\_off\_residual} & PTC shutoff threshold \\
+\code{ptc.enabled, initial\_dt} & pseudo-transient continuation \\
+\midrule
+\code{continuation.enabled, stages, history\_csv, summary\_csv} &
+   staged overrides (Section above) \\
+\midrule
+\code{linear.type} & \code{petsc\_direct} (MUMPS) \\
+\midrule
+\code{output.path, paraview\_every} & ParaView output \\
+\code{output.wall\_csv, comparison\_report} & wall data extraction \\
+\code{comparison.*} & gated comparison against a reference wall CSV
+   and shock standoff \\
+\bottomrule
+\end{longtable}
+\end{center}
+
+\section{Verification and validation}
+\label{sec:validation}
+
+\code{make check} runs the fast gates: generated-kernel parity against
+the Exasim oracle headers ($10^{-16}$), FD Jacobian checks for every
+flux and boundary condition, manufactured-solution convergence at
+$p = 1..4$ on quadrilateral/triangle/mixed/curved meshes, the PTC
+limit fixture, and the sensor-AV unit gates. \code{make test} adds the
+$np = \{2,4\}$ parallel consistency fixtures, the frozen Mach~8
+regression (serial and $np=4$; wall $C_p$ within $8.8\times10^{-6}$,
+$q_w$ within $2.1\times10^{-5}$ of the frozen oracle), the M4.5
+sanity and sensor decks, the Mach~8 sensor campaign, and the validation
+suite below, serial and at $np=4$.
+
+\subsection*{G7 validation suite (\code{tests/test\_validation.cpp})}
+
+\begin{center}
+\begin{tabular}{llll}
+\toprule
+Quantity & Reference & Result & Gate \\
+\midrule
+Cylinder standoff, $M{=}3$ & Sinclair--Cui Eq.~(32) & $+4.5\%$ & $8\%$ \\
+Cylinder standoff, $M{=}5$ & Sinclair--Cui Eq.~(32) & $+6.6\%$ & $8\%$ \\
+Stagnation $C_p$, $M{=}3$  & Rayleigh pitot        & $-2.3\%$ & $4\%$ \\
+Stagnation $C_p$, $M{=}5$  & Rayleigh pitot        & $-3.1\%$ & $4\%$ \\
+Plate $c_f$, $M{=}4$, $\mathrm{Re}{=}10^6$ & compressible Blasius &
+   $0.75\%$ & $4\%$ \\
+Plate $q_w$, $M{=}4$, $\mathrm{Re}{=}10^6$ & compressible Blasius &
+   $0.024\%$ & $4\%$ \\
+Oblique shock $p_2/p_1$, $M{=}3$, $10^\circ$ &
+   $\theta$--$\beta$--$M$ & $0.02\%$ & $2\%$ \\
+Oblique shock angle & $\theta$--$\beta$--$M$ & $1.8^\circ$ &
+   $2.5^\circ$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Notes on the reference choices. The bow-shock standoff is gated against
+Sinclair \& Cui, \emph{Phys.\ Fluids} \textbf{29}, 026102 (2017),
+Eq.~(32), not Billig's correlation: Billig's cylinder fit underpredicts
+standoff for $M \lesssim 6$ (their Fig.~7, against Euler solutions and
+the Alperin/Kim/Kaattari experiments), which this suite reproduces ---
+the computed standoffs sit $4$--$7\%$ above Sinclair--Cui and
+$18\%$/$9\%$ above Billig. The standoff itself is measured by an
+outer-in density mid-jump crossing on the stagnation line
+(\code{StagnationDensityCrossing}); the older maximum-gradient
+diagnostic locks onto the near-wall thermal layer at high Mach and is
+retained only as a regression fingerprint. The stagnation $C_p$ runs
+$2$--$3\%$ below the inviscid pitot value because the AV-thickened
+shock produces slightly more entropy than a discontinuity.
+
+The flat plate solves a Reynolds continuation ladder
+$\{10^5, 3\times10^5, 10^6\}$ at $M = 4$ (cold isothermal wall,
+pure Newton, admissibility guard, damped start at the resolved
+boundary-layer scale, plate beginning at the inflow plane) and compares
+wall $c_f$ and $q_w$ pointwise against a compressible-Blasius shooting
+solution (Sutherland $C(\theta)$, RK4 with two-parameter Newton
+shooting and Mach continuation; the solver self-checks the
+incompressible limit $c_f\sqrt{\mathrm{Re}_x} = 0.664$). The oblique
+shock case prescribes the exact Rankine--Hugoniot piecewise weak
+solution on all boundaries through the Dirichlet override, seeds the
+interior with its projection, and verifies that the captured, sensor-
+regularized shock stays put and reproduces the downstream state.
+
+\section{Known limitations and practical guidance}
+\label{sec:limitations}
+
+\begin{itemize}
+  \item \textbf{Slip-wall cold starts.} A state with $O(1)$ residual
+        concentrated in slip-wall trace rows (e.g.\ an impulsive
+        freestream over a ramp) produces pathologically scaled Newton
+        corrections ($|\delta| \sim 10^2$ for a residual of $10^{-2}$,
+        descent only at $\alpha \sim 10^{-3}$), independent of the
+        initialization, Reynolds number, AV, and PTC. PTC cannot help:
+        it damps only the volume block, and the condensed system
+        degenerates toward the bare trace block as
+        $\Delta\tau \to 0$ (it can reach exact MUMPS singularity).
+        This is why the compression-corner validation is formulated as
+        a Dirichlet-driven oblique shock. Candidate fixes: trace-block
+        pseudo-time damping, or a rescaled slip-row formulation.
+  \item \textbf{PTC on strongly anisotropic meshes} inherits the same
+        $\Delta\tau \to 0$ degeneracy; the flat-plate case therefore
+        runs pure Newton with the admissibility guard.
+  \item \textbf{Leading-edge singularities} (sharp flat plate) develop
+        a spurious expansion spike that deepens with Reynolds number;
+        at $M = 6$ this defeats Newton beyond
+        $\mathrm{Re} \approx 10^5$ on the current meshes, and a frozen
+        AV patch cannot be switched on mid-ladder without shocking the
+        warm start. The validation case runs at $M = 4$, where the
+        spike stays benign through $\mathrm{Re} = 10^6$.
+  \item \textbf{Sensor-AV runs are chaotic run-to-run} (element on/off
+        flicker amplifies solver-level floating-point noise). Gates
+        must not depend on exact transient trajectories; the residual
+        freeze and tanh handover make campaign endpoints deterministic.
+  \item \textbf{Pure-sensor solutions cannot match the frozen oracle's
+        wall heat flux}: the Exasim reference AV is the global
+        $0.025\tanh(5(r-1))$ profile, which dominates the physical
+        viscosity through most of the boundary layer. Campaigns gated
+        against the oracle must hand over to that profile first.
+\end{itemize}
+
+\end{document}

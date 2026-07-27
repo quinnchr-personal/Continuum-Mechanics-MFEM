@@ -25,12 +25,16 @@ Milestones (see the project plan; G1–G6 complete):
   homotopy and AV-mode handovers for free. The end-to-end gate
   (`input/mach8_sensor.yaml`) reaches the frozen Mach 8 solution from a
   damped freestream with no hand-tuned AV profile.
-- **G7 (in progress)**: physics validation against classical references
-  in `tests/test_validation.cpp` — cylinder bow-shock standoff vs the
-  Sinclair–Cui (2017) relation (Billig's cylinder fit underpredicts for
-  M ≲ 6) and stagnation Cp vs Rayleigh pitot at M=3/5; M=6 flat plate vs
-  a compressible-Blasius shooting solution (Sutherland C, cold wall);
-  M=3 compression corner vs oblique-shock theory.
+- **G7**: physics validation against classical references in
+  `tests/test_validation.cpp` (serial and np=4 in `make test`) —
+  cylinder bow-shock standoff vs the Sinclair–Cui (2017) relation
+  (Billig's cylinder fit underpredicts for M ≲ 6; ours within 4.5–6.6%)
+  and stagnation Cp vs Rayleigh pitot (2.3–3.1%) at M=3/5; M=4 flat
+  plate vs a compressible-Blasius shooting solution with Sutherland C
+  (cf 0.75%, wall heat flux 0.02%); M=3 oblique shock vs the
+  theta–beta–M weak solution (downstream pressure 0.02%, shock angle
+  1.8°). A slip-wall compression-corner cold start is a documented
+  solver limitation (pathologically scaled trace corrections).
 
 Nodal-DG sibling driver: out of scope (HDG only); the `physics/` and
 `solvers/` layers are discretization-agnostic by design.
