@@ -71,9 +71,12 @@ using NewtonOutput =
 // assembly. Lets the caller refresh frozen operator data (e.g. a sensor
 // artificial-viscosity field) from the current iterate; whatever it
 // installs stays frozen through this iteration's Jacobian and line
-// search, keeping each linearization self-consistent.
+// search, keeping each linearization self-consistent. `residual` is the
+// previous iteration's accepted residual (infinity at iteration 0), so
+// the caller can stop adapting once the solve is nearly converged.
 using NewtonPrepare =
-   std::function<void(int iteration, const HDGState &state)>;
+   std::function<void(int iteration, const HDGState &state,
+                      double residual)>;
 
 // Damped Newton with Armijo backtracking and an optional pseudo-transient
 // continuation (backward-Euler mass term, SER time-step growth). Step
@@ -110,9 +113,10 @@ inline NewtonReport DampedNewtonSolve(
    };
    double pseudo_time_step =
       config.pseudo_transient ? config.initial_pseudo_time_step : 0.0;
+   double last_residual = std::numeric_limits<double>::infinity();
    for (int iteration = 0; iteration <= config.max_iterations; ++iteration)
    {
-      if (prepare) { prepare(iteration, state); }
+      if (prepare) { prepare(iteration, state, last_residual); }
       const double inverse_step =
          pseudo_time_step > 0.0 ? 1.0 / pseudo_time_step : 0.0;
       const auto assembly_start = std::chrono::steady_clock::now();
@@ -120,6 +124,7 @@ inline NewtonReport DampedNewtonSolve(
          op.Assemble(state, true, inverse_step);
       report.assembly_seconds += seconds_since(assembly_start);
       const double old_residual = old_norms.Total();
+      last_residual = old_residual;
       if (!std::isfinite(old_residual))
       {
          throw std::runtime_error("Newton residual is NaN or infinite");

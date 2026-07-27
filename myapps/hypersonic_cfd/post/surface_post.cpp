@@ -356,6 +356,88 @@ ShockStandoff ComputeShockStandoff(
    return {radius - 1.0, radius, radial_cell_width, maximum_index};
 }
 
+double StagnationDensityCrossing(
+   mfem::Mesh &mesh, const HDGOperator &op,
+   const HDGState &state, double threshold, int sample_count)
+{
+   if (sample_count < 3)
+   {
+      throw std::runtime_error(
+         "density crossing requires at least three samples");
+   }
+   if (!(threshold > 1.0))
+   {
+      throw std::runtime_error(
+         "density crossing threshold must exceed the freestream density");
+   }
+   mfem::L2_FECollection scalar_collection(op.Order(), 2);
+   mfem::FiniteElementSpace scalar_space(&mesh, &scalar_collection);
+   mfem::GridFunction conservative(
+      const_cast<mfem::FiniteElementSpace *>(&op.VolumeSpace()));
+   op.FillConservativeGridFunction(state, conservative);
+   mfem::GridFunction density(&scalar_space);
+   if (conservative.Size() != 4 * density.Size())
+   {
+      throw std::runtime_error(
+         "unexpected conservative GridFunction layout");
+   }
+   for (int i = 0; i < density.Size(); ++i)
+   {
+      density[i] = conservative[4 * i];
+   }
+
+   const double outer_radius = StagnationOuterRadius(mesh);
+   const double spacing =
+      (outer_radius - 1.0) / static_cast<double>(sample_count - 1);
+   std::vector<double> values(static_cast<std::size_t>(sample_count));
+   mfem::Vector physical(2);
+   physical[1] = 0.0;
+   constexpr double kMissing = -1.0e300;
+   for (int sample = 0; sample < sample_count; ++sample)
+   {
+      physical[0] = -(1.0 + spacing * sample);
+      mfem::IntegrationPoint point;
+      const int element = LocatePoint(mesh, physical, point);
+      values[static_cast<std::size_t>(sample)] =
+         element >= 0 ? density.GetValue(element, point) : kMissing;
+   }
+   const mfem::ParMesh *par_mesh =
+      dynamic_cast<const mfem::ParMesh *>(&mesh);
+   if (par_mesh && par_mesh->GetNRanks() > 1)
+   {
+      MPI_Allreduce(MPI_IN_PLACE, values.data(), sample_count,
+                    MPI_DOUBLE, MPI_MAX, par_mesh->GetComm());
+   }
+   for (int sample = 0; sample < sample_count; ++sample)
+   {
+      if (values[static_cast<std::size_t>(sample)] <= kMissing / 2.0)
+      {
+         throw std::runtime_error(
+            "failed to locate a stagnation-line sample");
+      }
+   }
+   if (values[static_cast<std::size_t>(sample_count - 1)] >= threshold)
+   {
+      throw std::runtime_error(
+         "density already exceeds the crossing threshold at the outer"
+         " boundary");
+   }
+   for (int sample = sample_count - 2; sample >= 0; --sample)
+   {
+      const double inner = values[static_cast<std::size_t>(sample)];
+      const double outer = values[static_cast<std::size_t>(sample + 1)];
+      if (inner >= threshold)
+      {
+         const double radius = 1.0 + spacing * sample;
+         return radius +
+                spacing * (threshold - inner) / (outer - inner) - 1.0;
+      }
+   }
+   throw std::runtime_error(
+      "no stagnation-line density crossing found (is the shock inside"
+      " the domain?)");
+}
+
 M3Comparison CompareWallAndShock(
    const std::vector<WallSample> &computed,
    const std::vector<WallSample> &reference,

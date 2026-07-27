@@ -26,12 +26,14 @@
 namespace
 {
 
+// A continuation stage is a set of YAML overrides applied on top of the
+// base deck (not on the previous stage): any subset of the physics, av,
+// newton, and ptc blocks. Mach/Reynolds homotopy, AV ramp-downs, and
+// sensor-to-tanh handovers are all expressed the same way.
 struct ContinuationStage
 {
-   double lambda = 0.0;
-   double c = 0.0;
-   bool pseudo_transient = false;
-   double initial_pseudo_time_step = 0.5;
+   YAML::Node overrides;
+   std::string label = "base";
 };
 
 struct ComparisonParams
@@ -49,6 +51,7 @@ struct ComparisonParams
 
 struct DriverParams
 {
+   YAML::Node root;
    std::string case_name;
    std::string mesh_source;
    std::string exasim_directory;
@@ -72,6 +75,7 @@ struct DriverParams
    double av_c = 0.0;
    double av_kappa = 0.25;
    double av_relax = 0.5;
+   double av_freeze_residual = 0.0;
    bool av_bootstrap = false;
    double av_bootstrap_lambda = 0.0;
    double av_bootstrap_c = 0.0;
@@ -108,10 +112,10 @@ T Optional(const YAML::Node &node, const std::string &key, T fallback)
    return node[key].as<T>();
 }
 
-DriverParams LoadParams(const std::string &path)
+DriverParams ParseParams(const YAML::Node &root)
 {
-   const YAML::Node root = YAML::LoadFile(path);
    DriverParams params;
+   params.root = root;
    params.case_name = Required<std::string>(root, "case_name");
 
    const YAML::Node mesh = root["mesh"];
@@ -193,6 +197,8 @@ DriverParams LoadParams(const std::string &path)
       params.av_lambda = Required<double>(av, "lambda");
       params.av_kappa = Optional<double>(av, "kappa", 0.25);
       params.av_relax = Optional<double>(av, "relax", 0.5);
+      params.av_freeze_residual =
+         Optional<double>(av, "freeze_residual", 0.0);
       if (!(params.av_relax > 0.0) || params.av_relax > 1.0)
       {
          throw std::runtime_error("av.relax must lie in (0, 1]");
@@ -248,52 +254,6 @@ DriverParams LoadParams(const std::string &path)
    params.newton.initial_pseudo_time_step =
       Required<double>(ptc, "initial_dt");
 
-   const YAML::Node continuation = root["continuation"];
-   if (continuation)
-   {
-      params.continuation_enabled =
-         Required<bool>(continuation, "enabled");
-      if (params.continuation_enabled)
-      {
-         const YAML::Node stages = continuation["stages"];
-         if (!stages || !stages.IsSequence() || stages.size() == 0)
-         {
-            throw std::runtime_error(
-               "enabled continuation requires a nonempty stages sequence");
-         }
-         for (const YAML::Node &stage_node : stages)
-         {
-            ContinuationStage stage;
-            stage.lambda = Required<double>(stage_node, "lambda");
-            stage.c = Required<double>(stage_node, "c");
-            if (!(stage.lambda > 0.0) || !(stage.c > 0.0))
-            {
-               throw std::runtime_error(
-                  "continuation lambda and c must be positive");
-            }
-            if (stage_node["ptc"])
-            {
-               const YAML::Node stage_ptc = stage_node["ptc"];
-               stage.pseudo_transient =
-                  Required<bool>(stage_ptc, "enabled");
-               stage.initial_pseudo_time_step =
-                  Required<double>(stage_ptc, "initial_dt");
-               if (stage.pseudo_transient &&
-                   !(stage.initial_pseudo_time_step > 0.0))
-               {
-                  throw std::runtime_error(
-                     "enabled stage PTC requires initial_dt > 0");
-               }
-            }
-            params.continuation_stages.push_back(stage);
-         }
-         params.continuation_history_csv =
-            Required<std::string>(continuation, "history_csv");
-         params.continuation_summary_csv =
-            Required<std::string>(continuation, "summary_csv");
-      }
-   }
-
    const YAML::Node linear = root["linear"];
    params.linear_type = Required<std::string>(linear, "type");
    if (params.linear_type != "petsc_direct")
@@ -344,6 +304,117 @@ DriverParams LoadParams(const std::string &path)
       }
    }
    return params;
+}
+
+// Recursive map merge for stage overrides. Scalars and sequences replace
+// their base values; maps merge key-wise, EXCEPT that a map switching the
+// "mode" key replaces the base map wholesale so stale sibling keys from
+// the old mode cannot leak into the new one.
+YAML::Node MergeNodes(const YAML::Node &base, const YAML::Node &overrides)
+{
+   if (!base || !base.IsMap() || !overrides.IsMap())
+   {
+      return YAML::Clone(overrides);
+   }
+   if (base["mode"] && overrides["mode"] &&
+       base["mode"].as<std::string>() !=
+          overrides["mode"].as<std::string>())
+   {
+      return YAML::Clone(overrides);
+   }
+   YAML::Node merged = YAML::Clone(base);
+   for (YAML::const_iterator entry = overrides.begin();
+        entry != overrides.end(); ++entry)
+   {
+      const std::string key = entry->first.as<std::string>();
+      merged[key] = MergeNodes(merged[key], entry->second);
+   }
+   return merged;
+}
+
+void FlattenOverrides(const YAML::Node &node, const std::string &prefix,
+                      std::string &label)
+{
+   if (node.IsMap())
+   {
+      for (YAML::const_iterator entry = node.begin();
+           entry != node.end(); ++entry)
+      {
+         FlattenOverrides(entry->second,
+                          prefix + entry->first.as<std::string>() + ".",
+                          label);
+      }
+      return;
+   }
+   if (!label.empty()) { label += ' '; }
+   label += prefix.substr(0, prefix.size() - 1) + '=';
+   YAML::Emitter emitter;
+   emitter << YAML::Flow << node;
+   label += emitter.c_str();
+}
+
+DriverParams LoadParams(const std::string &path)
+{
+   const YAML::Node root = YAML::LoadFile(path);
+   DriverParams params = ParseParams(root);
+   const YAML::Node continuation = root["continuation"];
+   if (!continuation) { return params; }
+   params.continuation_enabled = Required<bool>(continuation, "enabled");
+   if (!params.continuation_enabled) { return params; }
+   const YAML::Node stages = continuation["stages"];
+   if (!stages || !stages.IsSequence() || stages.size() == 0)
+   {
+      throw std::runtime_error(
+         "enabled continuation requires a nonempty stages sequence");
+   }
+   for (const YAML::Node &stage_node : stages)
+   {
+      ContinuationStage stage;
+      if (stage_node["overrides"])
+      {
+         stage.overrides = stage_node["overrides"];
+         std::string label;
+         FlattenOverrides(stage.overrides, "", label);
+         if (!label.empty()) { stage.label = label; }
+      }
+      params.continuation_stages.push_back(stage);
+   }
+   params.continuation_history_csv =
+      Required<std::string>(continuation, "history_csv");
+   params.continuation_summary_csv =
+      Required<std::string>(continuation, "summary_csv");
+   return params;
+}
+
+// Stage decks are the base deck with the stage's overrides merged on top;
+// only solver-side blocks may change (the mesh, discretization, BCs, and
+// outputs are stage-invariant).
+DriverParams StageParams(const DriverParams &base,
+                         const ContinuationStage &stage)
+{
+   if (!stage.overrides || stage.overrides.IsNull())
+   {
+      return ParseParams(base.root);
+   }
+   if (!stage.overrides.IsMap())
+   {
+      throw std::runtime_error("stage overrides must be a YAML map");
+   }
+   YAML::Node merged = YAML::Clone(base.root);
+   for (YAML::const_iterator entry = stage.overrides.begin();
+        entry != stage.overrides.end(); ++entry)
+   {
+      const std::string key = entry->first.as<std::string>();
+      if (key != "physics" && key != "av" && key != "newton" &&
+          key != "ptc")
+      {
+         throw std::runtime_error(
+            "stage overrides may only touch physics, av, newton, or ptc"
+            " (got " + key + ")");
+      }
+      merged[key] = MergeNodes(merged[key], entry->second);
+   }
+   return ParseParams(merged);
 }
 
 void PrintConfig(const DriverParams &params,
@@ -484,17 +555,20 @@ IdentityOrientations(int element_count)
 
 struct StageResult
 {
-   ContinuationStage stage;
+   std::string label;
+   bool pseudo_transient = false;
    hycfd::NewtonReport report;
    int damped_steps = 0;
    double minimum_alpha = 1.0;
 };
 
-StageResult SummarizeStage(const ContinuationStage &stage,
+StageResult SummarizeStage(const std::string &label,
+                           bool pseudo_transient,
                            hycfd::NewtonReport report)
 {
    StageResult result;
-   result.stage = stage;
+   result.label = label;
+   result.pseudo_transient = pseudo_transient;
    result.report = std::move(report);
    for (const hycfd::NewtonIteration &iteration : result.report.history)
    {
@@ -517,7 +591,7 @@ void WriteContinuationCSVs(
          "cannot open continuation history CSV: " +
          params.continuation_history_csv);
    }
-   history << "stage,lambda,c,ptc_enabled,iteration,residual,alpha,dtau\n"
+   history << "stage,overrides,ptc_enabled,iteration,residual,alpha,dtau\n"
            << std::setprecision(16);
    for (std::size_t stage_index = 0;
         stage_index < stages.size(); ++stage_index)
@@ -526,9 +600,8 @@ void WriteContinuationCSVs(
       for (const hycfd::NewtonIteration &iteration :
            stage.report.history)
       {
-         history << stage_index + 1 << ',' << stage.stage.lambda << ','
-                 << stage.stage.c << ','
-                 << (stage.stage.pseudo_transient ? 1 : 0) << ','
+         history << stage_index + 1 << ",\"" << stage.label << "\","
+                 << (stage.pseudo_transient ? 1 : 0) << ','
                  << iteration.iteration << ',' << iteration.residual << ','
                  << iteration.alpha << ','
                  << iteration.pseudo_time_step << '\n';
@@ -543,7 +616,7 @@ void WriteContinuationCSVs(
          params.continuation_summary_csv);
    }
    summary
-      << "stage,lambda,c,ptc_enabled,converged,iterations,residual,"
+      << "stage,overrides,ptc_enabled,converged,iterations,residual,"
          "damped_steps,min_alpha,assembly_seconds,linear_seconds,"
          "total_seconds,failure\n"
       << std::setprecision(16);
@@ -551,9 +624,8 @@ void WriteContinuationCSVs(
         stage_index < stages.size(); ++stage_index)
    {
       const StageResult &stage = stages[stage_index];
-      summary << stage_index + 1 << ',' << stage.stage.lambda << ','
-              << stage.stage.c << ','
-              << (stage.stage.pseudo_transient ? 1 : 0) << ','
+      summary << stage_index + 1 << ",\"" << stage.label << "\","
+              << (stage.pseudo_transient ? 1 : 0) << ','
               << (stage.report.converged ? 1 : 0) << ','
               << stage.report.iterations << ',' << stage.report.residual
               << ',' << stage.damped_steps << ',' << stage.minimum_alpha
@@ -585,15 +657,14 @@ void WriteComparisonReport(
           << "`\n\n";
    if (!stages.empty())
    {
-      output << "| Stage | lambda | c | PTC | Newton updates |"
+      output << "| Stage | Overrides | PTC | Newton updates |"
                 " Final residual | Damped steps | Minimum alpha |\n"
-             << "|---:|---:|---:|:---:|---:|---:|---:|---:|\n";
+             << "|---:|---|:---:|---:|---:|---:|---:|\n";
       for (std::size_t index = 0; index < stages.size(); ++index)
       {
          const StageResult &stage = stages[index];
-         output << "| " << index + 1 << " | " << stage.stage.lambda
-                << " | " << stage.stage.c << " | "
-                << (stage.stage.pseudo_transient ? "on" : "off")
+         output << "| " << index + 1 << " | `" << stage.label << "` | "
+                << (stage.pseudo_transient ? "on" : "off")
                 << " | " << stage.report.iterations << " | "
                 << stage.report.residual << " | " << stage.damped_steps
                 << " | " << stage.minimum_alpha << " |\n";
@@ -655,44 +726,19 @@ int main(int argc, char *argv[])
       const DriverParams params = LoadParams(input_file);
       std::cout << std::setprecision(17);
 
-      std::unique_ptr<hycfd::PhysicsModel> physics_model =
-         hycfd::MakePhysics(params.physics_node);
-      const auto *gas_model =
-         dynamic_cast<const hycfd::PerfectGasModel *>(physics_model.get());
-      if (!gas_model)
       {
-         throw std::runtime_error(
-            "driver initial conditions and wall post-processing currently"
-            " require the perfect_gas model");
-      }
-      const hycfd::PerfectGasParams &gas_params = gas_model->Params();
-      PrintConfig(params, gas_params);
-
-      std::vector<int> attr_to_bcid;
-      for (const DriverParams::BoundaryConditionSpec &spec :
-           params.bc_specs)
-      {
-         const int bc_id = physics_model->RegisterBoundaryCondition(
-            spec.type, spec.params);
-         for (const int attr : spec.attrs)
+         // Echo the base deck; stage models are built inside the loop.
+         const std::unique_ptr<hycfd::PhysicsModel> base_model =
+            hycfd::MakePhysics(params.physics_node);
+         const auto *base_gas =
+            dynamic_cast<const hycfd::PerfectGasModel *>(base_model.get());
+         if (!base_gas)
          {
-            if (attr < 1)
-            {
-               throw std::runtime_error(
-                  "bc attrs must be positive boundary attributes");
-            }
-            if (attr > static_cast<int>(attr_to_bcid.size()))
-            {
-               attr_to_bcid.resize(static_cast<std::size_t>(attr), -1);
-            }
-            if (attr_to_bcid[static_cast<std::size_t>(attr - 1)] != -1)
-            {
-               throw std::runtime_error(
-                  "boundary attribute " + std::to_string(attr) +
-                  " is assigned to more than one bc entry");
-            }
-            attr_to_bcid[static_cast<std::size_t>(attr - 1)] = bc_id;
+            throw std::runtime_error(
+               "driver initial conditions and wall post-processing"
+               " currently require the perfect_gas model");
          }
+         PrintConfig(params, base_gas->Params());
       }
 
       hycfd::ExasimMesh converted;
@@ -738,92 +784,9 @@ int main(int argc, char *argv[])
 
       hycfd::HDGOptions hdg_options;
       hdg_options.order = params.discretization_order;
-      hdg_options.tau = gas_params.tau;
       hdg_options.quadrature_increment = params.quadrature_increment;
 
-      hycfd::ExasimArray vdg;
-      std::unique_ptr<hycfd::HDGOperator> op_pointer;
-      if (params.av_mode == "file")
-      {
-         if (params.mesh_source != "exasim" ||
-             params.continuation_enabled)
-         {
-            throw std::runtime_error(
-               "av.mode=file requires a non-continuation Exasim mesh run");
-         }
-         vdg = hycfd::ReadExasimArray(
-            params.exasim_directory + "/vdg.bin");
-         op_pointer =
-            std::make_unique<hycfd::HDGOperator>(
-               par_mesh, vdg, orientations,
-               *physics_model, attr_to_bcid, hdg_options,
-               serial_element_ids);
-      }
-      else
-      {
-         if (params.av_mode == "sensor" && params.continuation_enabled)
-         {
-            throw std::runtime_error(
-               "sensor AV and continuation stages cannot be combined yet");
-         }
-         double initial_lambda = params.av_lambda;
-         double initial_c = params.av_c;
-         if (params.continuation_enabled)
-         {
-            initial_lambda = params.continuation_stages.front().lambda;
-            initial_c = params.continuation_stages.front().c;
-         }
-         op_pointer =
-            std::make_unique<hycfd::HDGOperator>(
-               par_mesh, orientations,
-               params.av_mode == "sensor"
-                  ? ScalarZero()
-                  : ArtificialViscosity(initial_lambda, initial_c),
-               *physics_model, attr_to_bcid, hdg_options);
-      }
-      hycfd::HDGOperator &op = *op_pointer;
-
-      hycfd::HDGState state;
-      if (params.init_mode == "udg_file")
-      {
-         if (params.mesh_source != "exasim" ||
-             params.continuation_enabled)
-         {
-            throw std::runtime_error(
-               "init.mode=udg_file requires a non-continuation Exasim run");
-         }
-         const hycfd::ExasimArray input_udg =
-            hycfd::ReadExasimArray(
-               params.exasim_directory + "/udg.bin");
-         op.LoadExasimVolumeState(input_udg, false, state);
-         op.InitializeTraceFromInterior(state);
-      }
-      else
-      {
-         const auto initial_condition = [&params, &gas_params](
-            const mfem::Vector &x, double value[4])
-         {
-            const double distance = std::hypot(x[0], x[1]) - 1.0;
-            const double velocity = std::tanh(params.damping_c * distance);
-            const hycfd::PerfectGasParams &gas = gas_params;
-            value[0] = 1.0;
-            value[1] = velocity;
-            value[2] = 0.0;
-            value[3] =
-               gas.TinfND() *
-                  ((gas.Twall_K / gas.T_inf_K - 1.0) *
-                      std::exp(-params.damping_c * distance) + 1.0) +
-               0.5 * velocity * velocity;
-         };
-         op.ProjectState(initial_condition, state);
-         // Restart semantics shared with Exasim: the trace comes from the
-         // lower-index side of each face and q is then recomputed.
-         op.InitializeTraceFromInterior(state);
-      }
-
-      ParaViewWriter writer(params, op, par_mesh);
-      hycfd::NewtonReport report;
-      std::vector<StageResult> stage_results;
+      std::vector<ContinuationStage> stages;
       if (params.continuation_enabled)
       {
          if (params.init_mode != "damped_freestream")
@@ -831,58 +794,242 @@ int main(int argc, char *argv[])
             throw std::runtime_error(
                "continuation requires init.mode=damped_freestream");
          }
-         for (std::size_t stage_index = 0;
-              stage_index < params.continuation_stages.size();
-              ++stage_index)
+         stages = params.continuation_stages;
+      }
+      else
+      {
+         stages.push_back(ContinuationStage());
+      }
+
+      hycfd::ExasimArray vdg;
+      std::unique_ptr<hycfd::PhysicsModel> physics_model;
+      std::unique_ptr<hycfd::HDGOperator> op_pointer;
+      std::unique_ptr<ParaViewWriter> writer;
+      const hycfd::PerfectGasParams *gas_params_pointer = nullptr;
+      hycfd::HDGState state;
+      bool state_initialized = false;
+      hycfd::NewtonReport report;
+      std::vector<StageResult> stage_results;
+
+      for (std::size_t stage_index = 0; stage_index < stages.size();
+           ++stage_index)
+      {
+         const ContinuationStage &stage = stages[stage_index];
+         const DriverParams stage_params =
+            params.continuation_enabled ? StageParams(params, stage)
+                                        : params;
+
+         // Teardown before rebuild: the writer references the operator
+         // and the operator references the physics model.
+         writer.reset();
+         op_pointer.reset();
+         physics_model = hycfd::MakePhysics(stage_params.physics_node);
+         const auto *gas_model =
+            dynamic_cast<const hycfd::PerfectGasModel *>(
+               physics_model.get());
+         if (!gas_model)
          {
-            const ContinuationStage &stage =
-               params.continuation_stages[stage_index];
-            op.SetArtificialViscosity(
-               ArtificialViscosity(stage.lambda, stage.c));
-            if (stage_index > 0)
+            throw std::runtime_error(
+               "driver initial conditions and wall post-processing"
+               " currently require the perfect_gas model");
+         }
+         gas_params_pointer = &gas_model->Params();
+         const hycfd::PerfectGasParams &gas_params = *gas_params_pointer;
+
+         std::vector<int> attr_to_bcid;
+         for (const DriverParams::BoundaryConditionSpec &spec :
+              stage_params.bc_specs)
+         {
+            const int bc_id = physics_model->RegisterBoundaryCondition(
+               spec.type, spec.params);
+            for (const int attr : spec.attrs)
             {
+               if (attr < 1)
+               {
+                  throw std::runtime_error(
+                     "bc attrs must be positive boundary attributes");
+               }
+               if (attr > static_cast<int>(attr_to_bcid.size()))
+               {
+                  attr_to_bcid.resize(static_cast<std::size_t>(attr), -1);
+               }
+               if (attr_to_bcid[static_cast<std::size_t>(attr - 1)] != -1)
+               {
+                  throw std::runtime_error(
+                     "boundary attribute " + std::to_string(attr) +
+                     " is assigned to more than one bc entry");
+               }
+               attr_to_bcid[static_cast<std::size_t>(attr - 1)] = bc_id;
+            }
+         }
+
+         hdg_options.tau = gas_params.tau;
+
+         if (stage_params.av_mode == "file")
+         {
+            if (params.mesh_source != "exasim" ||
+                params.continuation_enabled)
+            {
+               throw std::runtime_error(
+                  "av.mode=file requires a non-continuation Exasim mesh"
+                  " run");
+            }
+            vdg = hycfd::ReadExasimArray(
+               params.exasim_directory + "/vdg.bin");
+            op_pointer =
+               std::make_unique<hycfd::HDGOperator>(
+                  par_mesh, vdg, orientations,
+                  *physics_model, attr_to_bcid, hdg_options,
+                  serial_element_ids);
+         }
+         else
+         {
+            op_pointer =
+               std::make_unique<hycfd::HDGOperator>(
+                  par_mesh, orientations,
+                  stage_params.av_mode == "sensor"
+                     ? ScalarZero()
+                     : ArtificialViscosity(stage_params.av_lambda,
+                                           stage_params.av_c),
+                  *physics_model, attr_to_bcid, hdg_options);
+         }
+         hycfd::HDGOperator &op = *op_pointer;
+         writer = std::make_unique<ParaViewWriter>(stage_params, op,
+                                                   par_mesh);
+
+         if (!state_initialized)
+         {
+            if (params.init_mode == "udg_file")
+            {
+               if (params.mesh_source != "exasim" ||
+                   params.continuation_enabled)
+               {
+                  throw std::runtime_error(
+                     "init.mode=udg_file requires a non-continuation"
+                     " Exasim run");
+               }
+               const hycfd::ExasimArray input_udg =
+                  hycfd::ReadExasimArray(
+                     params.exasim_directory + "/udg.bin");
+               op.LoadExasimVolumeState(input_udg, false, state);
                op.InitializeTraceFromInterior(state);
             }
-            const int cycle_base =
-               static_cast<int>(1000 * stage_index);
-            writer.Save(cycle_base, state);
-            hycfd::NewtonConfig stage_config = params.newton;
-            stage_config.pseudo_transient = stage.pseudo_transient;
-            stage_config.initial_pseudo_time_step =
-               stage.initial_pseudo_time_step;
-            const hycfd::NewtonOutput output =
-               [&params, &writer, &op, stage_index, cycle_base](
-                  int iteration, const hycfd::HDGState &current,
-                  double residual)
+            else
             {
-               std::cout << "Stage " << stage_index + 1
-                         << " Newton " << std::setw(3) << iteration
-                         << " residual=" << residual
-                         << " min_rho=" << op.MinimumDensity(current)
-                         << " min_p=" << op.MinimumPressure(current)
-                         << std::endl;
-               if (params.paraview_every > 0 &&
-                   iteration > 0 &&
-                   iteration % params.paraview_every == 0)
+               const auto initial_condition = [&params, &gas_params](
+                  const mfem::Vector &x, double value[4])
                {
-                  writer.Save(cycle_base + iteration, current);
-               }
+                  const double distance = std::hypot(x[0], x[1]) - 1.0;
+                  const double velocity =
+                     std::tanh(params.damping_c * distance);
+                  const hycfd::PerfectGasParams &gas = gas_params;
+                  value[0] = 1.0;
+                  value[1] = velocity;
+                  value[2] = 0.0;
+                  value[3] =
+                     gas.TinfND() *
+                        ((gas.Twall_K / gas.T_inf_K - 1.0) *
+                            std::exp(-params.damping_c * distance) + 1.0) +
+                     0.5 * velocity * velocity;
+               };
+               op.ProjectState(initial_condition, state);
+               // Restart semantics shared with Exasim: the trace comes
+               // from the lower-index side of each face and q is then
+               // recomputed.
+               op.InitializeTraceFromInterior(state);
+            }
+            state_initialized = true;
+         }
+         else
+         {
+            // Stage handover shares the Exasim restart semantics.
+            op.InitializeTraceFromInterior(state);
+         }
+
+         const int cycle_base = static_cast<int>(1000 * stage_index);
+         writer->Save(cycle_base, state);
+
+         const std::string stage_prefix =
+            params.continuation_enabled
+               ? "Stage " + std::to_string(stage_index + 1) + " "
+               : "";
+         const hycfd::NewtonOutput output =
+            [&params, &writer, &op, &stage_prefix, cycle_base](
+               int iteration, const hycfd::HDGState &current,
+               double residual)
+         {
+            std::cout << stage_prefix << "Newton " << std::setw(3)
+                      << iteration
+                      << " residual=" << residual
+                      << " min_rho=" << op.MinimumDensity(current)
+                      << " min_p=" << op.MinimumPressure(current)
+                      << std::endl;
+            if (params.paraview_every > 0 &&
+                iteration > 0 &&
+                iteration % params.paraview_every == 0)
+            {
+               writer->Save(cycle_base + iteration, current);
+            }
+         };
+
+         if (stage_params.av_mode == "sensor")
+         {
+            // Adaptive frozen-per-iteration AV: the dilatation sensor is
+            // re-evaluated from the current iterate at the top of every
+            // Newton iteration and then frozen through that iteration's
+            // Jacobian and line search. The per-solve lagged fixed point
+            // this replaces limit-cycled: the shock drifted between
+            // solves faster than the outer relaxation could track.
+            hycfd::SensorAVSchedule schedule;
+            schedule.sensor.lambda = stage_params.av_lambda;
+            schedule.sensor.kappa = stage_params.av_kappa;
+            schedule.relax = stage_params.av_relax;
+            schedule.freeze_residual = stage_params.av_freeze_residual;
+            if (stage_params.av_bootstrap)
+            {
+               schedule.bootstrap_profile =
+                  ArtificialViscosity(stage_params.av_bootstrap_lambda,
+                                      stage_params.av_bootstrap_c);
+               schedule.bootstrap_decay_iterations =
+                  stage_params.av_bootstrap_decay_iters;
+            }
+            hycfd::SensorAVController controller(par_mesh, op,
+                                                 *physics_model,
+                                                 schedule);
+            const hycfd::NewtonPrepare refresh =
+               [&controller](int iteration,
+                             const hycfd::HDGState &current,
+                             double residual)
+            {
+               controller.Refresh(iteration, current, residual);
             };
-            report = hycfd::DampedNewtonSolve(
-               op, state, stage_config, output);
-            stage_results.push_back(
-               SummarizeStage(stage, std::move(report)));
-            const StageResult &result = stage_results.back();
-            writer.Save(cycle_base + result.report.iterations + 1, state);
+            report = hycfd::DampedNewtonSolve(op, state,
+                                              stage_params.newton,
+                                              output, refresh);
+         }
+         else
+         {
+            report = hycfd::DampedNewtonSolve(op, state,
+                                              stage_params.newton,
+                                              output);
+         }
+         writer->Save(cycle_base + report.iterations + 1, state);
+
+         stage_results.push_back(SummarizeStage(
+            stage.label, stage_params.newton.pseudo_transient,
+            std::move(report)));
+         const StageResult &result = stage_results.back();
+         report = result.report;
+         if (params.continuation_enabled)
+         {
             if (mfem::Mpi::Root())
             {
                WriteContinuationCSVs(params, stage_results);
             }
             std::cout << "Continuation stage " << stage_index + 1
-                      << " result: lambda=" << stage.lambda
-                      << " c=" << stage.c
+                      << " result: overrides=[" << result.label << "]"
                       << " PTC="
-                      << (stage.pseudo_transient ? "on" : "off")
+                      << (result.pseudo_transient ? "on" : "off")
                       << " converged="
                       << (result.report.converged ? "yes" : "no")
                       << " iterations=" << result.report.iterations
@@ -903,119 +1050,10 @@ int main(int argc, char *argv[])
                   params.continuation_history_csv);
             }
          }
-         report = stage_results.back().report;
       }
-      else
-      {
-         writer.Save(0, state);
-         const hycfd::NewtonOutput output =
-            [&params, &writer, &op](
-               int iteration, const hycfd::HDGState &current,
-               double residual)
-         {
-            std::cout << "Newton " << std::setw(3) << iteration
-                      << " residual=" << residual
-                      << " min_rho=" << op.MinimumDensity(current)
-                      << " min_p=" << op.MinimumPressure(current)
-                      << std::endl;
-            if (params.paraview_every > 0 &&
-                iteration > 0 &&
-                iteration % params.paraview_every == 0)
-            {
-               writer.Save(iteration, current);
-            }
-         };
-         if (params.av_mode == "sensor")
-         {
-            // Adaptive frozen-per-iteration AV: the dilatation sensor is
-            // re-evaluated from the current iterate at the top of every
-            // Newton iteration and then frozen through that iteration's
-            // Jacobian and line search. The per-solve lagged fixed point
-            // this replaces limit-cycled: the shock drifted between
-            // solves faster than the outer relaxation could track.
-            mfem::H1_FECollection sensor_fec(1, 2);
-            mfem::ParFiniteElementSpace sensor_fes(&par_mesh,
-                                                   &sensor_fec);
-            mfem::ParGridFunction av_field(&sensor_fes);
-            mfem::ParGridFunction sensor_field(&sensor_fes);
-            mfem::ParGridFunction bootstrap_field(&sensor_fes);
-            av_field = 0.0;
-            bootstrap_field = 0.0;
-            if (params.av_bootstrap)
-            {
-               mfem::FunctionCoefficient bootstrap_coefficient(
-                  ArtificialViscosity(params.av_bootstrap_lambda,
-                                      params.av_bootstrap_c));
-               bootstrap_field.ProjectCoefficient(bootstrap_coefficient);
-            }
-            hycfd::DilatationSensorOptions sensor_options;
-            sensor_options.lambda = params.av_lambda;
-            sensor_options.kappa = params.av_kappa;
-            bool have_previous = false;
-            const hycfd::NewtonPrepare refresh =
-               [&params, &op, &physics_model, &sensor_options,
-                &av_field, &sensor_field, &bootstrap_field,
-                &have_previous](
-                  int iteration, const hycfd::HDGState &current)
-            {
-               hycfd::ComputeDilatationAV(op, current, *physics_model,
-                                          sensor_options, sensor_field);
-               // Exponential moving average: damps sensor flicker while
-               // the AV and the state co-evolve iteration by iteration.
-               if (have_previous)
-               {
-                  for (int i = 0; i < sensor_field.Size(); ++i)
-                  {
-                     sensor_field[i] =
-                        params.av_relax * sensor_field[i] +
-                        (1.0 - params.av_relax) * av_field[i];
-                  }
-               }
-               if (params.av_bootstrap)
-               {
-                  // Decaying floor: keeps stabilization where the shock
-                  // will form until the sensor has locked onto it.
-                  const double decay = std::max(
-                     0.0, 1.0 - static_cast<double>(iteration) /
-                             static_cast<double>(
-                                params.av_bootstrap_decay_iters));
-                  for (int i = 0; i < sensor_field.Size(); ++i)
-                  {
-                     sensor_field[i] = std::max(
-                        sensor_field[i], decay * bootstrap_field[i]);
-                  }
-               }
-               double change_sumsq = 0.0;
-               for (int i = 0; i < sensor_field.Size(); ++i)
-               {
-                  const double difference = sensor_field[i] - av_field[i];
-                  change_sumsq += difference * difference;
-               }
-               av_field = sensor_field;
-               have_previous = true;
-               op.SetArtificialViscosityField(av_field);
-               const double norm_sumsq = mfem::InnerProduct(
-                  MPI_COMM_WORLD, av_field, av_field);
-               MPI_Allreduce(MPI_IN_PLACE, &change_sumsq, 1, MPI_DOUBLE,
-                             MPI_SUM, MPI_COMM_WORLD);
-               std::cout << "AV refresh " << std::setw(3) << iteration
-                         << " relative_change="
-                         << std::sqrt(change_sumsq /
-                                      std::max(1.0e-28, norm_sumsq))
-                         << " max_av=" << op.MaximumAbsAV()
-                         << std::endl;
-            };
-            report = hycfd::DampedNewtonSolve(op, state, params.newton,
-                                              output, refresh);
-         }
-         else
-         {
-            report =
-               hycfd::DampedNewtonSolve(op, state, params.newton,
-                                        output);
-         }
-         writer.Save(report.iterations + 1, state);
-      }
+
+      hycfd::HDGOperator &op = *op_pointer;
+      const hycfd::PerfectGasParams &gas_params = *gas_params_pointer;
 
       const double minimum_density = op.MinimumDensity(state);
       const double minimum_pressure = op.MinimumPressure(state);
@@ -1072,7 +1110,10 @@ int main(int argc, char *argv[])
                0.0;
             if (mfem::Mpi::Root())
             {
-               WriteComparisonReport(params, stage_results, comparison,
+               const std::vector<StageResult> report_stages =
+                  params.continuation_enabled ? stage_results
+                                              : std::vector<StageResult>();
+               WriteComparisonReport(params, report_stages, comparison,
                                      shock, shock_relative_difference);
             }
             std::cout << "Wall/shock comparison:"

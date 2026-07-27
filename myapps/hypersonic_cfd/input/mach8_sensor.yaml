@@ -1,0 +1,85 @@
+# G6 end-to-end campaign: Mach 8.03 / Re=183500 half-cylinder from a damped
+# freestream. Stage 1 runs the dilatation-sensor AV (per-iteration refresh,
+# bootstrap floor) to establish the shock without any hand-tuned geometric
+# profile; stages 2-4 ramp the AV down to the frozen reference profile
+# (tanh lambda=0.025, c=5 — exactly the Exasim vdg field), so the final
+# state is gated against the frozen app's wall data. A pure-sensor solution
+# cannot be gated against that reference directly: the reference AV acts
+# through most of the boundary layer, while the sensor leaves it clean.
+case_name: mach8_sensor
+
+mesh:
+  source: exasim
+  exasim_dir: /home/quinnchr/dv/Exasim-apps/runs/nsmach8-baseline
+
+bc:
+  - {attrs: [1], type: isothermal_wall}
+  - {attrs: [2], type: supersonic_outflow}
+  - {attrs: [3], type: freestream}
+
+physics:
+  model: perfect_gas
+  gamma: 1.4
+  reynolds: 183500.0
+  prandtl: 0.71
+  mach: 8.03
+  T_inf_K: 124.49
+  Twall_K: 294.44
+  tau: 1.0
+  regularization: floors
+
+av:
+  mode: sensor
+  lambda: 0.2
+  kappa: 0.25
+  relax: 0.5
+  # At Mach 8 the sensor<->shock fixed point hovers chaotically around
+  # 3e-4..1e-2 without settling; once the residual dips below this
+  # threshold (after the bootstrap window) the field freezes and Newton
+  # closes on it. The later tanh stages replace the AV anyway, so the
+  # gated final state does not depend on the freeze moment.
+  freeze_residual: 1.0e-3
+  bootstrap: {lambda: 0.06, c: 30.0, decay_iters: 40}
+
+init:
+  mode: damped_freestream
+  c: 10.0
+
+newton:
+  max_iters: 200
+  tol: 1.0e-6
+  ptc_off_residual: 1.0e-7
+
+ptc:
+  enabled: true
+  initial_dt: 1.0e1
+
+continuation:
+  enabled: true
+  history_csv: mach8_sensor_history.csv
+  summary_csv: mach8_sensor_summary.csv
+  stages:
+    - {}
+    - overrides:
+        av: {mode: tanh, lambda: 0.04, c: 30.0}
+    - overrides:
+        av: {mode: tanh, lambda: 0.025, c: 30.0}
+    - overrides:
+        av: {mode: tanh, lambda: 0.025, c: 5.0}
+
+linear:
+  type: petsc_direct
+
+output:
+  path: ParaView/mach8_sensor
+  wall_csv: wall_data_mach8_sensor.csv
+  comparison_report: mach8_sensor_report.md
+  paraview_every: 0
+
+comparison:
+  reference_wall_csv: ../hdg_navierstokes/wall_data.csv
+  reference_shock_standoff: 0.002002002002001957
+  gate: true
+  cp_tol: 1.0e-2
+  heat_flux_tol: 2.0e-2
+  shock_tol: 1.0e-2

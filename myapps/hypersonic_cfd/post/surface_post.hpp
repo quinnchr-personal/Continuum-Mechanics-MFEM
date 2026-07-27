@@ -54,6 +54,17 @@ ShockStandoff ComputeShockStandoff(
    mfem::Mesh &mesh, const HDGOperator &op,
    const HDGState &state, int sample_count = 1000);
 
+// Physical bow-shock position for validation against correlations:
+// scanning the stagnation line (x = -r, y = 0) from the outer boundary
+// inward, returns the standoff distance r - 1 where the density first
+// crosses `threshold` (linearly interpolated between samples). Unlike
+// ComputeShockStandoff's maximum-gradient fingerprint, this is immune to
+// the near-wall thermal-layer gradient. Threshold should sit mid-jump,
+// e.g. 0.5*(1 + rho_post_normal_shock).
+double StagnationDensityCrossing(
+   mfem::Mesh &mesh, const HDGOperator &op,
+   const HDGState &state, double threshold, int sample_count = 600);
+
 void WriteM3ComparisonReport(
    const std::string &path,
    const std::array<double, 4> &field_relative_l2,

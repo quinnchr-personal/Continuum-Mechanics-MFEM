@@ -51,7 +51,7 @@ CORE_OBJECTS := io/exasim_io.o io/exasim_mesh.o io/mesh_input.o \
 	discretization/hdg_operator.o discretization/av_sensor.o \
 	post/surface_post.o \
 	physics/perfect_gas_model.o physics/physics_factory.o
-BINARIES := hycfd test_physics test_mms test_ptc_limit test_parallel test_bc test_av
+BINARIES := hycfd test_physics test_mms test_ptc_limit test_parallel test_bc test_av test_validation
 
 .PHONY: all check test test_g4 clean
 
@@ -74,6 +74,7 @@ test: check test_g4 hycfd input/cylinder_nr6_nc12_q4.mesh
 	./hycfd -i input/m45_sanity.yaml --acceptance
 	./hycfd -i input/m30_cylinder_file.yaml --acceptance
 	./hycfd -i input/m45_sensor.yaml --acceptance
+	./hycfd -i input/mach8_sensor.yaml --acceptance
 
 # G4 gates: np={2,4} consistency vs a serial reference, then the Mach 8
 # regression at np=4.
@@ -104,6 +105,9 @@ test_bc: tests/test_bc.o $(CORE_OBJECTS)
 test_av: tests/test_av.o $(CORE_OBJECTS)
 	$(MFEM_CXX) $(MFEM_FLAGS) $(YAML_CXXFLAGS) $^ -o $@ $(MFEM_LIBS) $(YAML_LIBS) -lyaml-cpp
 
+test_validation: tests/test_validation.o $(CORE_OBJECTS)
+	$(MFEM_CXX) $(MFEM_FLAGS) $(YAML_CXXFLAGS) $^ -o $@ $(MFEM_LIBS) $(YAML_LIBS) -lyaml-cpp
+
 tools/generate_cylinder_mesh: tools/generate_cylinder_mesh.o io/exasim_mesh.o io/exasim_io.o
 	$(MFEM_CXX) $(MFEM_FLAGS) $(YAML_CXXFLAGS) $^ -o $@ $(MFEM_LIBS) $(YAML_LIBS) -lyaml-cpp
 
@@ -125,6 +129,10 @@ discretization/av_sensor.o: discretization/av_sensor.cpp \
 tests/test_av.o: tests/test_av.cpp discretization/av_sensor.hpp \
 	discretization/hdg_operator.hpp physics/perfect_gas_model.hpp \
 	io/exasim_mesh.hpp
+tests/test_validation.o: tests/test_validation.cpp \
+	discretization/av_sensor.hpp discretization/hdg_operator.hpp \
+	physics/perfect_gas_model.hpp post/surface_post.hpp \
+	solvers/newton.hpp io/exasim_mesh.hpp
 physics/perfect_gas_model.o: physics/perfect_gas_model.cpp \
 	physics/perfect_gas_model.hpp physics/physics_model.hpp \
 	physics/perfect_gas.hpp
