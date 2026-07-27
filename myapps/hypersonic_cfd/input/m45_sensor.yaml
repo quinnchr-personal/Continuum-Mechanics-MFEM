@@ -1,9 +1,9 @@
-# EXPERIMENTAL (not in `make test`): the lagged sensor<->solution fixed
-# point still flickers on the first pure-sensor pass; stabilizing it needs
-# per-iteration AV refresh inside the Newton loop (G6 follow-up).
 # Mach 4.5 / Re=1000 cylinder from a damped freestream with the dilatation
-# sensor artificial viscosity (lagged fixed point: solve, refresh sensor,
-# repeat) instead of the frozen geometric tanh profile.
+# sensor artificial viscosity, refreshed every Newton iteration (adaptive
+# frozen-per-iteration AV): the sensor is re-evaluated from the current
+# iterate, under-relaxed by av.relax, floored by a bootstrap tanh profile
+# that decays over bootstrap.decay_iters iterations, then frozen through
+# that iteration's Jacobian and line search.
 case_name: m45_sensor
 
 mesh:
@@ -30,8 +30,8 @@ av:
   mode: sensor
   lambda: 0.2
   kappa: 0.25
-  updates: 3
-  bootstrap: {lambda: 0.05, c: 5.0}
+  relax: 0.5
+  bootstrap: {lambda: 0.05, c: 5.0, decay_iters: 25}
 
 init:
   mode: damped_freestream

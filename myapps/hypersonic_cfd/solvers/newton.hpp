@@ -67,6 +67,14 @@ using NewtonOutput =
    std::function<void(int iteration, const HDGState &state,
                       double residual)>;
 
+// Called at the top of every iteration, before the residual/Jacobian
+// assembly. Lets the caller refresh frozen operator data (e.g. a sensor
+// artificial-viscosity field) from the current iterate; whatever it
+// installs stays frozen through this iteration's Jacobian and line
+// search, keeping each linearization self-consistent.
+using NewtonPrepare =
+   std::function<void(int iteration, const HDGState &state)>;
+
 // Damped Newton with Armijo backtracking and an optional pseudo-transient
 // continuation (backward-Euler mass term, SER time-step growth). Step
 // rejection on line-search failure shrinks the pseudo-time step instead of
@@ -74,7 +82,8 @@ using NewtonOutput =
 inline NewtonReport DampedNewtonSolve(
    HDGOperator &op, HDGState &state,
    const NewtonConfig &config,
-   const NewtonOutput &output = NewtonOutput())
+   const NewtonOutput &output = NewtonOutput(),
+   const NewtonPrepare &prepare = NewtonPrepare())
 {
    if (config.max_iterations <= 0 || !(config.tolerance > 0.0))
    {
@@ -103,6 +112,7 @@ inline NewtonReport DampedNewtonSolve(
       config.pseudo_transient ? config.initial_pseudo_time_step : 0.0;
    for (int iteration = 0; iteration <= config.max_iterations; ++iteration)
    {
+      if (prepare) { prepare(iteration, state); }
       const double inverse_step =
          pseudo_time_step > 0.0 ? 1.0 / pseudo_time_step : 0.0;
       const auto assembly_start = std::chrono::steady_clock::now();

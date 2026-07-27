@@ -71,10 +71,11 @@ struct DriverParams
    double av_lambda = 0.0;
    double av_c = 0.0;
    double av_kappa = 0.25;
-   int av_updates = 2;
+   double av_relax = 0.5;
    bool av_bootstrap = false;
    double av_bootstrap_lambda = 0.0;
    double av_bootstrap_c = 0.0;
+   int av_bootstrap_decay_iters = 25;
    std::string init_mode;
    double damping_c = 0.0;
    hycfd::NewtonConfig newton;
@@ -191,16 +192,27 @@ DriverParams LoadParams(const std::string &path)
    {
       params.av_lambda = Required<double>(av, "lambda");
       params.av_kappa = Optional<double>(av, "kappa", 0.25);
-      params.av_updates = Optional<int>(av, "updates", 2);
+      params.av_relax = Optional<double>(av, "relax", 0.5);
+      if (!(params.av_relax > 0.0) || params.av_relax > 1.0)
+      {
+         throw std::runtime_error("av.relax must lie in (0, 1]");
+      }
       if (av["bootstrap"])
       {
          // Cold starts need AV where the shock will form before the
-         // sensor can see it: a frozen tanh profile covers the first
-         // solve, then the sensor takes over.
+         // sensor can see it: a tanh profile floors the sensor field and
+         // decays away over the first Newton iterations.
          params.av_bootstrap = true;
          params.av_bootstrap_lambda =
             Required<double>(av["bootstrap"], "lambda");
          params.av_bootstrap_c = Required<double>(av["bootstrap"], "c");
+         params.av_bootstrap_decay_iters =
+            Optional<int>(av["bootstrap"], "decay_iters", 25);
+         if (params.av_bootstrap_decay_iters <= 0)
+         {
+            throw std::runtime_error(
+               "av.bootstrap.decay_iters must be positive");
+         }
       }
    }
    else if (params.av_mode != "file")
@@ -915,17 +927,19 @@ int main(int argc, char *argv[])
          };
          if (params.av_mode == "sensor")
          {
-            // Lagged sensor fixed point: solve with frozen AV, refresh
-            // the sensor from the converged state, repeat.
+            // Adaptive frozen-per-iteration AV: the dilatation sensor is
+            // re-evaluated from the current iterate at the top of every
+            // Newton iteration and then frozen through that iteration's
+            // Jacobian and line search. The per-solve lagged fixed point
+            // this replaces limit-cycled: the shock drifted between
+            // solves faster than the outer relaxation could track.
             mfem::H1_FECollection sensor_fec(1, 2);
             mfem::ParFiniteElementSpace sensor_fes(&par_mesh,
                                                    &sensor_fec);
             mfem::ParGridFunction av_field(&sensor_fes);
-            mfem::ParGridFunction previous_av(&sensor_fes);
-            hycfd::DilatationSensorOptions sensor_options;
-            sensor_options.lambda = params.av_lambda;
-            sensor_options.kappa = params.av_kappa;
+            mfem::ParGridFunction sensor_field(&sensor_fes);
             mfem::ParGridFunction bootstrap_field(&sensor_fes);
+            av_field = 0.0;
             bootstrap_field = 0.0;
             if (params.av_bootstrap)
             {
@@ -933,63 +947,66 @@ int main(int argc, char *argv[])
                   ArtificialViscosity(params.av_bootstrap_lambda,
                                       params.av_bootstrap_c));
                bootstrap_field.ProjectCoefficient(bootstrap_coefficient);
-               op.SetArtificialViscosity(ArtificialViscosity(
-                  params.av_bootstrap_lambda, params.av_bootstrap_c));
             }
-            else
+            hycfd::DilatationSensorOptions sensor_options;
+            sensor_options.lambda = params.av_lambda;
+            sensor_options.kappa = params.av_kappa;
+            bool have_previous = false;
+            const hycfd::NewtonPrepare refresh =
+               [&params, &op, &physics_model, &sensor_options,
+                &av_field, &sensor_field, &bootstrap_field,
+                &have_previous](
+                  int iteration, const hycfd::HDGState &current)
             {
-               hycfd::ComputeDilatationAV(op, state, *physics_model,
-                                          sensor_options, av_field);
-               op.SetArtificialViscosityField(av_field);
-            }
-            for (int update = 0; update <= params.av_updates; ++update)
-            {
-               report = hycfd::DampedNewtonSolve(op, state,
-                                                 params.newton, output);
-               if (!report.converged || update == params.av_updates)
+               hycfd::ComputeDilatationAV(op, current, *physics_model,
+                                          sensor_options, sensor_field);
+               // Exponential moving average: damps sensor flicker while
+               // the AV and the state co-evolve iteration by iteration.
+               if (have_previous)
                {
-                  break;
-               }
-               previous_av = av_field;
-               hycfd::ComputeDilatationAV(op, state, *physics_model,
-                                          sensor_options, av_field);
-               // Under-relax the lagged update: the sensor<->solution
-               // fixed point flickers if the AV field moves too fast.
-               if (update > 0 || !params.av_bootstrap)
-               {
-                  for (int i = 0; i < av_field.Size(); ++i)
+                  for (int i = 0; i < sensor_field.Size(); ++i)
                   {
-                     av_field[i] =
-                        0.5 * (av_field[i] + previous_av[i]);
+                     sensor_field[i] =
+                        params.av_relax * sensor_field[i] +
+                        (1.0 - params.av_relax) * av_field[i];
                   }
                }
                if (params.av_bootstrap)
                {
-                  // Hand over gradually: keep a decaying floor of the
-                  // bootstrap profile so stabilization never vanishes
-                  // abruptly from regions the sensor does not yet flag.
-                  const double decay =
-                     1.0 - static_cast<double>(update + 1) /
-                              static_cast<double>(params.av_updates);
-                  for (int i = 0; i < av_field.Size(); ++i)
+                  // Decaying floor: keeps stabilization where the shock
+                  // will form until the sensor has locked onto it.
+                  const double decay = std::max(
+                     0.0, 1.0 - static_cast<double>(iteration) /
+                             static_cast<double>(
+                                params.av_bootstrap_decay_iters));
+                  for (int i = 0; i < sensor_field.Size(); ++i)
                   {
-                     av_field[i] = std::max(av_field[i],
-                                            decay * bootstrap_field[i]);
+                     sensor_field[i] = std::max(
+                        sensor_field[i], decay * bootstrap_field[i]);
                   }
                }
-               previous_av -= av_field;
-               const double change_sumsq = mfem::InnerProduct(
-                  MPI_COMM_WORLD, previous_av, previous_av);
+               double change_sumsq = 0.0;
+               for (int i = 0; i < sensor_field.Size(); ++i)
+               {
+                  const double difference = sensor_field[i] - av_field[i];
+                  change_sumsq += difference * difference;
+               }
+               av_field = sensor_field;
+               have_previous = true;
+               op.SetArtificialViscosityField(av_field);
                const double norm_sumsq = mfem::InnerProduct(
                   MPI_COMM_WORLD, av_field, av_field);
-               op.SetArtificialViscosityField(av_field);
-               std::cout << "Sensor AV update " << update + 1
+               MPI_Allreduce(MPI_IN_PLACE, &change_sumsq, 1, MPI_DOUBLE,
+                             MPI_SUM, MPI_COMM_WORLD);
+               std::cout << "AV refresh " << std::setw(3) << iteration
                          << " relative_change="
                          << std::sqrt(change_sumsq /
                                       std::max(1.0e-28, norm_sumsq))
                          << " max_av=" << op.MaximumAbsAV()
                          << std::endl;
-            }
+            };
+            report = hycfd::DampedNewtonSolve(op, state, params.newton,
+                                              output, refresh);
          }
          else
          {
