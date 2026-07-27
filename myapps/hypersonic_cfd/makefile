@@ -69,12 +69,16 @@ check: test_physics test_mms test_ptc_limit test_bc test_av
 # and sensor-AV runs.
 MFEM_MPIEXEC ?= mpirun
 
-test: check test_g4 hycfd input/cylinder_nr6_nc12_q4.mesh
+# TODO(G7): add `./test_validation` (and an np=4 pass) here once the
+# flat-plate and compression-corner cases converge; the cylinder gates
+# already pass (run `./test_validation cylinder`).
+test: check test_g4 hycfd test_validation input/cylinder_nr6_nc12_q4.mesh
 	./hycfd -i input/mach8_regression.yaml --acceptance
 	./hycfd -i input/m45_sanity.yaml --acceptance
 	./hycfd -i input/m30_cylinder_file.yaml --acceptance
 	./hycfd -i input/m45_sensor.yaml --acceptance
 	./hycfd -i input/mach8_sensor.yaml --acceptance
+	./test_validation cylinder
 
 # G4 gates: np={2,4} consistency vs a serial reference, then the Mach 8
 # regression at np=4.

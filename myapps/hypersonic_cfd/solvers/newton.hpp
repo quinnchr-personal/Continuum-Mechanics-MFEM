@@ -36,6 +36,12 @@ struct NewtonConfig
    double armijo_c1 = 1.0e-4;
    double alpha_min = 0.015625;
    double ptc_reject_factor = 0.25;
+   // Reject line-search trials whose minimum density or pressure is not
+   // positive, exactly like non-finite residuals. With floors active a
+   // globally-decreasing step can park the state in floor-land, where
+   // the Jacobian is degenerate and Newton stalls; this keeps every
+   // accepted iterate physical. Off by default.
+   bool require_admissible = false;
    // SER: after an accepted step, dtau *= old_residual/new_residual
    // (clamped); PTC turns off once the residual drops below this threshold.
    double ptc_off_residual = 1.0e-2;
@@ -180,7 +186,11 @@ inline NewtonReport DampedNewtonSolve(
          const HDGResidualNorms new_norms = op.Assemble(state, false);
          report.assembly_seconds += seconds_since(residual_start);
          new_residual = new_norms.Total();
-         if (std::isfinite(new_residual))
+         const bool admissible =
+            !config.require_admissible ||
+            (op.MinimumDensity(state) > 0.0 &&
+             op.MinimumPressure(state) > 0.0);
+         if (std::isfinite(new_residual) && admissible)
          {
             if (ptc_active)
             {
