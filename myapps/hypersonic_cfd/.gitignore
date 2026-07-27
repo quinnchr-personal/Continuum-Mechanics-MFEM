@@ -1,0 +1,17 @@
+# build artifacts
+*.o
+/hycfd
+/test_physics
+/test_mms
+/test_ptc_limit
+/test_parallel
+/test_bc
+/test_av
+tools/generate_cylinder_mesh
+# generated inputs/outputs
+input/cylinder_nr6_nc12_q4.mesh
+ParaView/
+wall_data.csv
+regression_report.md
+parallel_reference.txt
+mesh_roundtrip_check.mesh

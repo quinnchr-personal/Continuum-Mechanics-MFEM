@@ -1,0 +1,54 @@
+# EXPERIMENTAL (not in `make test`): the lagged sensor<->solution fixed
+# point still flickers on the first pure-sensor pass; stabilizing it needs
+# per-iteration AV refresh inside the Newton loop (G6 follow-up).
+# Mach 4.5 / Re=1000 cylinder from a damped freestream with the dilatation
+# sensor artificial viscosity (lagged fixed point: solve, refresh sensor,
+# repeat) instead of the frozen geometric tanh profile.
+case_name: m45_sensor
+
+mesh:
+  source: exasim
+  exasim_dir: /home/quinnchr/dv/Exasim-apps/runs/nsmach8-baseline
+
+bc:
+  - {attrs: [1], type: isothermal_wall}
+  - {attrs: [2], type: supersonic_outflow}
+  - {attrs: [3], type: freestream}
+
+physics:
+  model: perfect_gas
+  gamma: 1.4
+  reynolds: 1000.0
+  prandtl: 0.71
+  mach: 4.5
+  T_inf_K: 124.49
+  Twall_K: 294.44
+  tau: 1.0
+  regularization: floors
+
+av:
+  mode: sensor
+  lambda: 0.2
+  kappa: 0.25
+  updates: 3
+  bootstrap: {lambda: 0.05, c: 5.0}
+
+init:
+  mode: damped_freestream
+  c: 10.0
+
+newton:
+  max_iters: 120
+  tol: 1.0e-6
+  ptc_off_residual: 1.0e-7
+
+ptc:
+  enabled: true
+  initial_dt: 1.5e1
+
+linear:
+  type: petsc_direct
+
+output:
+  path: ParaView/m45_sensor
+  paraview_every: 0
