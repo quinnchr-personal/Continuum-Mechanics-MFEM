@@ -1,0 +1,20 @@
+# Cook's membrane, compressible plane-strain NeoHookean. Geometry (mm):
+# corners (0,0), (48,44), (48,60), (0,44); left edge (attr 4) clamped, uniform
+# upward shear traction on the right edge (attr 2). Traction per unit
+# reference length is set in S4 from the 25-35% corner deflection target.
+mesh:
+  cartesian: { nx: 4, ny: 4, sx: 1.0, sy: 1.0 }
+  corners: [[0.0, 0.0], [48.0, 44.0], [48.0, 60.0], [0.0, 44.0]]
+  serial_refine: 2
+  parallel_refine: 0
+  order: 2
+material: { model: neo_hookean, E: 250.0, nu: 0.3, rho0: 1.0 }
+bcs:
+  dirichlet: [ { attr: [4], value: [0.0, 0.0] } ]
+  traction:  [ { attr: [2], value: [0.0, 6.25] } ]
+body_force: [0.0, 0.0]
+solver:
+  load_steps: 1
+  newton: { rtol: 1e-10, atol: 1e-12, max_it: 25 }
+  linear: { type: gmres_amg, rtol: 1e-12, max_it: 500 }
+output: { paraview: out/cook, fields: [displacement, vonmises, jacobian] }
