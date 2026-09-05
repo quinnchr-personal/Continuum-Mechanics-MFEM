@@ -54,6 +54,12 @@ void ParaViewWriter::Save(int cycle, double time)
   dc_.SetCycle(cycle);
   dc_.SetTime(time);
   dc_.Save();
+  if (dc_.Error() != mfem::DataCollection::No_Error)
+  {
+    dc_.ResetError();
+    throw ConfigError("output.paraview: failed to write '" + dc_.GetPrefixPath() +
+                      dc_.GetCollectionName() + "'");
+  }
 }
 
 } // namespace cmf

@@ -281,6 +281,9 @@ void TestYaml()
   CHECK_THROWS(cmf::ParseConfig(YAML::Load(
     "mesh: { cartesian: { nx: 2, ny: 2 }, tetris: 1 }\nmaterial: { model: neo_hookean, E: 1.0, nu: 0.3 }\n")),
     cmf::ConfigError, "unknown key 'mesh.tetris'");
+  CHECK_THROWS(cmf::ParseConfig(YAML::Load(
+    "mesh: { cartesian: { nx: 2, ny: 2 }, perturb: 0.3 }\nmaterial: { model: neo_hookean, E: 1.0, nu: 0.3 }\n")),
+    cmf::ConfigError, "mesh.perturb");
 }
 
 } // namespace

@@ -170,16 +170,20 @@ void PatchTest(const std::string &model, const Material &material)
   {
     // Linear regime: the first Newton step is the linear-elastic solution and
     // leaves an O(|A|) relative residual; the second step removes it to
-    // O(|A|^3) relative, which must fall below rtol = 1e-10.
+    // O(|A|^3) relative, which must fall below rtol = 1e-10 and leave the
+    // displacement within 1e-12 of the affine field both absolutely and
+    // relative to max |u| (~1e-5 here).
     tensor<double, 2, 2> A;
-    A(0, 0) = 3.0e-5; A(0, 1) = -1.75e-5;
-    A(1, 0) = 2.25e-5; A(1, 1) = -3.75e-5;
+    A(0, 0) = 0.5e-5; A(0, 1) = -0.3e-5;
+    A(1, 0) = 0.375e-5; A(1, 1) = -0.625e-5;
     tensor<double, 2> c;
-    c(0) = 0.75e-5; c(1) = -0.5e-5;
-    cmf::AppConfig cfg = BaseConfig(5, order, 0.3, model);
+    c(0) = 0.125e-5; c(1) = -0.1e-5;
+    const double u_max = 0.625e-5 + 0.3e-5 + 0.125e-5; // bound on max |u| over the unit square
+    cmf::AppConfig cfg = BaseConfig(5, order, 0.2, model);
     SolveResult r = SolveManufactured(cfg, Affine(A, c), material, false);
-    std::printf("  patch %s p=%d: max nodal error %.3e, L2 error %.3e, newton its %d, |R|:",
-                model.c_str(), order, r.max_nodal_error, r.l2_error, r.newton.iterations);
+    std::printf("  patch %s p=%d: max nodal error %.3e (%.3e relative to max|u|), L2 error %.3e, "
+                "newton its %d, |R|:", model.c_str(), order, r.max_nodal_error,
+                r.max_nodal_error / u_max, r.l2_error, r.newton.iterations);
     for (const cmf::NewtonIteration &it : r.newton.history) { std::printf(" %.2e", it.residual); }
     std::printf("\n");
     CHECK_MSG(r.newton.converged, model + " p=" + std::to_string(order) + " patch converged");
@@ -187,6 +191,8 @@ void PatchTest(const std::string &model, const Material &material)
               " patch Newton iterations " + std::to_string(r.newton.iterations));
     CHECK_MSG(r.max_nodal_error <= 1e-12, model + " p=" + std::to_string(order) +
               " patch max nodal error " + std::to_string(r.max_nodal_error));
+    CHECK_MSG(r.max_nodal_error / u_max <= 1e-12, model + " p=" + std::to_string(order) +
+              " patch relative nodal error " + std::to_string(r.max_nodal_error / u_max));
     CHECK_MSG(r.l2_error <= 1e-12, model + " p=" + std::to_string(order) +
               " patch L2 error " + std::to_string(r.l2_error));
 
@@ -203,6 +209,8 @@ void PatchTest(const std::string &model, const Material &material)
     CHECK_MSG(rf.newton.converged, model + " finite-strain patch converged");
     CHECK_MSG(rf.max_nodal_error <= 1e-12, model + " p=" + std::to_string(order) +
               " finite-strain patch max nodal error " + std::to_string(rf.max_nodal_error));
+    CHECK_MSG(rf.max_nodal_error / 0.15 <= 1e-12, model + " p=" + std::to_string(order) +
+              " finite-strain patch relative nodal error");
   }
 }
 

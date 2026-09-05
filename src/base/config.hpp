@@ -88,11 +88,18 @@ struct SolverConfig
   LinearSolverConfig linear;
 };
 
+struct ProbeConfig
+{
+  std::string name;
+  std::vector<double> point;
+};
+
 struct OutputConfig
 {
   std::string paraview;              // collection path; empty -> no output
   std::vector<std::string> fields;   // displacement | vonmises | jacobian
   bool high_order = true;
+  std::vector<ProbeConfig> probes;   // displacement printed at these points
 };
 
 struct AppConfig

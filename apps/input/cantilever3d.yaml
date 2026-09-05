@@ -1,0 +1,27 @@
+# 3D cantilever in the small-load linear limit: L = 10, square section 1 x 1,
+# clamped at x = 0 (attr 5), downward shear traction on the x = L face
+# (attr 3). The load gives max |Grad u| ~ 5e-5 (tests/test_benchmarks checks
+# <= 1e-4); Euler-Bernoulli tip deflection P L^3 / (3 E I) = 3.2e-4.
+# The rigid-body-mode (elasticity) AMG options stall on this slender p = 2
+# hex mesh, so the plain systems options are selected here; the solver also
+# falls back to them automatically if the elasticity variant does not converge.
+mesh:
+  cartesian: { nx: 20, ny: 2, nz: 2, sx: 10.0, sy: 1.0, sz: 1.0, element: hex }
+  serial_refine: 0
+  parallel_refine: 0
+  order: 2
+material: { model: neo_hookean, E: 250.0, nu: 0.3, rho0: 1.0 }
+bcs:
+  dirichlet: [ { attr: [5], value: [0.0, 0.0, 0.0] } ]
+  traction:  [ { attr: [3], value: [0.0, 0.0, -2.0e-5] } ]
+body_force: [0.0, 0.0, 0.0]
+solver:
+  load_steps: 1
+  # rtol 1e-6 of the 5e-6 initial residual is ~10x above the round-off floor
+  # of the stress evaluation at these strains (eps * mu per point).
+  newton: { rtol: 1e-6, atol: 1e-14, max_it: 25 }
+  linear: { type: gmres_amg, amg: systems, rtol: 1e-12, max_it: 500 }
+output:
+  paraview: out/cantilever3d
+  fields: [displacement, vonmises, jacobian]
+  probes: [ { name: tip, point: [10.0, 0.5, 0.5] } ]

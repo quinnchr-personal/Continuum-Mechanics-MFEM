@@ -29,12 +29,18 @@ void PerturbInteriorVertices(mfem::Mesh &mesh, double amplitude, unsigned seed)
   }
   const int dim = mesh.Dimension();
   const int nv = mesh.GetNV();
+  // Topological boundary: vertices of faces with a single adjacent element.
+  // (Boundary elements can be incomplete for file meshes with partial
+  // physical groups, so they are not used here.)
   mfem::Array<bool> on_boundary(nv);
   on_boundary = false;
   mfem::Array<int> verts;
-  for (int be = 0; be < mesh.GetNBE(); be++)
+  for (int f = 0; f < mesh.GetNumFaces(); f++)
   {
-    mesh.GetBdrElementVertices(be, verts);
+    int e1 = -1, e2 = -1;
+    mesh.GetFaceElements(f, &e1, &e2);
+    if (e2 >= 0) { continue; }
+    mesh.GetFaceVertices(f, verts);
     for (int v : verts) { on_boundary[v] = true; }
   }
   double h = mesh.GetElementSize(0, 1);
@@ -46,16 +52,23 @@ void PerturbInteriorVertices(mfem::Mesh &mesh, double amplitude, unsigned seed)
   std::uniform_real_distribution<double> unit(-1.0, 1.0);
   mfem::Vector displacement(nv * dim);
   displacement = 0.0;
-  // Vertex-major layout expected by MoveVertices: d(v*dim + i).
+  // MoveVertices reads component-major: d(i*nv + v) moves vertex v in
+  // direction i (the GetVertices/SetVertices layout).
   for (int v = 0; v < nv; v++)
   {
     for (int i = 0; i < dim; i++)
     {
       const double r = unit(rng);
-      if (!on_boundary[v]) { displacement(v * dim + i) = amplitude * h * r; }
+      if (!on_boundary[v]) { displacement(i * nv + v) = amplitude * h * r; }
     }
   }
   mesh.MoveVertices(displacement);
+  const int inverted = mesh.CheckElementOrientation(false);
+  if (inverted > 0)
+  {
+    throw ConfigError("mesh.perturb: " + std::to_string(inverted) +
+                      " elements inverted; reduce the amplitude");
+  }
 }
 
 mfem::Mesh BuildSerialMesh(const MeshConfig &cfg)
@@ -99,6 +112,11 @@ mfem::Mesh BuildSerialMesh(const MeshConfig &cfg)
                + xi * eta * c[2][i] + (1.0 - xi) * eta * c[3][i];
       }
     });
+    if (mesh.CheckElementOrientation(false) > 0)
+    {
+      throw ConfigError("mesh.corners: the corner quadrilateral must be listed "
+                        "counter-clockwise and be non-degenerate");
+    }
   }
 
   for (int l = 0; l < cfg.serial_refine; l++) { mesh.UniformRefinement(); }

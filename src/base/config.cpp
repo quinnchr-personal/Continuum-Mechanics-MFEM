@@ -175,9 +175,11 @@ MeshConfig ParseMeshConfig(const YAML::Node &node, const std::string &path)
   {
     throw ConfigError("key '" + r.Path("order") + "' must be >= 1");
   }
-  if (cfg.perturb < 0.0 || cfg.perturb > 0.45)
+  // Interior offsets of at most perturb*h per coordinate keep every corner
+  // Jacobian positive only for perturb < 0.25.
+  if (cfg.perturb < 0.0 || cfg.perturb >= 0.25)
   {
-    throw ConfigError("key '" + r.Path("perturb") + "' must lie in [0, 0.45]");
+    throw ConfigError("key '" + r.Path("perturb") + "' must lie in [0, 0.25)");
   }
 
   if (r.Has("cartesian"))
@@ -377,6 +379,29 @@ OutputConfig ParseOutputConfig(const YAML::Node &node, const std::string &path)
                         "' (expected displacement, vonmises, or jacobian)");
     }
   }
+  if (r.Has("probes"))
+  {
+    YAML::Node probes = r.Raw("probes");
+    const std::string ppath = r.Path("probes");
+    if (!probes.IsSequence())
+    {
+      throw ConfigError("'" + ppath + "' must be a list of {name, point} maps");
+    }
+    for (std::size_t i = 0; i < probes.size(); i++)
+    {
+      NodeReader item(probes[i], ppath + "[" + std::to_string(i) + "]");
+      ProbeConfig probe;
+      probe.name = item.Require<std::string>("name");
+      probe.point = item.Require<std::vector<double>>("point");
+      if (probe.point.size() < 1 || probe.point.size() > 3)
+      {
+        throw ConfigError("key '" + item.Path("point") + "' must have 1 to 3 coordinates");
+      }
+      item.Finish();
+      cfg.probes.push_back(probe);
+    }
+  }
+  else { r.Optional<int>("probes", 0); }
   r.Finish();
   return cfg;
 }

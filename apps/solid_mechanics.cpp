@@ -8,6 +8,7 @@
 #include "base/fields.hpp"
 #include "base/mesh_input.hpp"
 #include "base/output.hpp"
+#include "base/probes.hpp"
 #include "materials/materials.hpp"
 #include "mfem.hpp"
 #include "physics/solid_mechanics_tl.hpp"
@@ -85,8 +86,23 @@ int main(int argc, char *argv[])
       std::printf("result: converged %s, load steps %zu, |u|_L2 = %.12e, "
                   "internal energy = %.12e\n",
                   report.converged ? "yes" : "no", report.steps.size(), u_l2, energy);
-      if (writer) { std::cout << "wrote " << cfg.output.paraview << std::endl; }
     }
+    for (const cmf::ProbeConfig &probe : cfg.output.probes)
+    {
+      const std::vector<double> value = cmf::ProbeVector(physics.Displacement(), probe.point);
+      if (root)
+      {
+        std::printf("probe %s at (", probe.name.c_str());
+        for (std::size_t i = 0; i < probe.point.size(); i++)
+        {
+          std::printf("%s%g", i ? ", " : "", probe.point[i]);
+        }
+        std::printf("): displacement =");
+        for (double v : value) { std::printf(" %.12e", v); }
+        std::printf("\n");
+      }
+    }
+    if (root && writer) { std::cout << "wrote " << cfg.output.paraview << std::endl; }
     return report.converged ? 0 : 2;
   }
   catch (const std::exception &e)

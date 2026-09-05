@@ -85,10 +85,20 @@ CHECK_TESTS := tests/test_base tests/test_materials tests/test_solid_mms
 check: $(CHECK_TESTS)
 	@for t in $(CHECK_TESTS); do echo "== $$t"; ./$$t || exit 1; done
 
-# Full gates: fast gates plus the app smoke runs, serial and np=4.
-test: check apps/solid_mechanics
-	./apps/solid_mechanics -i apps/input/square.yaml
-	$(MFEM_MPIEXEC) -np 4 ./apps/solid_mechanics -i apps/input/square.yaml
+# Full gates (S4): fast gates, the YAML-driven app runs serial and np=4,
+# np={2,4} consistency vs a serial reference, and the benchmarks with the
+# frozen Cook's membrane regression value, serial and np=4.
+test: check apps/solid_mechanics tests/test_benchmarks tests/test_parallel
+	./apps/solid_mechanics -i apps/input/cook.yaml
+	$(MFEM_MPIEXEC) -np 4 ./apps/solid_mechanics -i apps/input/cook.yaml
+	./apps/solid_mechanics -i apps/input/cantilever3d.yaml
+	mkdir -p tests/out
+	./tests/test_parallel --write tests/out/parallel_reference.txt
+	$(MFEM_MPIEXEC) -np 2 ./tests/test_parallel --check tests/out/parallel_reference.txt
+	$(MFEM_MPIEXEC) -np 4 ./tests/test_parallel --check tests/out/parallel_reference.txt
+	./tests/test_benchmarks
+	$(MFEM_MPIEXEC) -np 4 ./tests/test_benchmarks
+	./tests/test_benchmarks --cook-ratio-gate
 
 clean:
 	rm -f $(LIB) $(LIB_OBJ) $(APPS) $(TESTS) $(DEPS) apps/*.o tests/*.o
