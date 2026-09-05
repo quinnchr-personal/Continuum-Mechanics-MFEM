@@ -81,7 +81,7 @@ $(TESTS): tests/%: tests/%.o $(LIB)
 -include $(DEPS)
 
 # Fast gates (S1-S3): serial unit and MMS tests.
-CHECK_TESTS :=
+CHECK_TESTS := tests/test_base
 check: $(CHECK_TESTS)
 	@for t in $(CHECK_TESTS); do echo "== $$t"; ./$$t || exit 1; done
 

@@ -9,6 +9,7 @@
 /tests/*.d
 /tests/test_*
 !/tests/*.cpp
+!/tests/*.hpp
 /out/
 /tests/out/
 /apps/out/
