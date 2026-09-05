@@ -1,0 +1,14 @@
+# Build products of the root framework (src/, apps/, tests/). myapps/ is untouched.
+/libcmf.a
+/src/*/*.o
+/src/*/*.d
+/apps/*.o
+/apps/*.d
+/apps/solid_mechanics
+/tests/*.o
+/tests/*.d
+/tests/test_*
+!/tests/*.cpp
+/out/
+/tests/out/
+/apps/out/
