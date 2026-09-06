@@ -1,8 +1,11 @@
 # Continuum-Mechanics-MFEM flux-kernel framework.
-# Builds lib$(LIBNAME).a from src/, then apps/ and tests/ against it.
+# Out-of-tree build: every object, dependency file, the library
+# $(BUILD_DIR)/lib$(LIBNAME).a, and the executables under $(BUILD_DIR)/apps
+# and $(BUILD_DIR)/tests. Sources stay clean; `make clean` removes $(BUILD_DIR).
 # Configuration discovery follows the myapps makefiles (MFEM config.mk).
 
 LIBNAME ?= cmf
+BUILD_DIR ?= build
 
 MFEM_DIR ?= ../..
 MFEM_BUILD_DIR ?= $(MFEM_DIR)
@@ -49,14 +52,17 @@ CPPFLAGS += -Isrc
 CXXFLAGS_ALL := $(MFEM_FLAGS) $(YAML_CXXFLAGS) $(WARNFLAGS) $(CPPFLAGS)
 LINK_LIBS := $(MFEM_LIBS) $(YAML_LIBS) -lyaml-cpp
 
-LIB := lib$(LIBNAME).a
+LIB := $(BUILD_DIR)/lib$(LIBNAME).a
 LIB_SRC := $(sort $(wildcard src/*/*.cpp))
-LIB_OBJ := $(LIB_SRC:.cpp=.o)
+LIB_OBJ := $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(LIB_SRC))
 APP_SRC := $(sort $(wildcard apps/*.cpp))
-APPS := $(APP_SRC:.cpp=)
+APPS := $(patsubst %.cpp,$(BUILD_DIR)/%,$(APP_SRC))
 TEST_SRC := $(sort $(wildcard tests/*.cpp))
-TESTS := $(TEST_SRC:.cpp=)
-DEPS := $(LIB_OBJ:.o=.d) $(APP_SRC:.cpp=.d) $(TEST_SRC:.cpp=.d)
+TESTS := $(patsubst %.cpp,$(BUILD_DIR)/%,$(TEST_SRC))
+DEPS := $(LIB_OBJ:.o=.d) $(patsubst %.cpp,$(BUILD_DIR)/%.d,$(APP_SRC) $(TEST_SRC))
+
+APP := $(BUILD_DIR)/apps/solid_mechanics
+TEST_OUT := $(BUILD_DIR)/tests/out
 
 .PHONY: all lib apps tests check test clean
 
@@ -67,41 +73,46 @@ apps: $(APPS)
 tests: $(TESTS)
 
 $(LIB): $(LIB_OBJ)
+	@mkdir -p $(dir $@)
 	ar rcs $@ $^
 
-$(APPS): apps/%: apps/%.o $(LIB)
+$(APPS): $(BUILD_DIR)/apps/%: $(BUILD_DIR)/apps/%.o $(LIB)
 	$(MFEM_CXX) $(MFEM_FLAGS) $< -o $@ $(LIB) $(LINK_LIBS)
 
-$(TESTS): tests/%: tests/%.o $(LIB)
+$(TESTS): $(BUILD_DIR)/tests/%: $(BUILD_DIR)/tests/%.o $(LIB)
 	$(MFEM_CXX) $(MFEM_FLAGS) $< -o $@ $(LIB) $(LINK_LIBS)
 
-%.o: %.cpp
+# Objects and their .d dependency fragments land beside each other in
+# $(BUILD_DIR), mirroring the source tree.
+$(BUILD_DIR)/%.o: %.cpp
+	@mkdir -p $(dir $@)
 	$(MFEM_CXX) $(CXXFLAGS_ALL) -MMD -MP -c $< -o $@
 
 -include $(DEPS)
 
-# Fast gates (S1-S3): serial unit and MMS tests.
-CHECK_TESTS := tests/test_base tests/test_materials tests/test_solid_mms tests/test_mixed
+# Fast gates (S1-S3 + mixed): serial unit and MMS tests.
+CHECK_TESTS := $(addprefix $(BUILD_DIR)/tests/,test_base test_materials test_solid_mms test_mixed)
 check: $(CHECK_TESTS)
 	@for t in $(CHECK_TESTS); do echo "== $$t"; ./$$t || exit 1; done
 
 # Full gates (S4): fast gates, the YAML-driven app runs serial and np=4,
 # np={2,4} consistency vs a serial reference, and the benchmarks with the
-# frozen Cook's membrane regression value, serial and np=4.
-test: check apps/solid_mechanics tests/test_benchmarks tests/test_parallel
-	./apps/solid_mechanics -i apps/input/cook.yaml
-	$(MFEM_MPIEXEC) -np 4 ./apps/solid_mechanics -i apps/input/cook.yaml
-	./apps/solid_mechanics -i apps/input/cantilever3d.yaml
-	mkdir -p tests/out
-	./tests/test_parallel --write tests/out/parallel_reference.txt
-	$(MFEM_MPIEXEC) -np 2 ./tests/test_parallel --check tests/out/parallel_reference.txt
-	$(MFEM_MPIEXEC) -np 4 ./tests/test_parallel --check tests/out/parallel_reference.txt
-	./apps/solid_mechanics -i apps/input/cook_incompressible.yaml
-	$(MFEM_MPIEXEC) -np 4 ./apps/solid_mechanics -i apps/input/cook_incompressible.yaml
-	./tests/test_mixed --full
-	./tests/test_benchmarks
-	$(MFEM_MPIEXEC) -np 4 ./tests/test_benchmarks
-	./tests/test_benchmarks --cook-ratio-gate
+# frozen Cook's membrane regression values, serial and np=4. Run from the
+# repository root: the inputs are referenced as apps/input/*.yaml.
+test: check $(APP) $(BUILD_DIR)/tests/test_benchmarks $(BUILD_DIR)/tests/test_parallel
+	$(APP) -i apps/input/cook.yaml
+	$(MFEM_MPIEXEC) -np 4 $(APP) -i apps/input/cook.yaml
+	$(APP) -i apps/input/cantilever3d.yaml
+	mkdir -p $(TEST_OUT)
+	$(BUILD_DIR)/tests/test_parallel --write $(TEST_OUT)/parallel_reference.txt
+	$(MFEM_MPIEXEC) -np 2 $(BUILD_DIR)/tests/test_parallel --check $(TEST_OUT)/parallel_reference.txt
+	$(MFEM_MPIEXEC) -np 4 $(BUILD_DIR)/tests/test_parallel --check $(TEST_OUT)/parallel_reference.txt
+	$(APP) -i apps/input/cook_incompressible.yaml
+	$(MFEM_MPIEXEC) -np 4 $(APP) -i apps/input/cook_incompressible.yaml
+	$(BUILD_DIR)/tests/test_mixed --full
+	$(BUILD_DIR)/tests/test_benchmarks
+	$(MFEM_MPIEXEC) -np 4 $(BUILD_DIR)/tests/test_benchmarks
+	$(BUILD_DIR)/tests/test_benchmarks --cook-ratio-gate
 
 clean:
-	rm -f $(LIB) $(LIB_OBJ) $(APPS) $(TESTS) $(DEPS) apps/*.o tests/*.o
+	rm -rf $(BUILD_DIR)

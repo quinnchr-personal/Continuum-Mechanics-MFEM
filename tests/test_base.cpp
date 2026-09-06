@@ -172,7 +172,7 @@ void TestDualTensor()
 
 std::string WriteTemp(const std::string &name, const std::string &text)
 {
-  const std::string path = "tests/out/" + name;
+  const std::string path = "build/tests/out/" + name;
   std::ofstream out(path);
   out << text;
   return path;
@@ -193,7 +193,7 @@ output: { paraview: out/cook, fields: [displacement, vonmises] }
 
 void TestYaml()
 {
-  std::filesystem::create_directories("tests/out");
+  std::filesystem::create_directories("build/tests/out");
   // The schema example of the plan parses with the expected values.
   cmf::AppConfig cfg = cmf::ParseConfig(YAML::Load(kGoodYaml));
   CHECK(cfg.mesh.cartesian && cfg.mesh.box.nx == 4 && cfg.mesh.order == 2);
@@ -217,7 +217,7 @@ void TestYaml()
   const std::string bad = WriteTemp("bad_syntax.yaml",
                                     "mesh: { cartesian: { nx: 2, ny: 2 }\nmaterial: [unclosed\n");
   CHECK_THROWS(cmf::LoadConfig(bad), cmf::ConfigError, "YAML syntax error");
-  CHECK_THROWS(cmf::LoadConfig("tests/out/does_not_exist.yaml"), cmf::ConfigError,
+  CHECK_THROWS(cmf::LoadConfig("build/tests/out/does_not_exist.yaml"), cmf::ConfigError,
                "cannot open");
   CHECK_THROWS(cmf::ParseConfig(YAML::Load("just a scalar")), cmf::ConfigError, "mesh");
 

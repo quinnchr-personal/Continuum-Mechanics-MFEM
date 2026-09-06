@@ -1,15 +1,4 @@
-# Build products of the root framework (src/, apps/, tests/). myapps/ is untouched.
-/libcmf.a
-/src/*/*.o
-/src/*/*.d
-/apps/*.o
-/apps/*.d
-/apps/solid_mechanics
-/tests/*.o
-/tests/*.d
-/tests/test_*
-!/tests/*.cpp
-!/tests/*.hpp
+# Build products of the root framework live under build/ (see makefile BUILD_DIR);
+# out/ holds ParaView output of the app inputs. myapps/ is untouched.
+/build/
 /out/
-/tests/out/
-/apps/out/

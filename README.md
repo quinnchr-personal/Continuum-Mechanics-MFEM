@@ -33,7 +33,8 @@ src/solvers/    newton (damped Newton, Armijo backtracking), linear_solver (GMRE
 apps/           solid_mechanics.cpp (YAML parsing and wiring only) and apps/input/*.yaml
 tests/          test_base, test_materials, test_solid_mms, test_mixed (make check);
                 test_mixed --full, test_benchmarks, test_parallel (make test)
-makefile        builds lib$(LIBNAME).a (default libcmf.a) from src/, then apps/ and tests/
+makefile        out-of-tree build under build/ (BUILD_DIR): build/libcmf.a (LIBNAME) from src/,
+                then build/apps/* and build/tests/* linked against it
 ```
 
 ### Build and test
@@ -43,13 +44,19 @@ Requirements: MFEM 4.8 built with MPI, METIS, and HYPRE (the makefile finds
 yaml-cpp via `pkg-config`, and an `mpirun`.
 
 ```
-make            # libcmf.a, apps/solid_mechanics, tests/*
+make            # build/libcmf.a, build/apps/solid_mechanics, build/tests/*
 make check      # serial, ~12 s: tensor/dual/YAML units, materials, patch tests + MMS (both formulations)
 make test       # everything: app runs serial and np=4, np={2,4} consistency, benchmarks
-make clean
+make clean      # removes build/
 ```
 
-`make test` ends with `tests/test_benchmarks --cook-ratio-gate`, which asserts
+All build products (objects, `.d` dependency fragments, the library, the
+executables, and test scratch files) go under `build/`, mirroring the source
+tree; set `BUILD_DIR=...` on the command line to put them elsewhere. Run the
+targets from the repository root, since the inputs are referenced as
+`apps/input/*.yaml`.
+
+`make test` ends with `build/tests/test_benchmarks --cook-ratio-gate`, which asserts
 the plan's requirement that the Cook's membrane corner displacement converge
 with successive differences shrinking by at least 3x per uniform refinement.
 That threshold is not met (measured ratios 2.34, 2.45, 2.31): uniform
@@ -60,8 +67,8 @@ final step is green; the threshold is kept as written rather than relaxed.
 ### Running Cook's membrane
 
 ```
-./apps/solid_mechanics -i apps/input/cook.yaml
-mpirun -np 4 ./apps/solid_mechanics -i apps/input/cook.yaml
+./build/apps/solid_mechanics -i apps/input/cook.yaml
+mpirun -np 4 ./build/apps/solid_mechanics -i apps/input/cook.yaml
 ```
 
 Plane strain, NeoHookean with E = 250, nu = 0.3, left edge clamped, uniform
