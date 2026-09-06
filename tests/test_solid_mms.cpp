@@ -21,7 +21,7 @@ using cmf::tensor;
 namespace
 {
 
-const double kE = 250.0, kNu = 0.3, kRho0 = 1.0;
+const double kE = 250.0, kNu = 0.3, kRho0 = 2.5; // rho0 != 1 so the body-force density scaling is exercised
 
 cmf::AppConfig BaseConfig(int nx, int order, double perturb, const std::string &model)
 {
@@ -223,12 +223,15 @@ void ConvergenceTest()
   cmf::NewtonReport finest;
   for (int order = 1; order <= 2; order++)
   {
+    // Distorted base mesh (interior vertices jittered by 0.15 h) refined
+    // uniformly, so the element maps are genuinely bilinear at every level.
     std::vector<double> errors;
     const int base = order == 1 ? 8 : 4;
     for (int level = 0; level < 4; level++)
     {
       const int nx = base << level;
-      cmf::AppConfig cfg = BaseConfig(nx, order, 0.0, "neo_hookean");
+      cmf::AppConfig cfg = BaseConfig(base, order, 0.15, "neo_hookean");
+      cfg.mesh.serial_refine = level;
       cfg.solver.newton.rtol = 1e-12;
       SolveResult r = SolveManufactured(cfg, m, material, true);
       CHECK_MSG(r.newton.converged, "MMS p=" + std::to_string(order) + " nx=" +
@@ -338,6 +341,11 @@ int main(int argc, char *argv[])
 {
   mfem::Mpi::Init(argc, argv);
   mfem::Hypre::Init();
+  if (mfem::Mpi::WorldSize() != 1)
+  {
+    if (mfem::Mpi::Root()) { std::cout << "test_solid_mms is a serial test" << std::endl; }
+    return 1;
+  }
   const cmf::LameParameters lame = cmf::LameFromYoungPoisson(kE, kNu);
   std::cout << "patch tests" << std::endl;
   PatchTest("neo_hookean", cmf::NeoHookean{lame.mu, lame.lambda});

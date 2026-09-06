@@ -48,7 +48,8 @@ int main(int argc, char *argv[])
                 << ", material " << cmf::MaterialName(material) << std::endl;
     }
 
-    cmf::LinearSolver linear(cfg.solver.linear, physics.FESpace());
+    std::unique_ptr<cmf::LinearSolver> linear =
+      cmf::MakeLinearSolver(cfg.solver.linear, physics.FESpace());
     mfem::Vector u(physics.FESpace().GetTrueVSize());
     u = 0.0;
 
@@ -65,7 +66,7 @@ int main(int argc, char *argv[])
     }
 
     const cmf::QuasiStaticReport report = cmf::SolveQuasiStatic(
-      physics, linear, cfg.solver, u,
+      physics, *linear, cfg.solver, u,
       [&](const cmf::LoadStepReport &step, const mfem::Vector &x)
       {
         if (writer && step.newton.converged)

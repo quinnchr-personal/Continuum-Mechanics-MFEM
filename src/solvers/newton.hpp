@@ -22,6 +22,7 @@ struct NewtonReport
 {
   bool converged = false;
   int iterations = 0;
+  int linear_solve_failures = 0; // Krylov solves that hit max_it (if known)
   double initial_residual = 0.0;
   double residual = 0.0;
   std::string failure;

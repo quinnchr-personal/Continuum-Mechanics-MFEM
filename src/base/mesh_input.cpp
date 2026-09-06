@@ -119,8 +119,10 @@ mfem::Mesh BuildSerialMesh(const MeshConfig &cfg)
     }
   }
 
-  for (int l = 0; l < cfg.serial_refine; l++) { mesh.UniformRefinement(); }
+  // Jitter the base mesh, then refine uniformly: refinement levels share
+  // one distortion pattern, as in a distorted-mesh convergence study.
   if (cfg.perturb > 0.0) { PerturbInteriorVertices(mesh, cfg.perturb); }
+  for (int l = 0; l < cfg.serial_refine; l++) { mesh.UniformRefinement(); }
   return mesh;
 }
 

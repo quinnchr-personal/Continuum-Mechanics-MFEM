@@ -4,6 +4,8 @@
 #include <cstdio>
 #include <limits>
 
+#include "solvers/linear_solver.hpp"
+
 namespace cmf
 {
 
@@ -13,6 +15,20 @@ namespace
 double GlobalNorm(MPI_Comm comm, const mfem::Vector &v)
 {
   return std::sqrt(mfem::InnerProduct(comm, v, v));
+}
+
+// Convergence of the last linear solve when the solver can report it.
+bool LinearSolveConverged(const mfem::Solver &solver)
+{
+  if (const auto *ours = dynamic_cast<const LinearSolver *>(&solver))
+  {
+    return ours->Converged();
+  }
+  if (const auto *it = dynamic_cast<const mfem::IterativeSolver *>(&solver))
+  {
+    return it->GetConverged();
+  }
+  return true;
 }
 
 } // namespace
@@ -59,6 +75,15 @@ NewtonReport DampedNewtonSolve(mfem::Operator &op, mfem::Solver &linear_solver,
     linear_solver.SetOperator(J);
     dx = 0.0;
     linear_solver.Mult(r, dx);
+    if (!LinearSolveConverged(linear_solver))
+    {
+      report.linear_solve_failures++;
+      if (verbose)
+      {
+        std::printf("newton it %2d: warning, linear solve did not converge; "
+                    "continuing with the inexact step\n", it + 1);
+      }
+    }
 
     double alpha = 1.0;
     bool accepted = false;
@@ -78,7 +103,12 @@ NewtonReport DampedNewtonSolve(mfem::Operator &op, mfem::Solver &linear_solver,
     }
     if (!accepted)
     {
-      report.failure = "line search failed to reduce the residual";
+      char buf[160];
+      std::snprintf(buf, sizeof(buf),
+                    "line search failed to reduce the residual (|R|/|R0| = %.2e; "
+                    "the tolerance may lie below the round-off floor)",
+                    rn / report.initial_residual);
+      report.failure = buf;
       break;
     }
     x = x_trial;

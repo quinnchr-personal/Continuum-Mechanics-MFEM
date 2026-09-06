@@ -8,12 +8,23 @@
 // F(u, grad u) . S(u) . Fhat contract when the second physics arrives.
 #pragma once
 
+#include <type_traits>
+#include <utility>
+
 #include "base/tensor.hpp"
 #include "materials/material_tangent.hpp"
 #include "mfem.hpp"
 
 namespace cmf
 {
+
+// The material contract is PK1<T>(F); Energy<T>(F) is optional and only
+// used by GetElementEnergy (ParNonlinearForm::GetEnergy).
+template <typename M, typename = void>
+struct has_energy : std::false_type {};
+template <typename M>
+struct has_energy<M, std::void_t<decltype(std::declval<const M &>().Energy(
+  std::declval<const tensor<double, 3, 3> &>()))>> : std::true_type {};
 
 // F = I + H, embedding a 2x2 displacement gradient as plane strain (F33 = 1).
 template <int dim>
@@ -136,18 +147,26 @@ private:
   double Energy(const mfem::FiniteElement &el, mfem::ElementTransformation &Tr,
                 const mfem::Vector &elfun)
   {
-    Prepare<dim>(el, elfun);
-    const mfem::IntegrationRule &ir = Rule(el, Tr);
-    double energy = 0.0;
-    tensor<double, dim, dim> H;
-    for (int q = 0; q < ir.GetNPoints(); q++)
+    if constexpr (!has_energy<Material>::value)
     {
-      const mfem::IntegrationPoint &ip = ir.IntPoint(q);
-      PointSetup<dim>(el, Tr, ip, H);
-      energy += ip.weight * Tr.Weight() *
-                material_.Energy(DeformationGradient<dim>(H));
+      MFEM_ABORT("TotalLagrangianIntegrator: this material has no Energy(F)");
+      return 0.0;
     }
-    return energy;
+    else
+    {
+      Prepare<dim>(el, elfun);
+      const mfem::IntegrationRule &ir = Rule(el, Tr);
+      double energy = 0.0;
+      tensor<double, dim, dim> H;
+      for (int q = 0; q < ir.GetNPoints(); q++)
+      {
+        const mfem::IntegrationPoint &ip = ir.IntPoint(q);
+        PointSetup<dim>(el, Tr, ip, H);
+        energy += ip.weight * Tr.Weight() *
+                  material_.Energy(DeformationGradient<dim>(H));
+      }
+      return energy;
+    }
   }
 
   template <int dim>

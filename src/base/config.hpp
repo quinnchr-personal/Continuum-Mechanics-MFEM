@@ -34,7 +34,7 @@ struct MeshConfig
   // Optional bilinear image of the 2D box: corners at (0,0), (sx,0), (sx,sy),
   // (0,sy) are mapped to corners[0..3].
   std::vector<std::array<double, 2>> corners;
-  double perturb = 0.0;          // interior vertex jitter, fraction of h
+  double perturb = 0.0;          // interior vertex jitter of the base mesh, fraction of h
   int serial_refine = 0;
   int parallel_refine = 0;
   int order = 1;

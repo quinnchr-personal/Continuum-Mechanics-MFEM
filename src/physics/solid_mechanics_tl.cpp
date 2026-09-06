@@ -11,8 +11,9 @@ namespace
 {
 
 // Scalar coefficient of the displacement field: von Mises Cauchy stress or
-// J = det F, evaluated from Grad u at the point. Instantiated once per
-// material type at setup (no per-point dispatch on the variant).
+// J = det F, evaluated from Grad u at the point and interpolated at the nodes
+// of the L2 output space (element-local, no mass-matrix solve). Instantiated
+// once per material type at setup (no per-point dispatch on the variant).
 template <typename Material>
 class StressCoefficient : public mfem::Coefficient
 {
@@ -132,9 +133,20 @@ mfem::Array<int> SolidMechanicsTL::Marker(const std::vector<int> &attrs) const
   return marker;
 }
 
+void SolidMechanicsTL::CheckCoefficient(mfem::VectorCoefficient &c,
+                                        const std::string &what) const
+{
+  if (c.GetVDim() != dim_)
+  {
+    throw ConfigError(what + ": coefficient has " + std::to_string(c.GetVDim()) +
+                      " components, expected " + std::to_string(dim_));
+  }
+}
+
 void SolidMechanicsTL::AddDirichlet(const std::vector<int> &attrs,
                                     mfem::VectorCoefficient &u_bar)
 {
+  CheckCoefficient(u_bar, "AddDirichlet");
   dirichlet_.push_back({Marker(attrs), &u_bar});
   finalized_ = false;
 }
@@ -142,12 +154,14 @@ void SolidMechanicsTL::AddDirichlet(const std::vector<int> &attrs,
 void SolidMechanicsTL::AddTraction(const std::vector<int> &attrs,
                                    mfem::VectorCoefficient &T_bar)
 {
+  CheckCoefficient(T_bar, "AddTraction");
   traction_.push_back({Marker(attrs), &T_bar});
   finalized_ = false;
 }
 
 void SolidMechanicsTL::SetBodyForce(mfem::VectorCoefficient &b)
 {
+  CheckCoefficient(b, "SetBodyForce");
   body_force_ = &b;
   finalized_ = false;
 }
@@ -180,6 +194,10 @@ void SolidMechanicsTL::Finalize()
       rho0_, *body_force_);
     load.AddDomainIntegrator(new mfem::VectorDomainLFIntegrator(*rho0_body_force_));
   }
+  // TODO(follower loads): a pressure per unit current area becomes
+  // T = -p J F^{-T} N, which depends on u; it would leave this dead-load
+  // linear form and enter the ParNonlinearForm as a boundary integrator with
+  // its own tangent (plan section 3.5, out of scope here).
   for (BCEntry &bc : traction_)
   {
     load.AddBoundaryIntegrator(new mfem::VectorBoundaryLFIntegrator(*bc.coef),
@@ -200,11 +218,12 @@ void SolidMechanicsTL::SetLoadFactor(double lambda)
 void SolidMechanicsTL::ApplyDirichlet(mfem::Vector &x) const
 {
   MFEM_VERIFY(finalized_, "SolidMechanicsTL: call Finalize() first");
+  // ParGridFunction takes a non-const space pointer; nothing is modified.
   mfem::ParGridFunction g(const_cast<mfem::ParFiniteElementSpace *>(&fes_));
   g = 0.0;
   for (const BCEntry &bc : dirichlet_)
   {
-    g.ProjectBdrCoefficient(*bc.coef, const_cast<mfem::Array<int> &>(bc.marker));
+    g.ProjectBdrCoefficient(*bc.coef, bc.marker);
   }
   mfem::Vector g_true(fes_.GetTrueVSize());
   g.GetTrueDofs(g_true);
@@ -230,7 +249,7 @@ mfem::Operator &SolidMechanicsTL::GetGradient(const mfem::Vector &x) const
 
 double SolidMechanicsTL::InternalEnergy(const mfem::Vector &x) const
 {
-  return const_cast<mfem::ParNonlinearForm &>(nlf_).GetEnergy(x);
+  return nlf_.GetEnergy(x);
 }
 
 void SolidMechanicsTL::EnsureFields()

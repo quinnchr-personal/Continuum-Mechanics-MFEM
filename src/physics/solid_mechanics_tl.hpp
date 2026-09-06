@@ -42,7 +42,10 @@ public:
   void Mult(const mfem::Vector &x, mfem::Vector &y) const override;
   mfem::Operator &GetGradient(const mfem::Vector &x) const override;
 
-  // QuasiStaticProblem
+  // QuasiStaticProblem. The load factor scales the tractions, the body
+  // force, and the prescribed (Dirichlet) displacements together, so that
+  // lambda = 1 is the problem of the weak form and lambda < 1 a proportional
+  // path to it.
   void SetLoadFactor(double lambda) override;
   double LoadFactor() const override { return load_factor_; }
   void ApplyDirichlet(mfem::Vector &x) const override;
@@ -59,7 +62,8 @@ public:
   // Stored energy int W(F) dV at x.
   double InternalEnergy(const mfem::Vector &x) const;
 
-  // Post-processing: refresh displacement, vonmises, jacobian from x.
+  // Post-processing: refresh displacement, and vonmises / jacobian sampled at
+  // the nodes of an L2 space of the same order, from x.
   void UpdateFields(const mfem::Vector &x);
   void RegisterFields(FieldRegistry &registry);
   mfem::ParGridFunction &Displacement() { return *displacement_; }
@@ -74,6 +78,7 @@ private:
   void Build(const AppConfig &cfg);
   mfem::Array<int> Marker(const std::vector<int> &attrs) const;
   void CheckVectorSize(const std::vector<double> &v, const std::string &what) const;
+  void CheckCoefficient(mfem::VectorCoefficient &c, const std::string &what) const;
   void EnsureFields();
 
   mfem::ParMesh &mesh_;
