@@ -1,19 +1,19 @@
 # 3D cantilever in the small-load linear limit: L = 10, square section 1 x 1,
-# clamped at x = 0 (attr 5), downward shear traction on the x = L face
-# (attr 3). The load gives max |Grad u| ~ 5e-5 (tests/test_benchmarks checks
+# clamped at x = 0 (left), downward shear traction on the x = L face
+# (right). The load gives max |Grad u| ~ 5e-5 (tests/test_benchmarks checks
 # <= 1e-4); Euler-Bernoulli tip deflection P L^3 / (3 E I) = 3.2e-4.
 # The rigid-body-mode (elasticity) AMG options stall on this slender p = 2
 # hex mesh, so the plain systems options are selected here; the solver also
 # falls back to them automatically if the elasticity variant does not converge.
 mesh:
-  cartesian: { nx: 20, ny: 2, nz: 2, sx: 10.0, sy: 1.0, sz: 1.0, element: hex }
+  file: apps/mesh/beam.msh        # 10 x 1 x 1 beam, 20 x 2 x 2 hexahedra (apps/mesh/box.geo); groups bottom, front, right, back, left, top
   serial_refine: 0
   parallel_refine: 0
   order: 2
 material: { model: neo_hookean, E: 250.0, nu: 0.3, rho0: 1.0 }
 bcs:
-  dirichlet: [ { attr: [5], value: [0.0, 0.0, 0.0] } ]
-  traction:  [ { attr: [3], value: [0.0, 0.0, -2.0e-5] } ]
+  dirichlet: [ { attr: [left], value: [0.0, 0.0, 0.0] } ]
+  traction:  [ { attr: [right], value: [0.0, 0.0, -2.0e-5] } ]
 body_force: [0.0, 0.0, 0.0]
 solver:
   load_steps: 1

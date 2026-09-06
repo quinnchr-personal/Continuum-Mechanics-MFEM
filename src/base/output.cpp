@@ -35,17 +35,38 @@ void ParaViewWriter::Register(const std::string &name, mfem::ParGridFunction &gf
   dc_.RegisterField(name, &gf);
 }
 
+void ParaViewWriter::RegisterQField(const std::string &name, mfem::QuadratureFunction &qf)
+{
+  dc_.RegisterQField(name, &qf);
+}
+
 void ParaViewWriter::RegisterAll(const OutputConfig &cfg,
                                  const FieldRegistry &fields)
 {
   for (const std::string &name : cfg.fields)
   {
-    if (!fields.Has(name))
+    // Nodal unknowns are registered under their name; quadrature quantities
+    // under whichever presentations the physics created.
+    bool found = false;
+    for (const char *suffix : {"", "_elem"})
+    {
+      const std::string presented = name + suffix;
+      if (fields.Has(presented))
+      {
+        Register(presented, fields.Get(presented));
+        found = true;
+      }
+    }
+    if (fields.HasQ(name + "_qp"))
+    {
+      RegisterQField(name + "_qp", fields.GetQ(name + "_qp"));
+      found = true;
+    }
+    if (!found)
     {
       throw ConfigError("output.fields: field '" + name +
                         "' is not provided by this physics");
     }
-    Register(name, fields.Get(name));
   }
 }
 

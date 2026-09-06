@@ -13,6 +13,7 @@
 #include "materials/materials.hpp"
 #include "mfem.hpp"
 #include "physics/solid_problem.hpp"
+#include "physics/quadrature_fields.hpp"
 #include "solvers/quasi_static.hpp"
 
 namespace cmf
@@ -66,8 +67,9 @@ public:
   // Stored energy int W(F) dV at x.
   double InternalEnergy(const mfem::Vector &x) const override;
 
-  // Post-processing: refresh displacement, and vonmises / jacobian sampled at
-  // the nodes of an L2 space of the same order, from x.
+  // Post-processing: refresh the displacement and the quadrature-point
+  // quantities of output.fields with the presentations of
+  // output.quadrature_at (see quadrature_fields.hpp), from x.
   void UpdateFields(const mfem::Vector &x) override;
   void RegisterFields(FieldRegistry &registry) override;
   mfem::ParGridFunction &Displacement() override { return *displacement_; }
@@ -109,10 +111,9 @@ private:
   mfem::Vector load_true_;
 
   std::unique_ptr<mfem::ParGridFunction> displacement_;
-  std::unique_ptr<mfem::L2_FECollection> l2_fec_;
-  std::unique_ptr<mfem::ParFiniteElementSpace> l2_fes_;
-  std::unique_ptr<mfem::ParGridFunction> vonmises_;
-  std::unique_ptr<mfem::ParGridFunction> jacobian_;
+  bool plane_stress_ = false;
+  OutputConfig output_cfg_;
+  std::unique_ptr<QuadratureFields> qfields_;
 };
 
 } // namespace cmf

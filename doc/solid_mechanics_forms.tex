@@ -1,0 +1,240 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,bm}
+
+% ---------------------------------------------------------------------------
+% Notation macros
+% ---------------------------------------------------------------------------
+\newcommand{\ud}{\,\mathrm{d}}
+\newcommand{\dive}{\operatorname{div}}      % divergence w.r.t. spatial coords x
+\newcommand{\Dive}{\operatorname{Div}}      % divergence w.r.t. referential coords X
+\newcommand{\grad}{\operatorname{grad}}     % gradient  w.r.t. spatial coords x
+\newcommand{\Grad}{\operatorname{Grad}}     % gradient  w.r.t. referential coords X
+\newcommand{\bx}{\bm{x}}
+\newcommand{\bX}{\bm{X}}
+\newcommand{\bu}{\bm{u}}
+\newcommand{\bv}{\bm{v}}
+\newcommand{\bb}{\bm{b}}
+\newcommand{\bn}{\bm{n}}
+\newcommand{\bN}{\bm{N}}
+\newcommand{\bt}{\bm{t}}
+\newcommand{\bT}{\bm{T}}
+\newcommand{\bw}{\bm{w}}
+\newcommand{\bsig}{\bm{\sigma}}
+\newcommand{\bP}{\bm{P}}
+\newcommand{\bS}{\bm{S}}
+\newcommand{\bF}{\bm{F}}
+\newcommand{\bC}{\bm{C}}
+\newcommand{\bE}{\bm{E}}
+\newcommand{\bI}{\bm{I}}
+\newcommand{\bphi}{\bm{\varphi}}
+
+\title{Strong and Weak Forms of Solid Mechanics:\\
+Spatial, Referential, and Total Lagrangian Formulations}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+
+%============================================================================
+\section{Kinematics and Notation}
+%============================================================================
+
+Let $\Omega_R \subset \mathbb{R}^d$ denote the reference (material)
+configuration of a body (referential quantities carry the subscript $R$)
+with boundary $\partial\Omega_R = \Gamma_R^D \cup
+\Gamma_R^N$, $\Gamma_R^D \cap \Gamma_R^N = \emptyset$, and let $\Omega_t$
+denote the current (spatial) configuration at time $t$ with boundary
+$\partial\Omega_t = \Gamma_t^D \cup \Gamma_t^N$.  The motion
+\begin{equation}
+  \bx = \bphi(\bX, t), \qquad \bX \in \Omega_R,
+\end{equation}
+maps material points $\bX$ to spatial points $\bx$.  The displacement,
+deformation gradient, and Jacobian are
+\begin{equation}
+  \bu(\bX,t) = \bphi(\bX,t) - \bX,
+  \qquad
+  \bF = \Grad \bphi = \bI + \Grad \bu,
+  \qquad
+  J = \det \bF > 0,
+\end{equation}
+where $\Grad(\cdot) = \partial(\cdot)/\partial\bX$ and
+$\grad(\cdot) = \partial(\cdot)/\partial\bx$ denote referential and spatial
+gradients, respectively.  The right Cauchy--Green tensor and the
+Green--Lagrange strain are
+\begin{equation}
+  \bC = \bF^{\!\top}\bF,
+  \qquad
+  \bE = \tfrac{1}{2}\left(\bC - \bI\right)
+      = \tfrac{1}{2}\left(\Grad\bu + \Grad^{\!\top}\bu
+        + \Grad^{\!\top}\bu \, \Grad\bu\right).
+\end{equation}
+The velocity is $\bv = \dot{\bphi} = \dot{\bu}$ (material time derivative).
+Mass conservation relates the referential and spatial densities by
+$\rho_R = J\rho$.
+
+The stress measures used below are the Cauchy stress $\bsig$ (force per unit
+\emph{current} area), the first Piola--Kirchhoff stress $\bP$ (force per unit
+\emph{reference} area), and the second Piola--Kirchhoff stress $\bS$, related
+through the Piola transform
+\begin{equation}
+  \bP = J \bsig \bF^{-\top},
+  \qquad
+  \bS = \bF^{-1}\bP = J \bF^{-1} \bsig \bF^{-\top},
+  \qquad
+  \bsig = \tfrac{1}{J}\,\bP\bF^{\!\top} = \tfrac{1}{J}\,\bF\bS\bF^{\!\top}.
+  \label{eq:piola}
+\end{equation}
+Note that $\bS = \bS^{\top}$ and $\bsig = \bsig^{\top}$ (balance of angular
+momentum), while $\bP$ is in general unsymmetric, satisfying
+$\bP\bF^{\!\top} = \bF\bP^{\top}$.
+
+%============================================================================
+\section{Strong Form}
+%============================================================================
+
+\subsection{Spatial (Eulerian / updated) form}
+
+Balance of linear momentum on the current configuration $\Omega_t$ reads:
+find $\bu$ (equivalently the motion $\bphi$) such that
+\begin{subequations}
+\label{eq:strong-spatial}
+\begin{alignat}{2}
+  \rho\,\dot{\bv} &= \dive \bsig + \rho\, \bb
+      &\quad& \text{in } \Omega_t, \label{eq:mom-spatial}\\
+  \bu &= \bar{\bu} && \text{on } \Gamma_t^D, \\
+  \bsig\,\bn &= \bar{\bt} && \text{on } \Gamma_t^N, \\
+  \bu(\cdot,0) = \bu_0, \quad \bv(\cdot,0) &= \bv_0 && \text{in } \Omega_R,
+\end{alignat}
+\end{subequations}
+where $\rho$ is the current mass density, $\bb$ the body force per unit mass,
+$\bn$ the outward unit normal on $\partial\Omega_t$, $\bar{\bt}$ the
+prescribed traction per unit current area, and
+$\dot{\bv} = \partial\bv/\partial t + (\grad\bv)\bv$ the material
+acceleration.  For quasi-statics the inertial term $\rho\,\dot{\bv}$ is
+dropped.  Angular momentum balance requires $\bsig = \bsig^{\top}$.
+
+\subsection{Referential (Lagrangian) form}
+
+Pulling \eqref{eq:strong-spatial} back to the reference configuration
+$\Omega_R$ using the Piola transform \eqref{eq:piola} and Nanson's formula
+$\bn \ud a = J\bF^{-\top}\bN \ud A$, the momentum balance becomes: find
+$\bu : \Omega_R \times [0,T] \to \mathbb{R}^d$ such that
+\begin{subequations}
+\label{eq:strong-referential}
+\begin{alignat}{2}
+  \rho_R\, \ddot{\bu} &= \Dive \bP + \rho_R\, \bb
+      &\quad& \text{in } \Omega_R, \label{eq:mom-referential}\\
+  \bu &= \bar{\bu} && \text{on } \Gamma_R^D, \\
+  \bP\,\bN &= \bar{\bT} && \text{on } \Gamma_R^N, \\
+  \bu(\cdot,0) = \bu_0, \quad \dot{\bu}(\cdot,0) &= \bv_0 && \text{in } \Omega_R,
+\end{alignat}
+\end{subequations}
+where $\rho_R = J\rho$ is the reference density, $\bN$ the outward unit
+normal on $\partial\Omega_R$, and $\bar{\bT} = \bar{\bt}\,(\ud a/\ud A)$ the
+prescribed nominal traction (force per unit \emph{reference} area).  All
+derivatives are taken with respect to $\bX$ over the fixed domain $\Omega_R$;
+this is the natural setting for a total Lagrangian discretization.
+
+The system is closed by a constitutive relation.  For a hyperelastic material
+with stored energy density $\Psi(\bF)$ (per unit reference volume),
+\begin{equation}
+  \bP = \frac{\partial \Psi}{\partial \bF},
+  \qquad\text{or equivalently}\qquad
+  \bS = 2\,\frac{\partial \Psi}{\partial \bC}
+      = \frac{\partial \Psi}{\partial \bE}.
+\end{equation}
+
+%============================================================================
+\section{Weak Form: Total Lagrangian Formulation}
+%============================================================================
+
+Define the trial and test spaces over the \emph{fixed} reference domain,
+\begin{equation}
+  \mathcal{S}_t = \left\{ \bu \in [H^1(\Omega_R)]^d :
+      \bu = \bar{\bu} \text{ on } \Gamma_R^D \right\},
+  \qquad
+  \mathcal{V} = \left\{ \bw \in [H^1(\Omega_R)]^d :
+      \bw = \bm{0} \text{ on } \Gamma_R^D \right\}.
+\end{equation}
+Taking the inner product of \eqref{eq:mom-referential} with
+$\bw \in \mathcal{V}$, integrating over $\Omega_R$, and using integration by
+parts together with $\bP\bN = \bar{\bT}$ on $\Gamma_R^N$ and $\bw = \bm{0}$
+on $\Gamma_R^D$, yields the total Lagrangian weak form:
+
+\medskip
+\noindent\emph{Find $\bu(\cdot,t) \in \mathcal{S}_t$ such that, for all
+$\bw \in \mathcal{V}$,}
+\begin{equation}
+  \boxed{\;
+  \int_{\Omega_R} \rho_R\, \ddot{\bu} \cdot \bw \ud V
+  + \int_{\Omega_R} \bP(\bF) : \Grad \bw \ud V
+  = \int_{\Omega_R} \rho_R\, \bb \cdot \bw \ud V
+  + \int_{\Gamma_R^N} \bar{\bT} \cdot \bw \ud A
+  \;}
+  \label{eq:weak-TL-P}
+\end{equation}
+with $\bF = \bI + \Grad\bu$.  Every integral is evaluated on the reference
+configuration, which never changes during the computation---the defining
+feature of the total Lagrangian formulation.
+
+\subsection{Equivalent form in the second Piola--Kirchhoff stress}
+
+Substituting $\bP = \bF\bS$ and noting that
+$\bF\bS : \Grad\bw = \bS : \bF^{\!\top}\Grad\bw = \bS : \delta\bE[\bw]$
+(the last step using the symmetry of $\bS$), where
+\begin{equation}
+  \delta\bE[\bw]
+  = \tfrac{1}{2}\left( \bF^{\!\top}\Grad\bw + \Grad^{\!\top}\bw\,\bF \right)
+\end{equation}
+is the variation of the Green--Lagrange strain in the direction $\bw$, the
+weak form \eqref{eq:weak-TL-P} may equivalently be written
+\begin{equation}
+  \int_{\Omega_R} \rho_R\, \ddot{\bu} \cdot \bw \ud V
+  + \int_{\Omega_R} \bS(\bE) : \delta\bE[\bw] \ud V
+  = \int_{\Omega_R} \rho_R\, \bb \cdot \bw \ud V
+  + \int_{\Gamma_R^N} \bar{\bT} \cdot \bw \ud A .
+  \label{eq:weak-TL-S}
+\end{equation}
+This is the form commonly used with $(\bS,\bE)$ constitutive pairs
+(e.g.\ St.~Venant--Kirchhoff or models expressed in terms of $\bC$).
+
+\subsection{Remarks}
+
+\begin{itemize}
+  \item \textbf{Quasi-statics.} Dropping the inertial term in
+    \eqref{eq:weak-TL-P} gives the virtual work statement
+    $\int_{\Omega_R} \bP : \Grad\bw \ud V
+     = \int_{\Omega_R} \rho_R \bb\cdot\bw \ud V
+     + \int_{\Gamma_R^N} \bar\bT\cdot\bw \ud A$,
+    i.e.\ internal virtual work equals external virtual work.
+  \item \textbf{Nonlinearity and linearization.} The weak form is nonlinear
+    in $\bu$ through $\bP(\bF)$ (and geometrically through $\bF$).  A Newton
+    scheme requires the consistent tangent
+    $\mathbb{A} = \partial\bP/\partial\bF
+     = \partial^2\Psi/\partial\bF\,\partial\bF$,
+    giving the directional derivative
+    $D_{\Delta\bu}\!\int_{\Omega_R} \bP : \Grad\bw \ud V
+     = \int_{\Omega_R} \Grad\bw : \mathbb{A} : \Grad\Delta\bu \ud V$;
+    in the $(\bS,\bE)$ form this splits into the familiar material and
+    geometric stiffness contributions.
+  \item \textbf{Follower loads.} A traction prescribed per unit
+    \emph{current} area (e.g.\ pressure $\bar\bt = -p\,\bn$) becomes
+    configuration-dependent when pulled back:
+    $\bar\bT = -p\,J\bF^{-\top}\bN$, and then contributes to the tangent
+    stiffness.  The form above assumes $\bar\bT$ is a dead (nominal) load.
+  \item \textbf{Relation to the spatial weak form.} Pushing
+    \eqref{eq:weak-TL-P} forward with
+    $\bP:\Grad\bw = J\,\bsig : \grad\bw$ and $\ud v = J \ud V$ recovers the
+    updated/spatial weak form
+    $\int_{\Omega_t} \rho\, \dot\bv\cdot\bw \ud v
+     + \int_{\Omega_t} \bsig : \grad\bw \ud v
+     = \int_{\Omega_t} \rho\,\bb\cdot\bw \ud v
+     + \int_{\Gamma_t^N} \bar\bt\cdot\bw \ud a$;
+    the two statements are identical, differing only in the configuration on
+    which integrals are evaluated.
+\end{itemize}
+
+\end{document}

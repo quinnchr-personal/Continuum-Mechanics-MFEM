@@ -1,8 +1,13 @@
 // S2 gate: stress-free reference state, AD tangent vs finite differences,
 // objectivity under random rotations, and the small-strain (linear
-// elasticity) limit for NeoHookean and StVenantKirchhoff.
+// elasticity) limit for every material; Ogden reductions and its analytic
+// tangent at coincident principal stretches.
+#include <algorithm>
+#include <limits>
 #include <random>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include "materials/materials.hpp"
 #include "test_util.hpp"
@@ -271,6 +276,195 @@ void TestDecoupled(const Material &m, const std::string &name, double mu, double
   }
 }
 
+// Ogden reduces to the isochoric neo-Hookean model for (mu, alpha) = (mu, 2)
+// and to Mooney-Rivlin for (2 c1, 2) + (-2 c2, -2); its analytic tangent must
+// match finite differences also at coincident principal stretches, where
+// the spectral formula takes its limit branch.
+void TestOgdenSpecial(double mu, double kappa)
+{
+  std::cout << "ogden special cases" << std::endl;
+  std::mt19937 rng(9u);
+  const cmf::IsoNeoHookean nh(mu, kappa);
+  const cmf::Ogden og_nh({mu}, {2.0}, kappa);
+  const cmf::MooneyRivlin mr(0.3 * mu, 0.2 * mu, kappa);
+  const cmf::Ogden og_mr({0.6 * mu, -0.4 * mu}, {2.0, -2.0}, kappa);
+  double worst = 0.0;
+  for (int trial = 0; trial < 3; trial++)
+  {
+    const Mat3 F = RandomF(rng);
+    const double e1 = MaxAbs(og_nh.PK1(F) - nh.PK1(F)) / MaxAbs(nh.PK1(F));
+    const double e2 = std::abs(og_nh.Energy(F) - nh.Energy(F)) / (mu + kappa);
+    const double e3 = MaxAbs(og_mr.PK1(F) - mr.PK1(F)) / MaxAbs(mr.PK1(F));
+    const double e4 = MaxAbs(Subtract(cmf::MaterialTangent(og_nh, F), cmf::MaterialTangent(nh, F))) /
+                      MaxAbs(cmf::MaterialTangent(nh, F));
+    const double e5 = MaxAbs(Subtract(cmf::MaterialTangent(og_mr, F), cmf::MaterialTangent(mr, F))) /
+                      MaxAbs(cmf::MaterialTangent(mr, F));
+    worst = std::max({worst, e1, e2, e3, e4, e5});
+    CHECK_MSG(e1 <= 1e-12 && e2 <= 1e-12, "ogden(mu, 2) equals iso_neo_hookean");
+    CHECK_MSG(e3 <= 1e-12, "ogden(2 c1, 2; -2 c2, -2) equals mooney_rivlin");
+    CHECK_MSG(e4 <= 1e-10 && e5 <= 1e-10, "ogden tangent equals the dual-number tangents of the reductions");
+  }
+  std::printf("  reductions to iso_neo_hookean / mooney_rivlin: worst rel %.2e\n", worst);
+
+  const cmf::Ogden og({0.63 * mu, 0.0012 * mu, -0.01 * mu}, {1.3, 5.0, -2.0}, kappa);
+  std::vector<std::pair<std::string, Mat3>> cases;
+  Mat3 uni, dil, ps;
+  uni(0, 0) = 1.3; uni(1, 1) = uni(2, 2) = 1.0 / std::sqrt(1.3);
+  dil(0, 0) = dil(1, 1) = dil(2, 2) = 1.1;
+  ps(0, 0) = 1.25; ps(1, 1) = 0.8; ps(2, 2) = 1.0;
+  cases.push_back({"uniaxial (two equal stretches)", uni});
+  cases.push_back({"dilatation (three equal stretches)", dil});
+  cases.push_back({"plane strain (distinct stretches)", ps});
+  cases.push_back({"identity", cmf::I<3>()});
+  for (const auto &kv : cases)
+  {
+    for (int rotated = 0; rotated < 2; rotated++)
+    {
+      const Mat3 F = rotated ? RandomRotation(rng) * kv.second * RandomRotation(rng) : kv.second;
+      const Tan4 A_ad = cmf::MaterialTangent(og, F);
+      const Tan4 A_fd = FiniteDifferenceTangent(og, F, 1e-6);
+      const double rel = MaxAbs(Subtract(A_ad, A_fd)) / MaxAbs(A_ad);
+      std::printf("  tangent vs FD, %s%s: rel %.2e\n", kv.first.c_str(), rotated ? ", rotated" : "", rel);
+      CHECK_MSG(rel <= 1e-6, "ogden tangent at " + kv.first + " vs FD (" + std::to_string(rel) + ")");
+    }
+  }
+}
+
+// Random in-plane F = I + a R (2x2 block, F33 = 1) with det of the block > 0.3.
+Mat3 RandomInPlaneF(std::mt19937 &rng, double amplitude)
+{
+  std::uniform_real_distribution<double> unit(-1.0, 1.0);
+  for (;;)
+  {
+    Mat3 F = cmf::I<3>();
+    for (int i = 0; i < 2; i++)
+      for (int j = 0; j < 2; j++) { F(i, j) += amplitude * unit(rng); }
+    if (F(0, 0) * F(1, 1) - F(0, 1) * F(1, 0) > 0.3) { return F; }
+  }
+}
+
+// Plane-stress adapter: P33 = 0 and no out-of-plane shear stress, J = 1 for
+// incompressible bases, in-plane dual tangent vs finite differences (the
+// compressible branch differentiates a converged Newton root), dW/dF = P in
+// the plane (envelope theorem), and objectivity under in-plane rotations.
+template <typename Base>
+void TestPlaneStressAdapter(const Base &base, const std::string &name, double scale,
+                            double amplitude)
+{
+  const cmf::PlaneStress<Base> m(base);
+  std::cout << "plane stress " << name << (m.Incompressible() ? " (incompressible)" : "") << std::endl;
+  std::mt19937 rng(31u);
+  double worst_p3 = 0.0, worst_tan = 0.0, worst_energy = 0.0, worst_obj = 0.0, worst_J = 0.0;
+  for (int trial = 0; trial < 4; trial++)
+  {
+    const Mat3 F = RandomInPlaneF(rng, amplitude);
+    const Mat3 Fc = m.Complete(F);
+    const Mat3 P = m.PK1(F);
+    const double p3 = std::max({std::abs(P(2, 2)), std::abs(P(0, 2)), std::abs(P(1, 2)),
+                                std::abs(P(2, 0)), std::abs(P(2, 1))}) / scale;
+    worst_p3 = std::max(worst_p3, p3);
+    CHECK_MSG(p3 <= 1e-12, name + " plane stress: out-of-plane P relative " + std::to_string(p3));
+    CHECK_MSG(Fc(2, 2) > 0.0, name + " plane stress: positive thickness stretch");
+    if (m.Incompressible())
+    {
+      worst_J = std::max(worst_J, std::abs(det(Fc) - 1.0));
+      CHECK_MSG(std::abs(det(Fc) - 1.0) <= 1e-13, name + " plane stress: J = 1");
+    }
+
+    const Tan4 A_ad = cmf::MaterialTangent(m, F, 2);
+    const Tan4 A_fd = FiniteDifferenceTangent(m, F, 1e-6);
+    double err = 0.0, ref = 0.0;
+    for (int i = 0; i < 2; i++)
+      for (int j = 0; j < 2; j++)
+        for (int k = 0; k < 2; k++)
+          for (int l = 0; l < 2; l++)
+          {
+            err = std::max(err, std::abs(A_ad(i, j, k, l) - A_fd(i, j, k, l)));
+            ref = std::max(ref, std::abs(A_ad(i, j, k, l)));
+          }
+    worst_tan = std::max(worst_tan, err / ref);
+    CHECK_MSG(err / ref <= 1e-6, name + " plane stress: tangent vs FD relative " + std::to_string(err / ref));
+
+    tensor<dual, 3, 3> Fd;
+    for (int i = 0; i < 3; i++)
+      for (int j = 0; j < 3; j++) { Fd(i, j) = dual(F(i, j), 0.0); }
+    double energy_err = 0.0;
+    for (int k = 0; k < 2; k++)
+      for (int l = 0; l < 2; l++)
+      {
+        Fd(k, l).d = 1.0;
+        const dual W = m.Energy(Fd);
+        Fd(k, l).d = 0.0;
+        energy_err = std::max(energy_err, std::abs(W.d - P(k, l)) / scale);
+      }
+    worst_energy = std::max(worst_energy, energy_err);
+    CHECK_MSG(energy_err <= 1e-10, name + " plane stress: dW/dF vs P relative " + std::to_string(energy_err));
+
+    std::uniform_real_distribution<double> unit(-1.0, 1.0);
+    const double theta = 3.0 * unit(rng);
+    Mat3 Q = cmf::I<3>();
+    Q(0, 0) = std::cos(theta); Q(0, 1) = -std::sin(theta);
+    Q(1, 0) = std::sin(theta); Q(1, 1) = std::cos(theta);
+    const double obj = MaxAbs(m.PK1(Q * F) - Q * P) / MaxAbs(P);
+    worst_obj = std::max(worst_obj, obj);
+    CHECK_MSG(obj <= 1e-10, name + " plane stress: objectivity " + std::to_string(obj));
+  }
+  std::printf("  out-of-plane P rel %.1e, J-1 %.1e, tangent vs FD rel %.1e, dW/dF rel %.1e, objectivity rel %.1e\n",
+              worst_p3, worst_J, worst_tan, worst_energy, worst_obj);
+}
+
+// Small-strain plane stress: with F = I + eps e1 (x) e1 the in-plane stresses
+// are E/(1 - nu^2) eps and E nu/(1 - nu^2) eps and the thickness strain is
+// -nu/(1 - nu) eps; incompressible bases have nu = 1/2, E = 3 mu.
+template <typename Base>
+void TestPlaneStressSmallStrain(const Base &base, const std::string &name, double E, double nu)
+{
+  const cmf::PlaneStress<Base> m(base);
+  const double eps = 1e-7;
+  Mat3 F = cmf::I<3>();
+  F(0, 0) += eps;
+  const Mat3 P = m.PK1(F);
+  const double s11 = E / (1.0 - nu * nu) * eps, s22 = nu * s11;
+  const double e33 = -nu / (1.0 - nu) * eps;
+  CHECK_MSG(std::abs(P(0, 0) - s11) <= 1e-6 * s11, name + " plane stress: P11 vs E/(1-nu^2)");
+  CHECK_MSG(std::abs(P(1, 1) - s22) <= 1e-6 * s11, name + " plane stress: P22 vs E nu/(1-nu^2)");
+  CHECK_MSG(std::abs(m.Complete(F)(2, 2) - 1.0 - e33) <= 1e-6 * std::abs(e33),
+            name + " plane stress: thickness strain vs -nu/(1-nu) eps");
+  std::printf("  small strain %s: P11/(E eps/(1-nu^2)) - 1 = %.1e, thickness strain error %.1e\n",
+              name.c_str(), P(0, 0) / s11 - 1.0, std::abs(m.Complete(F)(2, 2) - 1.0 - e33) / std::abs(e33));
+}
+
+void TestPlaneStress(double E, double nu, double mu, double kappa)
+{
+  const cmf::LameParameters lame = cmf::LameFromYoungPoisson(E, nu);
+  const double inf = std::numeric_limits<double>::infinity();
+  TestPlaneStressAdapter(cmf::NeoHookean{lame.mu, lame.lambda}, "neo_hookean", E, 0.4);
+  TestPlaneStressAdapter(cmf::StVenantKirchhoff{lame.mu, lame.lambda}, "st_venant_kirchhoff", E, 0.15);
+  TestPlaneStressAdapter(cmf::IsoNeoHookean(mu, kappa), "iso_neo_hookean kappa", mu + kappa, 0.4);
+  TestPlaneStressAdapter(cmf::IsoNeoHookean(mu, inf), "iso_neo_hookean", mu, 0.4);
+  TestPlaneStressAdapter(cmf::MooneyRivlin(0.3 * mu, 0.2 * mu, inf), "mooney_rivlin", mu, 0.4);
+  TestPlaneStressAdapter(cmf::Yeoh(0.5 * mu, -0.05 * mu, 0.01 * mu, inf), "yeoh", mu, 0.4);
+  TestPlaneStressAdapter(cmf::Gent(mu, 20.0, inf), "gent", mu, 0.4);
+  TestPlaneStressAdapter(cmf::ArrudaBoyce(mu, 5.0, inf), "arruda_boyce", mu, 0.4);
+  TestPlaneStressAdapter(cmf::Ogden({0.63 * mu, 0.0012 * mu, -0.01 * mu}, {1.3, 5.0, -2.0}, inf), "ogden", mu, 0.4);
+  TestPlaneStressAdapter(cmf::Ogden({0.63 * mu, 0.0012 * mu, -0.01 * mu}, {1.3, 5.0, -2.0}, kappa), "ogden kappa", mu + kappa, 0.4);
+  TestPlaneStressSmallStrain(cmf::NeoHookean{lame.mu, lame.lambda}, "neo_hookean", E, nu);
+  TestPlaneStressSmallStrain(cmf::IsoNeoHookean(mu, kappa), "iso_neo_hookean kappa", 9.0 * kappa * mu / (3.0 * kappa + mu), (3.0 * kappa - 2.0 * mu) / (2.0 * (3.0 * kappa + mu)));
+  TestPlaneStressSmallStrain(cmf::IsoNeoHookean(mu, inf), "iso_neo_hookean", 3.0 * mu, 0.5);
+  // Uniaxial tension of an incompressible neo-Hookean sheet: P11 = mu (lambda - lambda^-2), P22 = 0.
+  {
+    const cmf::PlaneStress<cmf::IsoNeoHookean> m(cmf::IsoNeoHookean(mu, inf));
+    const double l = 1.7;
+    Mat3 F = cmf::I<3>();
+    F(0, 0) = l;
+    F(1, 1) = 1.0 / std::sqrt(l);
+    const Mat3 P = m.PK1(F);
+    CHECK_MSG(std::abs(P(0, 0) - mu * (l - 1.0 / (l * l))) <= 1e-12 * mu, "sheet uniaxial P11 = mu (lambda - lambda^-2)");
+    CHECK_MSG(std::abs(P(1, 1)) <= 1e-12 * mu, "sheet uniaxial P22 = 0");
+    CHECK_MSG(std::abs(m.Complete(F)(2, 2) - 1.0 / std::sqrt(l)) <= 1e-14, "sheet uniaxial thickness lambda^-1/2");
+  }
+}
+
 void TestModuliResolution()
 {
   cmf::MaterialConfig c;
@@ -293,6 +487,7 @@ void TestModuliResolution()
   CHECK(cmf::ResolveModuli(c).incompressible);
   CHECK_THROWS(cmf::MakeMaterial(c), cmf::ConfigError, "formulation: mixed");
   CHECK(cmf::MaterialName(cmf::MakeMixedMaterial(c)) == "mooney_rivlin");
+  CHECK(cmf::MaterialName(cmf::MakeMaterial(c, true)) == "mooney_rivlin (plane stress)");
   c = cmf::MaterialConfig();
   c.model = "iso_neo_hookean"; c.mu = 80.0;
   CHECK_THROWS(cmf::ResolveModuli(c), cmf::ConfigError, "needs exactly one of");
@@ -334,6 +529,16 @@ int main()
   const double mu = lame.mu, kappa = 2.0 * mu * 1.45 / (3.0 * 0.1);
   TestDecoupled(cmf::IsoNeoHookean(mu, kappa), "iso_neo_hookean", mu, kappa);
   TestDecoupled(cmf::MooneyRivlin(0.3 * mu, 0.2 * mu, kappa), "mooney_rivlin", mu, kappa);
+  TestDecoupled(cmf::Yeoh(0.5 * mu, -0.05 * mu, 0.01 * mu, kappa), "yeoh", mu, kappa);
+  TestDecoupled(cmf::Gent(mu, 20.0, kappa), "gent", mu, kappa);
+  {
+    const cmf::ArrudaBoyce ab(mu, 5.0, kappa);
+    TestDecoupled(ab, "arruda_boyce", ab.ShearModulus(), kappa);
+    const cmf::Ogden og({0.63 * mu, 0.0012 * mu, -0.01 * mu}, {1.3, 5.0, -2.0}, kappa);
+    TestDecoupled(og, "ogden", og.ShearModulus(), kappa);
+  }
+  TestOgdenSpecial(mu, kappa);
+  TestPlaneStress(E, nu, mu, kappa);
   // Mooney-Rivlin with c2 = 0 is the isochoric neo-Hookean model.
   {
     const cmf::MooneyRivlin mr(0.5 * mu, 0.0, kappa);

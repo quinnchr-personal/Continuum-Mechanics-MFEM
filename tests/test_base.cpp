@@ -7,6 +7,7 @@
 #include <string>
 
 #include "base/config.hpp"
+#include "base/mesh_input.hpp"
 #include "base/dual.hpp"
 #include "base/tensor.hpp"
 #include "test_util.hpp"
@@ -179,8 +180,7 @@ std::string WriteTemp(const std::string &name, const std::string &text)
 }
 
 const char *kGoodYaml = R"(
-mesh: { cartesian: { nx: 4, ny: 4, sx: 48.0, sy: 1.0 }, serial_refine: 1, parallel_refine: 0, order: 2,
-        corners: [[0.0, 0.0], [48.0, 44.0], [48.0, 60.0], [0.0, 44.0]] }
+mesh: { file: apps/mesh/cook.msh, serial_refine: 1, parallel_refine: 0, order: 2 }
 material: { model: neo_hookean, E: 250.0, nu: 0.3, rho0: 1.0 }
 bcs:
   dirichlet: [ { attr: [4], value: [0.0, 0.0] } ]
@@ -196,8 +196,7 @@ void TestYaml()
   std::filesystem::create_directories("build/tests/out");
   // The schema example of the plan parses with the expected values.
   cmf::AppConfig cfg = cmf::ParseConfig(YAML::Load(kGoodYaml));
-  CHECK(cfg.mesh.cartesian && cfg.mesh.box.nx == 4 && cfg.mesh.order == 2);
-  CHECK(cfg.mesh.corners.size() == 4 && cfg.mesh.corners[2][1] == 60.0);
+  CHECK(cfg.mesh.file == "apps/mesh/cook.msh" && cfg.mesh.serial_refine == 1 && cfg.mesh.order == 2);
   CHECK(cfg.material.model == "neo_hookean");
   CHECK_CLOSE(cfg.material.E, 250.0, 0.0);
   CHECK(cfg.bcs.dirichlet.size() == 1 && cfg.bcs.dirichlet[0].attr[0] == 4);
@@ -208,14 +207,14 @@ void TestYaml()
   CHECK(cfg.output.paraview == "out/cook" && cfg.output.fields.size() == 2);
   // Defaults for omitted sections.
   cmf::AppConfig minimal = cmf::ParseConfig(YAML::Load(
-    "mesh: { cartesian: { nx: 2, ny: 2 } }\nmaterial: { model: st_venant_kirchhoff, E: 1.0, nu: 0.25 }\n"));
+    "mesh: { file: square.msh }\nmaterial: { model: st_venant_kirchhoff, E: 1.0, nu: 0.25 }\n"));
   CHECK(minimal.solver.load_steps == 1 && minimal.solver.newton.max_it == 25);
   CHECK(minimal.bcs.dirichlet.empty() && minimal.output.paraview.empty());
   CHECK_CLOSE(minimal.material.rho0, 1.0, 0.0);
 
   // Malformed YAML: a clear error, not a crash.
   const std::string bad = WriteTemp("bad_syntax.yaml",
-                                    "mesh: { cartesian: { nx: 2, ny: 2 }\nmaterial: [unclosed\n");
+                                    "mesh: { file: square.msh\nmaterial: [unclosed\n");
   CHECK_THROWS(cmf::LoadConfig(bad), cmf::ConfigError, "YAML syntax error");
   CHECK_THROWS(cmf::LoadConfig("build/tests/out/does_not_exist.yaml"), cmf::ConfigError,
                "cannot open");
@@ -223,66 +222,131 @@ void TestYaml()
 
   // Missing keys name the full path.
   CHECK_THROWS(cmf::ParseConfig(YAML::Load(
-    "mesh: { cartesian: { nx: 2, ny: 2 } }\nmaterial: { model: neo_hookean, nu: 0.3 }\n")),
+    "mesh: { file: square.msh }\nmaterial: { model: neo_hookean, nu: 0.3 }\n")),
     cmf::ConfigError, "material.E");
   CHECK_THROWS(cmf::ParseConfig(YAML::Load(
-    "mesh: { cartesian: { nx: 2 } }\nmaterial: { model: neo_hookean, E: 1.0, nu: 0.3 }\n")),
-    cmf::ConfigError, "mesh.cartesian.ny");
+    "mesh: { cartesian: { nx: 3, ny: 3 } }\nmaterial: { model: neo_hookean, E: 1.0, nu: 0.3 }\n")),
+    cmf::ConfigError, "Gmsh");
   CHECK_THROWS(cmf::ParseConfig(YAML::Load(
     "material: { model: neo_hookean, E: 1.0, nu: 0.3 }\n")),
     cmf::ConfigError, "mesh");
   CHECK_THROWS(cmf::ParseConfig(YAML::Load(
     "mesh: { order: 1 }\nmaterial: { model: neo_hookean, E: 1.0, nu: 0.3 }\n")),
-    cmf::ConfigError, "'file' or 'cartesian'");
+    cmf::ConfigError, "mesh.file");
 
   // Wrong types name the key and the expected type.
   CHECK_THROWS(cmf::ParseConfig(YAML::Load(
-    "mesh: { cartesian: { nx: 2, ny: 2 } }\nmaterial: { model: neo_hookean, E: abc, nu: 0.3 }\n")),
+    "mesh: { file: square.msh }\nmaterial: { model: neo_hookean, E: abc, nu: 0.3 }\n")),
     cmf::ConfigError, "material.E");
   CHECK_THROWS(cmf::ParseConfig(YAML::Load(
-    "mesh: { cartesian: { nx: 2, ny: 2 } }\nmaterial: { model: neo_hookean, E: abc, nu: 0.3 }\n")),
+    "mesh: { file: square.msh }\nmaterial: { model: neo_hookean, E: abc, nu: 0.3 }\n")),
     cmf::ConfigError, "expected a number");
   CHECK_THROWS(cmf::ParseConfig(YAML::Load(
-    "mesh: { cartesian: { nx: 2.5, ny: 2 } }\nmaterial: { model: neo_hookean, E: 1.0, nu: 0.3 }\n")),
-    cmf::ConfigError, "mesh.cartesian.nx");
+    "mesh: { file: [a, b] }\nmaterial: { model: neo_hookean, E: 1.0, nu: 0.3 }\n")),
+    cmf::ConfigError, "mesh.file");
   CHECK_THROWS(cmf::ParseConfig(YAML::Load(
-    "mesh: { cartesian: { nx: 2, ny: 2 } }\nmaterial: { model: neo_hookean, E: 1.0, nu: 0.3 }\n"
+    "mesh: { file: square.msh }\nmaterial: { model: neo_hookean, E: 1.0, nu: 0.3 }\n"
     "bcs: { dirichlet: [ { attr: 1, value: [0, 0] } ] }\n")),
     cmf::ConfigError, "bcs.dirichlet[0].attr");
   CHECK_THROWS(cmf::ParseConfig(YAML::Load(
-    "mesh: { cartesian: { nx: 2, ny: 2 } }\nmaterial: { model: neo_hookean, E: 1.0, nu: 0.3 }\n"
+    "mesh: { file: square.msh }\nmaterial: { model: neo_hookean, E: 1.0, nu: 0.3 }\n"
     "bcs: { traction: [ { attr: [2] } ] }\n")),
     cmf::ConfigError, "bcs.traction[0].value");
   CHECK_THROWS(cmf::ParseConfig(YAML::Load(
-    "mesh: { cartesian: { nx: 2, ny: 2 } }\nmaterial: 42\n")),
+    "mesh: { file: square.msh }\nmaterial: 42\n")),
     cmf::ConfigError, "'material' must be a map");
 
   // Unknown keys and bad enumerations are rejected by name.
   CHECK_THROWS(cmf::ParseConfig(YAML::Load(
-    "mesh: { cartesian: { nx: 2, ny: 2 } }\nmaterial: { modle: neo_hookean, model: neo_hookean, E: 1.0, nu: 0.3 }\n")),
+    "mesh: { file: square.msh }\nmaterial: { modle: neo_hookean, model: neo_hookean, E: 1.0, nu: 0.3 }\n")),
     cmf::ConfigError, "unknown key 'material.modle'");
   CHECK_THROWS(cmf::ParseConfig(YAML::Load(
-    "mesh: { cartesian: { nx: 2, ny: 2 } }\nmaterial: { model: mooney, E: 1.0, nu: 0.3 }\n")),
+    "mesh: { file: square.msh }\nmaterial: { model: mooney, E: 1.0, nu: 0.3 }\n")),
     cmf::ConfigError, "unknown model 'mooney'");
   CHECK_THROWS(cmf::ParseConfig(YAML::Load(
-    "mesh: { cartesian: { nx: 2, ny: 2 } }\nmaterial: { model: neo_hookean, E: 1.0, nu: 0.3 }\n"
+    "mesh: { file: square.msh }\nmaterial: { model: neo_hookean, E: 1.0, nu: 0.3 }\n"
     "solver: { linear: { type: mumps } }\n")),
     cmf::ConfigError, "solver.linear.type");
   CHECK_THROWS(cmf::ParseConfig(YAML::Load(
-    "mesh: { cartesian: { nx: 2, ny: 2 } }\nmaterial: { model: neo_hookean, E: 1.0, nu: 0.3 }\n"
+    "mesh: { file: square.msh }\nmaterial: { model: neo_hookean, E: 1.0, nu: 0.3 }\n"
     "output: { fields: [displacement, stress] }\n")),
     cmf::ConfigError, "unknown field 'stress'");
   CHECK_THROWS(cmf::ParseConfig(YAML::Load(
-    "mesh: { cartesian: { nx: 2, ny: 2 } }\nmaterial: { model: neo_hookean, E: 1.0, nu: 0.6 }\n")),
-    cmf::ConfigError, "material.nu");
+    "plane: shell\nmesh: { file: square.msh }\nmaterial: { model: neo_hookean, E: 1.0, nu: 0.3 }\n")),
+    cmf::ConfigError, "key 'plane'");
   CHECK_THROWS(cmf::ParseConfig(YAML::Load(
-    "mesh: { cartesian: { nx: 2, ny: 2 }, corners: [[0,0],[1,0]] }\nmaterial: { model: neo_hookean, E: 1.0, nu: 0.3 }\n")),
+    "formulation: mixed\nplane: stress\nmesh: { file: square.msh, order: 2 }\n"
+    "material: { model: iso_neo_hookean, mu: 1.0, incompressible: true }\n")),
+    cmf::ConfigError, "formulation: displacement");
+  CHECK(cmf::ParseConfig(YAML::Load(
+    "plane: stress\nmesh: { file: square.msh }\n"
+    "material: { model: iso_neo_hookean, mu: 1.0, incompressible: true }\n")).plane == "stress");
+  CHECK_THROWS(cmf::ParseConfig(YAML::Load(
+    "mesh: { file: square.msh }\nmaterial: { model: neo_hookean, E: 1.0, nu: 0.3 }\n"
+    "output: { fields: [displacement, vonmises], quadrature_at: [cells] }\n")),
+    cmf::ConfigError, "output.quadrature_at");
+  CHECK_THROWS(cmf::ParseConfig(YAML::Load(
+    "mesh: { file: square.msh }\nmaterial: { model: neo_hookean, E: 1.0, nu: 0.3 }\n"
+    "output: { fields: [displacement, vonmises], nodal_projection: lumped }\n")),
+    cmf::ConfigError, "output.nodal_projection");
+  {
+    const cmf::AppConfig c = cmf::ParseConfig(YAML::Load(
+      "mesh: { file: square.msh }\nmaterial: { model: neo_hookean, E: 1.0, nu: 0.3 }\n"
+      "output: { fields: [displacement, energy_density], quadrature_at: [elements, quadrature_points], "
+      "nodal_projection: projected }\n"));
+    CHECK(c.output.quadrature_at.size() == 2 && c.output.quadrature_at[1] == "quadrature_points");
+    CHECK(c.output.nodal_projection == "projected");
+  }
+  CHECK_THROWS(cmf::ParseConfig(YAML::Load(
+    "mesh: { file: square.msh }\nmaterial: { model: neo_hookean, E: 1.0, nu: 0.6 }\n")),
+    cmf::ConfigError, "material.nu");
+
+  // Boundary attributes by number and by physical-group name.
+  {
+    const cmf::AppConfig c = cmf::ParseConfig(YAML::Load(
+      "mesh: { file: square.msh }\nmaterial: { model: neo_hookean, E: 1.0, nu: 0.3 }\n"
+      "bcs: { dirichlet: [ { attr: [left, 2, top], value: [0, 0] } ] }\n"));
+    const cmf::BoundaryCondition &bc = c.bcs.dirichlet.at(0);
+    CHECK(bc.attr.size() == 1 && bc.attr[0] == 2);
+    CHECK(bc.attr_names.size() == 2 && bc.attr_names[0] == "left" && bc.attr_names[1] == "top");
+    CHECK_THROWS(cmf::ParseConfig(YAML::Load(
+      "mesh: { file: square.msh }\nmaterial: { model: neo_hookean, E: 1.0, nu: 0.3 }\n"
+      "bcs: { dirichlet: [ { attr: [], value: [0, 0] } ] }\n")),
+      cmf::ConfigError, "bcs.dirichlet[0].attr");
+    // Resolution against a mesh: numbers must exist, names come from the
+    // boundary attribute sets (Gmsh physical names).
+    mfem::Mesh mesh = mfem::Mesh::MakeCartesian2D(2, 2, mfem::Element::QUADRILATERAL, true);
+    mfem::Array<int> left(1), top(1), lid(2);
+    left[0] = 4;
+    top[0] = 3;
+    lid[0] = 1; lid[1] = 3;
+    mesh.bdr_attribute_sets.SetAttributeSet("left", left);
+    mesh.bdr_attribute_sets.SetAttributeSet("top", top);
+    mesh.bdr_attribute_sets.SetAttributeSet("lid", lid);
+    CHECK(cmf::DescribeAttributes(mesh, true) == "1 (lid), 2, 3 (lid, top), 4 (left)");
+    // [left, 2, top] -> {4, 2, 3}, sorted and unique.
+    CHECK(cmf::ResolveBoundaryAttributes(mesh, bc, "bcs.dirichlet[0]") == std::vector<int>({2, 3, 4}));
+    cmf::BoundaryCondition lidbc;
+    lidbc.attr_names = {"lid"};
+    lidbc.attr = {4};
+    CHECK(cmf::ResolveBoundaryAttributes(mesh, lidbc, "x") == std::vector<int>({1, 3, 4}));
+    cmf::BoundaryCondition bad;
+    bad.attr_names = {"front"};
+    CHECK_THROWS(cmf::ResolveBoundaryAttributes(mesh, bad, "bcs.traction[0]"), cmf::ConfigError,
+                 "no boundary physical group named 'front' (boundary attributes: 1 (lid), 2, 3 (lid, top), 4 (left))");
+    bad.attr_names.clear();
+    bad.attr = {7};
+    CHECK_THROWS(cmf::ResolveBoundaryAttributes(mesh, bad, "bcs.traction[0]"), cmf::ConfigError,
+                 "boundary attribute 7 is not in the mesh");
+  }
+  CHECK_THROWS(cmf::ParseConfig(YAML::Load(
+    "mesh: { file: square.msh, corners: [[0,0],[1,0]] }\nmaterial: { model: neo_hookean, E: 1.0, nu: 0.3 }\n")),
     cmf::ConfigError, "mesh.corners");
   CHECK_THROWS(cmf::ParseConfig(YAML::Load(
-    "mesh: { cartesian: { nx: 2, ny: 2 }, tetris: 1 }\nmaterial: { model: neo_hookean, E: 1.0, nu: 0.3 }\n")),
+    "mesh: { file: square.msh, tetris: 1 }\nmaterial: { model: neo_hookean, E: 1.0, nu: 0.3 }\n")),
     cmf::ConfigError, "unknown key 'mesh.tetris'");
   CHECK_THROWS(cmf::ParseConfig(YAML::Load(
-    "mesh: { cartesian: { nx: 2, ny: 2 }, perturb: 0.3 }\nmaterial: { model: neo_hookean, E: 1.0, nu: 0.3 }\n")),
+    "mesh: { file: square.msh, perturb: 0.3 }\nmaterial: { model: neo_hookean, E: 1.0, nu: 0.3 }\n")),
     cmf::ConfigError, "mesh.perturb");
 }
 

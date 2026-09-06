@@ -3,6 +3,8 @@
 #pragma once
 
 #include <memory>
+#include <string>
+#include <vector>
 
 #include "base/config.hpp"
 #include "mfem.hpp"
@@ -11,7 +13,10 @@ namespace cmf
 {
 
 // Serial mesh: load or generate, map corners, jitter, then serial_refine.
-mfem::Mesh BuildSerialMesh(const MeshConfig &cfg);
+// Built in place and returned by pointer: MFEM's move construction and
+// assignment swap everything except the attribute sets, which would drop
+// the physical-group names of a Gmsh file.
+std::unique_ptr<mfem::Mesh> BuildSerialMesh(const MeshConfig &cfg);
 
 // Partition BuildSerialMesh() over comm and apply parallel_refine.
 std::unique_ptr<mfem::ParMesh> BuildParMesh(MPI_Comm comm, const MeshConfig &cfg);
@@ -21,5 +26,15 @@ std::unique_ptr<mfem::ParMesh> BuildParMesh(MPI_Comm comm, const MeshConfig &cfg
 // sided meshes only.
 void PerturbInteriorVertices(mfem::Mesh &mesh, double amplitude,
                              unsigned seed = 12345u);
+
+// Boundary attributes of a boundary condition: numbers are checked against
+// the mesh, physical-group names (Gmsh $PhysicalNames, kept by MFEM as
+// boundary attribute sets) are resolved to their numbers. Errors list what the
+// mesh provides. `what` names the YAML entry.
+std::vector<int> ResolveBoundaryAttributes(mfem::Mesh &mesh, const BoundaryCondition &bc,
+                                           const std::string &what);
+
+// "1 (bottom), 2 (right), ..." for the boundary or the element attributes.
+std::string DescribeAttributes(mfem::Mesh &mesh, bool boundary);
 
 } // namespace cmf

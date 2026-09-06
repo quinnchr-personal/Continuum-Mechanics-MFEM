@@ -25,6 +25,7 @@ struct IsoNeoHookean
   IsoNeoHookean(double mu_, double kappa_) : mu(mu_), kappa(kappa_) {}
 
   bool Incompressible() const { return !std::isfinite(kappa); }
+  double ShearModulus() const { return mu; }
 
   template <typename T>
   tensor<T, 3, 3> PK1Iso(const tensor<T, 3, 3> &F) const

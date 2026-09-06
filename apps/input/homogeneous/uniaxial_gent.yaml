@@ -1,0 +1,28 @@
+# Homogeneous uniaxial tension to lambda = 2.0, incompressible Gent (mu = 1, Jm = 10),
+# mixed u-p formulation (Taylor-Hood Q2-Q1) on the unit cube. The affine
+# displacement u = ((lambda - 1) X, (lambda^-1/2 - 1) Y, (lambda^-1/2 - 1) Z)
+# is prescribed on the end faces X = 0 (left) and X = 1 (right); the four
+# lateral faces are free. The exact solution is that affine field with
+# sigma_11 = 2 (lambda^2 - 1/lambda) (Psi_1 + Psi_2/lambda) and p = sigma_11/3
+# (doc/incompressible_hyperelasticity.tex, Sec. 4.1);
+# apps/homogeneous_compare.py checks the probed fields against it.
+formulation: mixed
+mesh:
+  file: apps/mesh/cube.msh        # unit cube, 2 x 2 x 2 hexahedra; physical groups bottom, front, right, back, left, top
+  order: 2
+material: { model: gent, mu: 1.0, Jm: 10.0, incompressible: true }
+bcs:
+  dirichlet:
+    - { attr: [left, right], value: [0.0, 0.0, 0.0], gradient: [[1, 0.0, 0.0], [0.0, -0.2928932188134525, 0.0], [0.0, 0.0, -0.2928932188134525]] }
+solver:
+  load_steps: 8
+  newton: { rtol: 1e-11, atol: 1e-13, max_it: 30 }
+  linear: { type: gmres_amg, rtol: 1e-13, max_it: 400, krylov_dim: 100, inner_rtol: 1e-4, inner_max_it: 100 }
+output:
+  paraview: out/homogeneous/uniaxial_gent
+  fields: [displacement, pressure, vonmises, jacobian, cauchy_stress, pk1_stress]
+  quadrature_at: [nodes, elements, quadrature_points]   # <name> nodal, <name>_elem element average, <name>_qp point cloud
+  nodal_projection: averaged                            # or projected (global L2 projection)
+  probes:
+    - { name: corner, point: [1.0, 1.0, 1.0] }
+    - { name: center, point: [0.5, 0.5, 0.5] }

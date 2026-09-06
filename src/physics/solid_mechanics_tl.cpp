@@ -1,5 +1,8 @@
 #include "physics/solid_mechanics_tl.hpp"
 
+#include "base/coefficients.hpp"
+#include "base/mesh_input.hpp"
+
 #include <cmath>
 
 #include "kernels/total_lagrangian.hpp"
@@ -11,44 +14,6 @@ namespace cmf
 
 namespace
 {
-
-// Scalar coefficient of the displacement field: von Mises Cauchy stress or
-// J = det F, evaluated from Grad u at the point and interpolated at the nodes
-// of the L2 output space (element-local, no mass-matrix solve). Instantiated
-// once per material type at setup (no per-point dispatch on the variant).
-template <typename Material>
-class StressCoefficient : public mfem::Coefficient
-{
-public:
-  enum Kind { VON_MISES, JACOBIAN };
-  StressCoefficient(const mfem::ParGridFunction &u, const Material &m, Kind kind)
-    : u_(u), material_(m), kind_(kind) {}
-
-  mfem::real_t Eval(mfem::ElementTransformation &T,
-                    const mfem::IntegrationPoint &ip) override
-  {
-    T.SetIntPoint(&ip);
-    u_.GetVectorGradient(T, grad_);
-    if (T.GetDimension() == 2) { return Value<2>(); }
-    return Value<3>();
-  }
-
-private:
-  template <int dim>
-  double Value() const
-  {
-    tensor<double, dim, dim> H;
-    for (int i = 0; i < dim; i++)
-      for (int j = 0; j < dim; j++) { H(i, j) = grad_(i, j); }
-    if (kind_ == JACOBIAN) { return det(DeformationGradient<dim>(H)); }
-    return VonMises(QPointCauchyStress<Material, dim>(material_, H));
-  }
-
-  const mfem::ParGridFunction &u_;
-  Material material_;
-  Kind kind_;
-  mfem::DenseMatrix grad_;
-};
 
 mfem::Vector ToVector(const std::vector<double> &v)
 {
@@ -73,6 +38,13 @@ SolidMechanicsTL::SolidMechanicsTL(mfem::ParMesh &mesh, const AppConfig &cfg,
     nlf_(&fes_)
 {
   height = width = fes_.GetTrueVSize();
+  output_cfg_ = cfg.output;
+  plane_stress_ = cfg.plane == "stress";
+  if (plane_stress_ && dim_ != 2)
+  {
+    throw ConfigError("plane: stress needs a 2D mesh (got dimension " +
+                      std::to_string(dim_) + ")");
+  }
   Build(cfg);
 }
 
@@ -85,19 +57,19 @@ void SolidMechanicsTL::Build(const AppConfig &cfg)
     nlf_.AddDomainIntegrator(new TotalLagrangianIntegrator<M>(mat));
   }, material_);
 
-  for (const BoundaryCondition &bc : cfg.bcs.dirichlet)
+  for (std::size_t i = 0; i < cfg.bcs.dirichlet.size(); i++)
   {
-    CheckVectorSize(bc.value, "bcs.dirichlet[].value");
-    const mfem::Vector v = ToVector(bc.value);
-    owned_coefs_.push_back(std::make_unique<mfem::VectorConstantCoefficient>(v));
-    AddDirichlet(bc.attr, *owned_coefs_.back());
+    const BoundaryCondition &bc = cfg.bcs.dirichlet[i];
+    const std::string what = "bcs.dirichlet[" + std::to_string(i) + "]";
+    owned_coefs_.push_back(MakeBCCoefficient(bc, dim_, what));
+    AddDirichlet(ResolveBoundaryAttributes(mesh_, bc, what), *owned_coefs_.back());
   }
-  for (const BoundaryCondition &bc : cfg.bcs.traction)
+  for (std::size_t i = 0; i < cfg.bcs.traction.size(); i++)
   {
-    CheckVectorSize(bc.value, "bcs.traction[].value");
-    const mfem::Vector v = ToVector(bc.value);
-    owned_coefs_.push_back(std::make_unique<mfem::VectorConstantCoefficient>(v));
-    AddTraction(bc.attr, *owned_coefs_.back());
+    const BoundaryCondition &bc = cfg.bcs.traction[i];
+    const std::string what = "bcs.traction[" + std::to_string(i) + "]";
+    owned_coefs_.push_back(MakeBCCoefficient(bc, dim_, what));
+    AddTraction(ResolveBoundaryAttributes(mesh_, bc, what), *owned_coefs_.back());
   }
   if (!cfg.body_force.empty())
   {
@@ -276,7 +248,7 @@ std::unique_ptr<SolidProblem> MakeSolidProblem(mfem::ParMesh &mesh, const AppCon
   {
     return std::make_unique<MixedSolidMechanicsTL>(mesh, cfg, MakeMixedMaterial(cfg.material));
   }
-  return std::make_unique<SolidMechanicsTL>(mesh, cfg, MakeMaterial(cfg.material));
+  return std::make_unique<SolidMechanicsTL>(mesh, cfg, MakeMaterial(cfg.material, cfg.plane == "stress"));
 }
 
 void SolidMechanicsTL::EnsureFields()
@@ -284,25 +256,33 @@ void SolidMechanicsTL::EnsureFields()
   if (displacement_) { return; }
   displacement_ = std::make_unique<mfem::ParGridFunction>(&fes_);
   *displacement_ = 0.0;
-  l2_fec_ = std::make_unique<mfem::L2_FECollection>(order_, dim_);
-  l2_fes_ = std::make_unique<mfem::ParFiniteElementSpace>(&mesh_, l2_fec_.get());
-  vonmises_ = std::make_unique<mfem::ParGridFunction>(l2_fes_.get());
-  jacobian_ = std::make_unique<mfem::ParGridFunction>(l2_fes_.get());
-  *vonmises_ = 0.0;
-  *jacobian_ = 1.0;
+  std::vector<std::string> available;
+  for (const QuantityInfo &q : Quantities())
+  {
+    if (std::string(q.name) != "thickness_stretch" || plane_stress_) { available.push_back(q.name); }
+  }
+  qfields_ = std::make_unique<QuadratureFields>(mesh_, fec_, order_, output_cfg_, available);
 }
 
 void SolidMechanicsTL::UpdateFields(const mfem::Vector &x)
 {
   EnsureFields();
   displacement_->SetFromTrueDofs(x);
+  if (qfields_->Empty()) { return; }
   std::visit([this](const auto &mat)
   {
     using M = std::decay_t<decltype(mat)>;
-    StressCoefficient<M> vm(*displacement_, mat, StressCoefficient<M>::VON_MISES);
-    StressCoefficient<M> jac(*displacement_, mat, StressCoefficient<M>::JACOBIAN);
-    vonmises_->ProjectCoefficient(vm);
-    jacobian_->ProjectCoefficient(jac);
+    mfem::DenseMatrix grad;
+    qfields_->Update([&](mfem::ElementTransformation &T, const mfem::IntegrationPoint &ip,
+                         QPointState &s)
+    {
+      T.SetIntPoint(&ip);
+      displacement_->GetVectorGradient(T, grad);
+      s.F = CompleteF(mat, DeformationGradientAt(grad, T.GetDimension()));
+      s.P = mat.PK1(s.F);
+      if constexpr (has_energy<M>::value) { s.energy = mat.Energy(s.F); }
+      else { s.energy = 0.0; }
+    });
   }, material_);
 }
 
@@ -310,8 +290,7 @@ void SolidMechanicsTL::RegisterFields(FieldRegistry &registry)
 {
   EnsureFields();
   registry.AddExternal("displacement", *displacement_);
-  registry.AddExternal("vonmises", *vonmises_);
-  registry.AddExternal("jacobian", *jacobian_);
+  qfields_->Register(registry);
 }
 
 } // namespace cmf

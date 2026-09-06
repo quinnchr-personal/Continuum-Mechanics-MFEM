@@ -1,6 +1,7 @@
 #include "base/mesh_input.hpp"
 
 #include <algorithm>
+#include <map>
 #include <random>
 
 namespace cmf
@@ -71,13 +72,16 @@ void PerturbInteriorVertices(mfem::Mesh &mesh, double amplitude, unsigned seed)
   }
 }
 
-mfem::Mesh BuildSerialMesh(const MeshConfig &cfg)
+std::unique_ptr<mfem::Mesh> BuildSerialMesh(const MeshConfig &cfg)
 {
-  mfem::Mesh mesh;
+  std::unique_ptr<mfem::Mesh> mesh_ptr;
   if (!cfg.file.empty())
   {
-    mesh = mfem::Mesh::LoadFromFile(cfg.file, 1, 1);
-    if (mesh.GetNE() == 0)
+    // Constructed in place (generate edges, fix orientation) so that the
+    // attribute sets read from $PhysicalNames survive: MFEM's move
+    // operations swap everything except those sets.
+    mesh_ptr = std::make_unique<mfem::Mesh>(cfg.file.c_str(), 1, 1);
+    if (mesh_ptr->GetNE() == 0)
     {
       throw ConfigError("mesh.file: '" + cfg.file + "' contains no elements");
     }
@@ -88,15 +92,16 @@ mfem::Mesh BuildSerialMesh(const MeshConfig &cfg)
     const mfem::Element::Type type = ElementType(box);
     if (box.dim == 2)
     {
-      mesh = mfem::Mesh::MakeCartesian2D(box.nx, box.ny, type, true,
-                                         box.sx, box.sy, false);
+      mesh_ptr = std::make_unique<mfem::Mesh>(
+        mfem::Mesh::MakeCartesian2D(box.nx, box.ny, type, true, box.sx, box.sy, false));
     }
     else
     {
-      mesh = mfem::Mesh::MakeCartesian3D(box.nx, box.ny, box.nz, type,
-                                         box.sx, box.sy, box.sz, false);
+      mesh_ptr = std::make_unique<mfem::Mesh>(
+        mfem::Mesh::MakeCartesian3D(box.nx, box.ny, box.nz, type, box.sx, box.sy, box.sz, false));
     }
   }
+  mfem::Mesh &mesh = *mesh_ptr;
 
   if (!cfg.corners.empty())
   {
@@ -123,14 +128,79 @@ mfem::Mesh BuildSerialMesh(const MeshConfig &cfg)
   // one distortion pattern, as in a distorted-mesh convergence study.
   if (cfg.perturb > 0.0) { PerturbInteriorVertices(mesh, cfg.perturb); }
   for (int l = 0; l < cfg.serial_refine; l++) { mesh.UniformRefinement(); }
-  return mesh;
+  return mesh_ptr;
+}
+
+namespace
+{
+
+std::map<int, std::vector<std::string>> NamesByAttribute(mfem::AttributeSets &sets)
+{
+  std::map<int, std::vector<std::string>> names;
+  for (const std::string &name : sets.GetAttributeSetNames())
+  {
+    const mfem::Array<int> &attrs = sets.GetAttributeSet(name);
+    for (int i = 0; i < attrs.Size(); i++) { names[attrs[i]].push_back(name); }
+  }
+  return names;
+}
+
+} // namespace
+
+std::string DescribeAttributes(mfem::Mesh &mesh, bool boundary)
+{
+  const mfem::Array<int> &attrs = boundary ? mesh.bdr_attributes : mesh.attributes;
+  const auto names = NamesByAttribute(boundary ? mesh.bdr_attribute_sets : mesh.attribute_sets);
+  std::string s;
+  for (int i = 0; i < attrs.Size(); i++)
+  {
+    s += (i ? ", " : "") + std::to_string(attrs[i]);
+    const auto it = names.find(attrs[i]);
+    if (it != names.end())
+    {
+      s += " (";
+      for (std::size_t k = 0; k < it->second.size(); k++) { s += (k ? ", " : "") + it->second[k]; }
+      s += ")";
+    }
+  }
+  return s.empty() ? "none" : s;
+}
+
+std::vector<int> ResolveBoundaryAttributes(mfem::Mesh &mesh, const BoundaryCondition &bc,
+                                           const std::string &what)
+{
+  std::vector<int> out;
+  for (int a : bc.attr)
+  {
+    if (mesh.bdr_attributes.Find(a) < 0)
+    {
+      throw ConfigError(what + ": boundary attribute " + std::to_string(a) +
+                        " is not in the mesh (boundary attributes: " +
+                        DescribeAttributes(mesh, true) + ")");
+    }
+    out.push_back(a);
+  }
+  for (const std::string &name : bc.attr_names)
+  {
+    if (!mesh.bdr_attribute_sets.AttributeSetExists(name))
+    {
+      throw ConfigError(what + ": the mesh has no boundary physical group named '" + name +
+                        "' (boundary attributes: " + DescribeAttributes(mesh, true) + ")");
+    }
+    const mfem::Array<int> &attrs = mesh.bdr_attribute_sets.GetAttributeSet(name);
+    for (int i = 0; i < attrs.Size(); i++) { out.push_back(attrs[i]); }
+  }
+  std::sort(out.begin(), out.end());
+  out.erase(std::unique(out.begin(), out.end()), out.end());
+  return out;
 }
 
 std::unique_ptr<mfem::ParMesh> BuildParMesh(MPI_Comm comm, const MeshConfig &cfg)
 {
-  mfem::Mesh serial = BuildSerialMesh(cfg);
-  auto pmesh = std::make_unique<mfem::ParMesh>(comm, serial);
-  serial.Clear();
+  std::unique_ptr<mfem::Mesh> serial = BuildSerialMesh(cfg);
+  // The ParMesh constructor copies the attribute sets (physical names).
+  auto pmesh = std::make_unique<mfem::ParMesh>(comm, *serial);
+  serial.reset();
   for (int l = 0; l < cfg.parallel_refine; l++) { pmesh->UniformRefinement(); }
   return pmesh;
 }

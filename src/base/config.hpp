@@ -27,13 +27,18 @@ struct CartesianMeshConfig
   std::string element = "quad"; // quad | tri | hex | tet
 };
 
+// The YAML schema reads meshes from files (Gmsh .msh, or any format MFEM
+// reads): `file` is required and the physical groups become the element and
+// boundary attributes, with their names kept for the boundary conditions.
+// The Cartesian box and the corner map are not part of the YAML schema; they
+// remain here for the tests, which build their meshes programmatically.
 struct MeshConfig
 {
-  std::string file;              // mesh file; empty -> cartesian box
-  bool cartesian = false;
+  std::string file;              // mesh file (required in YAML)
+  bool cartesian = false;        // programmatic only: box instead of file
   CartesianMeshConfig box;
-  // Optional bilinear image of the 2D box: corners at (0,0), (sx,0), (sx,sy),
-  // (0,sy) are mapped to corners[0..3].
+  // Programmatic only: bilinear image of the 2D box, corners at (0,0), (sx,0),
+  // (sx,sy), (0,sy) mapped to corners[0..3].
   std::vector<std::array<double, 2>> corners;
   double perturb = 0.0;          // interior vertex jitter of the base mesh, fraction of h
   int serial_refine = 0;
@@ -42,10 +47,16 @@ struct MeshConfig
 };
 
 // Material parameters; unset numeric keys are NaN. Which keys a model needs
-// is validated in materials.cpp (ResolveModuli):
+// is validated by ValidateMaterialConfig:
 //   neo_hookean, st_venant_kirchhoff: E, nu
-//   iso_neo_hookean: mu or (E, nu); bulk from kappa | nu | incompressible
-//   mooney_rivlin: c1, c2; bulk from kappa | nu | incompressible
+//   iso_neo_hookean: mu or (E, nu)
+//   mooney_rivlin: c1, c2                (mu = 2 (c1 + c2))
+//   yeoh: c10, [c20, c30]                (mu = 2 c10)
+//   gent: mu, Jm
+//   arruda_boyce: mu, N                  (small-strain modulus mu (1 + 3/(5N) + ...))
+//   ogden: mu_r, alpha_r lists           (mu = 1/2 sum mu_r alpha_r)
+// The decoupled models (all but the first two) take the bulk modulus from
+// exactly one of kappa | nu | incompressible.
 struct MaterialConfig
 {
   std::string model = "neo_hookean";
@@ -55,14 +66,27 @@ struct MaterialConfig
   double kappa = std::numeric_limits<double>::quiet_NaN();
   double c1 = std::numeric_limits<double>::quiet_NaN();
   double c2 = std::numeric_limits<double>::quiet_NaN();
+  double c10 = std::numeric_limits<double>::quiet_NaN();
+  double c20 = std::numeric_limits<double>::quiet_NaN();
+  double c30 = std::numeric_limits<double>::quiet_NaN();
+  double Jm = std::numeric_limits<double>::quiet_NaN();
+  double N = std::numeric_limits<double>::quiet_NaN();
+  std::vector<double> mu_r;
+  std::vector<double> alpha_r;
   bool incompressible = false;
   double rho0 = 1.0;
 };
 
+// Boundary attributes by number (attr) and/or by physical-group name
+// (attr_names, resolved against the mesh when the physics is built); value,
+// plus an optional gradient: the data is value + gradient X in the reference
+// coordinates X (affine, for homogeneous deformation tests).
 struct BoundaryCondition
 {
   std::vector<int> attr;
+  std::vector<std::string> attr_names;
   std::vector<double> value;
+  std::vector<std::vector<double>> gradient;
 };
 
 struct BCConfig
@@ -115,14 +139,29 @@ struct ProbeConfig
 struct OutputConfig
 {
   std::string paraview;              // collection path; empty -> no output
-  std::vector<std::string> fields;   // displacement | pressure | vonmises | jacobian
+  // Nodal unknowns: displacement | pressure (mixed). Quadrature-point
+  // quantities: cauchy_stress | pk1_stress | deformation_gradient | jacobian
+  // | vonmises | energy_density | thickness_stretch (plane stress).
+  std::vector<std::string> fields;
+  // Presentations of the quadrature-point quantities (physics/quadrature_fields.hpp):
+  // "nodes" (continuous H1 field <name>), "elements" (element average
+  // <name>_elem), "quadrature_points" (raw point cloud <name>_qp).
+  std::vector<std::string> quadrature_at{"nodes"};
+  // How the nodal presentation is derived from the quadrature data:
+  // "averaged" (element-wise projection, mean at shared nodes) or
+  // "projected" (global L2 projection).
+  std::string nodal_projection = "averaged";
   bool high_order = true;
-  std::vector<ProbeConfig> probes;   // displacement printed at these points
+  std::vector<ProbeConfig> probes;   // every registered field printed at these points
 };
 
 struct AppConfig
 {
   std::string formulation = "displacement"; // displacement | mixed (u-p)
+  // 2D kinematics: strain (F33 = 1) | stress (F33 = thickness stretch with
+  // sigma33 = 0, displacement formulation only; incompressible models need no
+  // pressure unknown there).
+  std::string plane = "strain";
   MeshConfig mesh;
   MaterialConfig material;
   BCConfig bcs;

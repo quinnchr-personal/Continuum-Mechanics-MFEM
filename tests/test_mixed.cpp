@@ -387,8 +387,13 @@ void FormulationAgreementTest(int finest_nx)
   auto solve = [&](const std::string &formulation, int nx)
   {
     cmf::AppConfig cfg = BaseConfig(nx, 2, 0.0, "iso_neo_hookean", 0.45, false);
-    cfg.bcs.dirichlet.push_back({{4}, {0.0, 0.0}});
-    cfg.bcs.traction.push_back({{2}, {0.0, 8.0}});
+    cmf::BoundaryCondition clamp, load;
+    clamp.attr = {4};
+    clamp.value = {0.0, 0.0};
+    load.attr = {2};
+    load.value = {0.0, 8.0};
+    cfg.bcs.dirichlet.push_back(clamp);
+    cfg.bcs.traction.push_back(load);
     cfg.solver.load_steps = 2;
     cfg.formulation = formulation;
     std::unique_ptr<mfem::ParMesh> pmesh = cmf::BuildParMesh(MPI_COMM_WORLD, cfg.mesh);

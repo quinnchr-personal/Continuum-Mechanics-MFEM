@@ -36,6 +36,22 @@ inline tensor<double, 3, 3> DeformationGradient(const tensor<double, dim, dim> &
   return F;
 }
 
+// Materials that determine part of F themselves (the plane-stress adapter:
+// F33 = thickness stretch) expose Complete(F); the outputs (Cauchy stress,
+// J) use the completed F. Everything else keeps the padded F.
+template <typename M, typename = void>
+struct has_complete : std::false_type {};
+template <typename M>
+struct has_complete<M, std::void_t<decltype(std::declval<const M &>().Complete(
+  std::declval<const tensor<double, 3, 3> &>()))>> : std::true_type {};
+
+template <typename Material>
+inline tensor<double, 3, 3> CompleteF(const Material &material, const tensor<double, 3, 3> &F)
+{
+  if constexpr (has_complete<Material>::value) { return material.Complete(F); }
+  else { return F; }
+}
+
 // In-plane block of P(F(H)).
 template <typename Material, int dim>
 inline tensor<double, dim, dim> QPointStress(const Material &material,
@@ -57,12 +73,13 @@ inline tensor<double, 3, 3, 3, 3> QPointTangent(const Material &material,
 }
 
 // Cauchy stress sigma = J^{-1} P F^T at a point, full 3x3 (plane strain keeps
-// sigma_33), and its von Mises equivalent.
+// sigma_33, plane stress uses the thickness stretch), and its von Mises
+// equivalent.
 template <typename Material, int dim>
 inline tensor<double, 3, 3> QPointCauchyStress(const Material &material,
                                                const tensor<double, dim, dim> &H)
 {
-  const tensor<double, 3, 3> F = DeformationGradient<dim>(H);
+  const tensor<double, 3, 3> F = CompleteF(material, DeformationGradient<dim>(H));
   const tensor<double, 3, 3> P = material.PK1(F);
   return (1.0 / det(F)) * (P * transpose(F));
 }

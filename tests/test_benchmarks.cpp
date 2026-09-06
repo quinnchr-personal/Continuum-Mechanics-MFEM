@@ -199,7 +199,10 @@ void CantileverTest()
   cfg.output.paraview.clear();
   cfg.solver.newton.print_level = 0;
   cfg.solver.linear.rtol = 1e-13;
-  const double L = cfg.mesh.box.sx, w = cfg.mesh.box.sy, h = cfg.mesh.box.sz;
+  // Beam dimensions from the mesh file's bounding box.
+  mfem::Vector bb_min, bb_max;
+  cmf::BuildSerialMesh(cfg.mesh)->GetBoundingBox(bb_min, bb_max);
+  const double L = bb_max(0) - bb_min(0), w = bb_max(1) - bb_min(1), h = bb_max(2) - bb_min(2);
   const double P = -cfg.bcs.traction.at(0).value.at(2) * w * h; // resultant
   const double I = w * h * h * h / 12.0;
   const double euler_bernoulli = P * L * L * L / (3.0 * cfg.material.E * I);

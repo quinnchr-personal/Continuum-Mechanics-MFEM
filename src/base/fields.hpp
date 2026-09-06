@@ -1,5 +1,7 @@
 // Named registry of grid functions: physics modules publish fields here and
 // the output layer looks them up by the names given in the YAML input.
+// Quadrature-point fields (QuadratureFunction) are kept in a separate map:
+// they are written as point clouds and cannot be probed.
 #pragma once
 
 #include <map>
@@ -49,9 +51,34 @@ public:
     return names;
   }
 
+  void AddExternalQ(const std::string &name, mfem::QuadratureFunction &qf)
+  {
+    qfields_[name] = &qf;
+  }
+
+  bool HasQ(const std::string &name) const { return qfields_.count(name) > 0; }
+
+  mfem::QuadratureFunction &GetQ(const std::string &name) const
+  {
+    auto it = qfields_.find(name);
+    if (it == qfields_.end())
+    {
+      throw std::runtime_error("unknown quadrature field '" + name + "'");
+    }
+    return *it->second;
+  }
+
+  std::vector<std::string> QNames() const
+  {
+    std::vector<std::string> names;
+    for (const auto &kv : qfields_) { names.push_back(kv.first); }
+    return names;
+  }
+
 private:
   std::map<std::string, mfem::ParGridFunction *> fields_;
   std::map<std::string, std::unique_ptr<mfem::ParGridFunction>> owned_;
+  std::map<std::string, mfem::QuadratureFunction *> qfields_;
 };
 
 } // namespace cmf

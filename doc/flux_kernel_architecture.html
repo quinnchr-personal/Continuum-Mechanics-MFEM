@@ -1,0 +1,356 @@
+<title>Flux-Kernel Multiphysics Architecture</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@600;700&family=Source+Sans+3:ital,wght@0,400;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+  :root {
+    --bg: #F5F6F8;
+    --surface: #FFFFFF;
+    --ink: #1C2430;
+    --muted: #5C6672;
+    --line: #C9CFD8;
+    --band: rgba(28, 36, 48, 0.035);
+    --accent: #D95D2A;
+    --accent-soft: rgba(217, 93, 42, 0.10);
+    --blue: #3D6B9E;
+    --blue-soft: rgba(61, 107, 158, 0.10);
+  }
+  :root:not([data-theme="light"]) { }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #14171C;
+      --surface: #1D2229;
+      --ink: #E6EAF0;
+      --muted: #9AA4B0;
+      --line: #3A424D;
+      --band: rgba(230, 234, 240, 0.045);
+      --accent: #E8763F;
+      --accent-soft: rgba(232, 118, 63, 0.14);
+      --blue: #6E9CCB;
+      --blue-soft: rgba(110, 156, 203, 0.14);
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #14171C;
+    --surface: #1D2229;
+    --ink: #E6EAF0;
+    --muted: #9AA4B0;
+    --line: #3A424D;
+    --band: rgba(230, 234, 240, 0.045);
+    --accent: #E8763F;
+    --accent-soft: rgba(232, 118, 63, 0.14);
+    --blue: #6E9CCB;
+    --blue-soft: rgba(110, 156, 203, 0.14);
+  }
+
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: "Source Sans 3", "Segoe UI", system-ui, sans-serif;
+    font-size: 16px;
+    line-height: 1.55;
+    padding: 48px 24px 72px;
+  }
+  main { max-width: 1000px; margin: 0 auto; }
+  h1 {
+    font-family: Archivo, "Segoe UI", system-ui, sans-serif;
+    font-weight: 700;
+    font-size: 1.9rem;
+    letter-spacing: -0.01em;
+    text-wrap: balance;
+    margin: 0 0 6px;
+  }
+  .subtitle {
+    color: var(--muted);
+    font-size: 1.02rem;
+    max-width: 65ch;
+    margin: 0 0 34px;
+  }
+  h2 {
+    font-family: Archivo, "Segoe UI", system-ui, sans-serif;
+    font-weight: 600;
+    font-size: 1.15rem;
+    margin: 44px 0 10px;
+  }
+  p { max-width: 65ch; }
+  code {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.88em;
+    background: var(--band);
+    border-radius: 3px;
+    padding: 1px 4px;
+  }
+  figure { margin: 22px 0 0; }
+  .figwrap {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 22px 18px 16px;
+    overflow-x: auto;
+  }
+  figcaption {
+    color: var(--muted);
+    font-size: 0.88rem;
+    max-width: 72ch;
+    margin: 10px 4px 0;
+  }
+  figcaption b { color: var(--ink); font-weight: 600; }
+
+  svg { color: var(--ink); max-width: 100%; height: auto; display: block; margin: 0 auto; }
+  svg text {
+    font-family: "Source Sans 3", system-ui, sans-serif;
+    fill: var(--ink);
+  }
+  .mono { font-family: "IBM Plex Mono", ui-monospace, monospace; }
+  .band  { fill: var(--band); stroke: var(--line); }
+  .box   { fill: var(--surface); stroke: var(--line); }
+  .chip  { fill: var(--band); stroke: var(--line); }
+  .seam  { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.4; }
+  .bluebox { fill: var(--blue-soft); stroke: var(--blue); }
+  .accbox  { fill: var(--accent-soft); stroke: var(--accent); }
+  .tag   { fill: var(--muted); font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; }
+  .lbl   { font-size: 11.5px; font-weight: 600; }
+  .sub   { font-size: 10.5px; fill: var(--muted); }
+  .note  { font-size: 10.5px; fill: var(--muted); }
+  .flow  { stroke: currentColor; stroke-width: 1.2; }
+  .dash  { stroke-dasharray: 4 3; }
+  .alebox { fill: none; stroke: var(--muted); stroke-dasharray: 5 4; }
+  .accnote { font-size: 10.5px; fill: var(--accent); }
+
+  ul.contracts {
+    max-width: 72ch;
+    padding-left: 1.2em;
+    margin: 12px 0 0;
+  }
+  ul.contracts li { margin: 7px 0; }
+  ul.contracts li::marker { color: var(--accent); }
+</style>
+
+<main>
+  <h1>Flux-Kernel Multiphysics Architecture</h1>
+  <p class="subtitle">
+    An MFEM-based framework for nonlinear solid mechanics, heat and mass transfer,
+    thermo-chemistry, and compressible flow &mdash; CG, DG, and HDG from one physics
+    definition, portable across MPI&thinsp;+&thinsp;CUDA/HIP/OpenMP.
+  </p>
+
+  <figure>
+    <div class="figwrap">
+    <svg viewBox="0 0 960 760" role="img"
+         aria-label="Layered architecture: thin drivers drive a coupling layer over physics modules; every physics defines fluxes and sources at quadrature points on a shared kernel contract, which the assembly layer turns into CG, DG, or HDG operators solved by Newton and preconditioned linear solvers on an MFEM base wrapping HYPRE, PETSc, SUNDIALS and other libraries. Materials and the execution model are cross-cutting rails.">
+      <defs>
+        <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0 0 L10 5 L0 10 z" fill="currentColor"/>
+        </marker>
+      </defs>
+
+      <!-- drivers -->
+      <rect class="band" x="20" y="20" width="670" height="46" rx="4"/>
+      <text class="lbl" x="355" y="48" text-anchor="middle"><tspan class="mono">apps/</tspan><tspan> &#8212; thin executables outside the library: parse YAML &#183; build physics + coupler &#183; run</tspan></text>
+
+      <line class="flow" x1="355" y1="66" x2="355" y2="94" marker-end="url(#arr)"/>
+      <text class="note" x="365" y="85">configure &amp; own</text>
+
+      <!-- coupling -->
+      <rect class="band" x="20" y="96" width="670" height="84" rx="4"/>
+      <text class="tag mono" x="32" y="112">src/coupling/</text>
+      <rect class="box" x="32" y="126" width="316" height="42" rx="3"/>
+      <text class="lbl" x="190" y="143" text-anchor="middle">monolithic</text>
+      <text class="sub mono" x="190" y="158" text-anchor="middle">BlockNonlinearOperator &#183; fieldsplit / block-GS</text>
+      <rect class="box" x="362" y="126" width="316" height="42" rx="3"/>
+      <text class="lbl" x="520" y="143" text-anchor="middle">partitioned</text>
+      <text class="sub" x="520" y="158" text-anchor="middle">fixed point &#183; Aitken / IQN-ILS &#183; subcycling</text>
+
+      <rect class="box" x="714" y="126" width="226" height="42" rx="3"/>
+      <text class="lbl" x="827" y="143" text-anchor="middle">external code</text>
+      <text class="sub" x="827" y="158" text-anchor="middle">coupled via preCICE adapter</text>
+      <line class="flow dash" x1="678" y1="147" x2="712" y2="147" marker-end="url(#arr)"/>
+
+      <line class="flow" x1="355" y1="180" x2="355" y2="206" marker-end="url(#arr)"/>
+      <text class="note" x="365" y="198">per-block residual R, Jacobian J &#183; fields exchanged by name</text>
+
+      <!-- physics -->
+      <rect class="band" x="20" y="208" width="670" height="96" rx="4"/>
+      <text class="tag mono" x="32" y="224">src/physics/</text>
+      <rect class="box" x="32" y="234" width="122" height="46" rx="3"/>
+      <text class="lbl" x="93" y="253" text-anchor="middle">solid</text>
+      <text class="sub" x="93" y="267" text-anchor="middle">total Lagrangian</text>
+      <rect class="box" x="162" y="234" width="122" height="46" rx="3"/>
+      <text class="lbl" x="223" y="253" text-anchor="middle">heat</text>
+      <text class="sub" x="223" y="267" text-anchor="middle">transfer</text>
+      <rect class="box" x="292" y="234" width="122" height="46" rx="3"/>
+      <text class="lbl" x="353" y="253" text-anchor="middle">species</text>
+      <text class="sub" x="353" y="267" text-anchor="middle">transport</text>
+      <rect class="box" x="422" y="234" width="122" height="46" rx="3"/>
+      <text class="lbl" x="483" y="253" text-anchor="middle">compressible</text>
+      <text class="sub" x="483" y="267" text-anchor="middle">flow</text>
+      <rect class="box" x="552" y="234" width="122" height="46" rx="3"/>
+      <text class="lbl" x="613" y="253" text-anchor="middle">porous</text>
+      <text class="sub" x="613" y="267" text-anchor="middle">ablator</text>
+      <text class="sub" x="355" y="295" text-anchor="middle">each an <tspan class="mono">mfem::Operator</tspan> &#8212; <tspan class="mono">Mult()</tspan> = residual &#183; <tspan class="mono">GetGradient()</tspan> = Jacobian</text>
+
+      <line class="flow" x1="355" y1="304" x2="355" y2="330" marker-end="url(#arr)"/>
+      <text class="note" x="365" y="322">a physics declares only F, S, F&#770; (+ BCs) &#8212; no assembly code</text>
+
+      <!-- ALE decorator + seam -->
+      <rect class="alebox" x="20" y="332" width="670" height="70" rx="4"/>
+      <text class="note" x="678" y="346" text-anchor="end">ALE decorator &#8212; F &#8614; J F&#772;&#8315;&#185;(F &#8722; u &#8855; x&#775;&#8344;&#8339;&#8348;&#8341;), weight by J</text>
+      <rect class="seam" x="32" y="352" width="646" height="42" rx="4"/>
+      <text class="lbl" x="355" y="369" text-anchor="middle" font-size="12.5">flux / source kernel contract</text>
+      <text class="mono" x="355" y="386" text-anchor="middle" font-size="11">F(u,&#8711;u) &#183; S(u) &#183; F&#770;(u&#8315;, u&#8314;, n)&#8201; evaluated per quadrature point</text>
+
+      <!-- materials rail -->
+      <rect class="box" x="714" y="208" width="226" height="186" rx="4"/>
+      <text class="lbl mono" x="726" y="228">src/materials/ + chemistry</text>
+      <text class="sub" x="726" y="250">device functors (<tspan class="mono">HOST_DEVICE</tspan>)</text>
+      <text class="sub" x="726" y="267">state in <tspan class="mono">QuadratureFunction</tspan></text>
+      <text class="sub" x="726" y="284">AD tangents &#8212; dual numbers</text>
+      <text class="sub" x="726" y="301">stiff ODEs: per-point sub-step</text>
+      <text class="sub" x="726" y="318">Mutation++ / Cantera, tabulated</text>
+      <text class="accnote" x="726" y="348">P, &#963;, &#969;&#775; fed to the seam:</text>
+      <line class="flow" x1="714" y1="373" x2="696" y2="373" marker-end="url(#arr)"/>
+
+      <line class="flow" x1="355" y1="402" x2="355" y2="428" marker-end="url(#arr)"/>
+      <text class="note" x="365" y="421">one definition &#8594; CG, DG, and HDG operators</text>
+
+      <!-- kernels -->
+      <rect class="band" x="20" y="430" width="670" height="84" rx="4"/>
+      <text class="tag mono" x="32" y="446">src/kernels/ &#183; assembly</text>
+      <rect class="box" x="32" y="456" width="130" height="44" rx="3"/>
+      <text class="lbl" x="97" y="474" text-anchor="middle">CG volume</text>
+      <text class="sub" x="97" y="489" text-anchor="middle">element integrals</text>
+      <rect class="box" x="170" y="456" width="190" height="44" rx="3"/>
+      <text class="lbl" x="265" y="474" text-anchor="middle">DG face</text>
+      <text class="sub" x="265" y="489" text-anchor="middle">SIP &#183; LDG &#183; Riemann fluxes</text>
+      <rect class="box" x="368" y="456" width="130" height="44" rx="3"/>
+      <text class="lbl" x="433" y="474" text-anchor="middle">HDG trace</text>
+      <text class="sub" x="433" y="489" text-anchor="middle">static condensation</text>
+      <rect class="box" x="506" y="456" width="172" height="44" rx="3"/>
+      <text class="lbl" x="592" y="474" text-anchor="middle">PA / FA</text>
+      <text class="sub" x="592" y="489" text-anchor="middle">matrix-free or assembled</text>
+
+      <line class="flow" x1="355" y1="514" x2="355" y2="540" marker-end="url(#arr)"/>
+      <text class="note" x="365" y="533">operator action &#183; assembled blocks for preconditioning</text>
+
+      <!-- solvers -->
+      <rect class="band" x="20" y="542" width="670" height="84" rx="4"/>
+      <text class="tag mono" x="32" y="558">src/solvers/ &#183; time</text>
+      <rect class="box" x="32" y="568" width="204" height="44" rx="3"/>
+      <text class="lbl" x="134" y="586" text-anchor="middle">nonlinear</text>
+      <text class="sub" x="134" y="601" text-anchor="middle">Newton &#183; line search &#183; PTC</text>
+      <rect class="box" x="244" y="568" width="254" height="44" rx="3"/>
+      <text class="lbl" x="371" y="586" text-anchor="middle">linear registry</text>
+      <text class="sub" x="371" y="601" text-anchor="middle">AMG &#183; fieldsplit &#183; LOR / p-MG precond</text>
+      <rect class="box" x="506" y="568" width="172" height="44" rx="3"/>
+      <text class="lbl" x="592" y="586" text-anchor="middle">time</text>
+      <text class="sub" x="592" y="601" text-anchor="middle">BE / DIRK &#183; IMEX</text>
+
+      <!-- execution rail -->
+      <rect class="box" x="714" y="430" width="226" height="196" rx="4"/>
+      <text class="lbl" x="726" y="450">execution model</text>
+      <text class="sub" x="726" y="472">MPI is always the outer level</text>
+      <text class="sub" x="726" y="489">kernels via <tspan class="mono">mfem::forall</tspan></text>
+      <text class="sub" x="726" y="506">backend picked at runtime:</text>
+      <text class="sub mono" x="738" y="523">cuda &#183; hip &#183; omp &#183; cpu</text>
+      <text class="sub" x="726" y="540">GPU-aware MPI exchanges</text>
+      <text class="sub" x="726" y="557">no virtual calls inside kernels</text>
+
+      <line class="flow" x1="355" y1="626" x2="355" y2="648" marker-end="url(#arr)"/>
+      <text class="note" x="365" y="643">fields, spaces, I/O services</text>
+
+      <!-- base -->
+      <rect class="band" x="20" y="650" width="920" height="46" rx="4"/>
+      <text class="lbl" x="480" y="677" text-anchor="middle"><tspan class="mono">src/base/</tspan><tspan> &#8212; ParMesh &#183; FE spaces &#183; field registry &#183; device config &#183; YAML &#183; checkpoint / restart &#183; ParaView</tspan></text>
+
+      <line class="flow" x1="480" y1="696" x2="480" y2="712" marker-end="url(#arr)"/>
+
+      <!-- TPLs -->
+      <text class="tag mono" x="20" y="733">TPLs</text>
+      <rect class="bluebox" x="149" y="714" width="66" height="30" rx="4"/>
+      <text class="mono" x="182" y="733" text-anchor="middle" font-size="11">MFEM</text>
+      <rect class="chip" x="225" y="714" width="72" height="30" rx="4"/>
+      <text class="mono" x="261" y="733" text-anchor="middle" font-size="11">HYPRE</text>
+      <rect class="chip" x="307" y="714" width="70" height="30" rx="4"/>
+      <text class="mono" x="342" y="733" text-anchor="middle" font-size="11">PETSc</text>
+      <rect class="chip" x="387" y="714" width="92" height="30" rx="4"/>
+      <text class="mono" x="433" y="733" text-anchor="middle" font-size="11">SUNDIALS</text>
+      <rect class="chip" x="489" y="714" width="160" height="30" rx="4"/>
+      <text class="mono" x="569" y="733" text-anchor="middle" font-size="11">Mutation++ &#183; Cantera</text>
+      <rect class="chip" x="659" y="714" width="80" height="30" rx="4"/>
+      <text class="mono" x="699" y="733" text-anchor="middle" font-size="11">preCICE</text>
+      <rect class="chip" x="749" y="714" width="62" height="30" rx="4"/>
+      <text class="mono" x="780" y="733" text-anchor="middle" font-size="11">gslib</text>
+    </svg>
+    </div>
+    <figcaption><b>Figure 1 &mdash; the layered stack.</b> The load-bearing decision is the orange seam:
+    every physics module is expressed as fluxes, sources, and numerical fluxes at quadrature
+    points, and the framework owns the CG/DG/HDG assembly loops beneath it. That single contract
+    is what makes GPU portability, new discretizations, and the ALE decorator one effort each
+    instead of one per physics. Materials and the execution model cut across all layers as rails.</figcaption>
+  </figure>
+
+  <h2>The contracts the arrows stand for</h2>
+  <ul class="contracts">
+    <li><b>physics &rarr; seam.</b> A module contributes F(u,&nabla;u), S(u), F&#770;(u&#8315;,u&#8314;,n)
+      and boundary conditions &mdash; never an integrator. Solid mechanics fits the same shape:
+      F&nbsp;=&nbsp;P(F) in total Lagrangian form.</li>
+    <li><b>materials &rarr; seam.</b> Constitutive models are stateless device functors; internal
+      variables (pyrolysis extent, plastic strain, char fraction) live in
+      <code>QuadratureFunction</code>s so they survive GPUs and checkpointing. Tangents come from
+      forward-mode dual numbers unless hand-optimized.</li>
+    <li><b>seam &rarr; kernels.</b> The framework turns one definition into CG volume, DG face, or
+      HDG trace operators; partial assembly for GPU operator action, full assembly when a matrix
+      is needed for AMG or direct solves.</li>
+    <li><b>ALE.</b> A wrapper applied to any flux on the fixed referent configuration &mdash;
+      substitute the mapped flux and weight by J &mdash; not a per-physics rewrite.</li>
+  </ul>
+
+  <figure>
+    <div class="figwrap">
+    <svg viewBox="0 0 960 240" role="img"
+         aria-label="Two coupling paths. Monolithic: a two-by-two block Jacobian with off-diagonal coupling blocks retained, solved by one Newton iteration with fieldsplit preconditioning. Partitioned: solid and fluid solvers exchange interface displacement and temperature one way and traction and heat flux the other, iterated to a fixed point with Aitken or IQN relaxation, with preCICE handling the exchange between separate executables.">
+      <defs>
+        <marker id="arr2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0 0 L10 5 L0 10 z" fill="currentColor"/>
+        </marker>
+      </defs>
+
+      <!-- left: monolithic -->
+      <text class="lbl" x="20" y="26" font-size="12.5">monolithic &#8212; one Newton on the block system</text>
+      <path d="M140 46 h-9 v112 h9" fill="none" class="flow"/>
+      <path d="M316 46 h9 v112 h-9" fill="none" class="flow"/>
+      <rect class="bluebox" x="144" y="52" width="82" height="46" rx="3"/>
+      <text class="mono" x="185" y="80" text-anchor="middle" font-size="12">J<tspan baseline-shift="sub" font-size="9">ss</tspan></text>
+      <rect class="accbox" x="230" y="52" width="82" height="46" rx="3"/>
+      <text class="mono" x="271" y="80" text-anchor="middle" font-size="12">J<tspan baseline-shift="sub" font-size="9">sf</tspan></text>
+      <rect class="accbox" x="144" y="102" width="82" height="46" rx="3"/>
+      <text class="mono" x="185" y="130" text-anchor="middle" font-size="12">J<tspan baseline-shift="sub" font-size="9">fs</tspan></text>
+      <rect class="bluebox" x="230" y="102" width="82" height="46" rx="3"/>
+      <text class="mono" x="271" y="130" text-anchor="middle" font-size="12">J<tspan baseline-shift="sub" font-size="9">ff</tspan></text>
+      <line class="flow" x1="352" y1="70" x2="316" y2="70" marker-end="url(#arr2)"/>
+      <text class="accnote" x="358" y="66">off-diagonal coupling</text>
+      <text class="accnote" x="358" y="80">retained &#8594; Newton sees it</text>
+      <text class="mono" x="228" y="180" text-anchor="middle" font-size="11.5">J &#916;u = &#8722;R&#8201;&#8201;&#183;&#8201;&#8201;PCFIELDSPLIT / block-GS</text>
+      <text class="note" x="20" y="208">right choice for stiff volumetric coupling &#8212; e.g. a thermo-chemo-mechanical ablator</text>
+
+      <line x1="480" y1="20" x2="480" y2="212" stroke="var(--line)"/>
+
+      <!-- right: partitioned -->
+      <text class="lbl" x="520" y="26" font-size="12.5">partitioned &#8212; interface fixed point</text>
+      <rect class="box" x="540" y="52" width="120" height="46" rx="3"/>
+      <text class="lbl" x="600" y="80" text-anchor="middle">solid</text>
+      <rect class="box" x="790" y="52" width="120" height="46" rx="3"/>
+      <text class="lbl" x="850" y="80" text-anchor="middle">fluid / thermal</text>
+      <line class="flow" x1="660" y1="65" x2="788" y2="65" marker-end="url(#arr2)"/>
+      <text class="note" x="725" y="58" text-anchor="middle">u, T on &#915;</text>
+      <line class="flow" x1="790" y1="88" x2="662" y2="88" marker-end="url(#arr2)"/>
+      <text class="note" x="725" y="104" text-anchor="middle">traction, heat flux</text>
+      <text class="sub" x="725" y="132" text-anchor="middle">iterate to interface fixed point &#8212; Aitken / IQN-ILS, subcycled</text>
+      <text class="sub" x="725" y="152" text-anchor="middle">same executable: <tspan class="mono">TransferMap</tspan> / <tspan class="mono">FindPointsGSLIB</tspan> &#183; separate codes: preCICE</text>
+      <text class="note" x="520" y="208">right choice for disparate time scales &#8212; CHT and FSI with subcycling</text>
+    </svg>
+    </div>
+    <figcaption><b>Figure 2 &mdash; the coupling choice.</b> Both paths live in the coupling layer
+    and are selected from the YAML input, not compiled in. Monolithic keeps the off-diagonal
+    Jacobian blocks (orange) so Newton converges through stiff coupling; partitioned trades them
+    for solver reuse and subcycling, iterating the interface exchange to a fixed point.</figcaption>
+  </figure>
+</main>

@@ -2,6 +2,8 @@
 
 #include <cmath>
 
+#include "base/coefficients.hpp"
+#include "base/mesh_input.hpp"
 #include "kernels/mixed_total_lagrangian.hpp"
 #include "solvers/saddle_point_solver.hpp"
 
@@ -10,43 +12,6 @@ namespace cmf
 
 namespace
 {
-
-template <typename Material>
-class MixedStressCoefficient : public mfem::Coefficient
-{
-public:
-  enum Kind { VON_MISES, JACOBIAN };
-  MixedStressCoefficient(const mfem::ParGridFunction &u, const mfem::ParGridFunction &p,
-                         const Material &m, Kind kind)
-    : u_(u), p_(p), material_(m), kind_(kind) {}
-
-  mfem::real_t Eval(mfem::ElementTransformation &T,
-                    const mfem::IntegrationPoint &ip) override
-  {
-    T.SetIntPoint(&ip);
-    u_.GetVectorGradient(T, grad_);
-    const double p = p_.GetValue(T, ip);
-    if (T.GetDimension() == 2) { return Value<2>(p); }
-    return Value<3>(p);
-  }
-
-private:
-  template <int dim>
-  double Value(double p) const
-  {
-    tensor<double, dim, dim> H;
-    for (int i = 0; i < dim; i++)
-      for (int j = 0; j < dim; j++) { H(i, j) = grad_(i, j); }
-    if (kind_ == JACOBIAN) { return det(DeformationGradient<dim>(H)); }
-    return VonMises(QPointMixedCauchyStress<Material, dim>(material_, H, p));
-  }
-
-  const mfem::ParGridFunction &u_;
-  const mfem::ParGridFunction &p_;
-  Material material_;
-  Kind kind_;
-  mfem::DenseMatrix grad_;
-};
 
 mfem::Vector ToVector(const std::vector<double> &v)
 {
@@ -73,9 +38,7 @@ MixedSolidMechanicsTL::MixedSolidMechanicsTL(mfem::ParMesh &mesh, const AppConfi
   }
   std::visit([this](const auto &mat)
   {
-    using M = std::decay_t<decltype(mat)>;
-    if constexpr (std::is_same_v<M, MooneyRivlin>) { mu_ = mat.ShearModulus(); }
-    else { mu_ = mat.mu; }
+    mu_ = mat.ShearModulus();
     kappa_ = mat.kappa;
     incompressible_ = mat.Incompressible();
   }, material_);
@@ -88,6 +51,7 @@ MixedSolidMechanicsTL::MixedSolidMechanicsTL(mfem::ParMesh &mesh, const AppConfi
   offsets_[2] = offsets_[1] + fes_p_.GetTrueVSize();
   height = width = offsets_[2];
   nlf_ = std::make_unique<mfem::ParBlockNonlinearForm>(spaces_);
+  output_cfg_ = cfg.output;
   Build(cfg);
 }
 
@@ -99,19 +63,19 @@ void MixedSolidMechanicsTL::Build(const AppConfig &cfg)
     nlf_->AddDomainIntegrator(new MixedTotalLagrangianIntegrator<M>(mat));
   }, material_);
 
-  for (const BoundaryCondition &bc : cfg.bcs.dirichlet)
+  for (std::size_t i = 0; i < cfg.bcs.dirichlet.size(); i++)
   {
-    CheckVectorSize(bc.value, "bcs.dirichlet[].value");
-    const mfem::Vector v = ToVector(bc.value);
-    owned_coefs_.push_back(std::make_unique<mfem::VectorConstantCoefficient>(v));
-    AddDirichlet(bc.attr, *owned_coefs_.back());
+    const BoundaryCondition &bc = cfg.bcs.dirichlet[i];
+    const std::string what = "bcs.dirichlet[" + std::to_string(i) + "]";
+    owned_coefs_.push_back(MakeBCCoefficient(bc, dim_, what));
+    AddDirichlet(ResolveBoundaryAttributes(mesh_, bc, what), *owned_coefs_.back());
   }
-  for (const BoundaryCondition &bc : cfg.bcs.traction)
+  for (std::size_t i = 0; i < cfg.bcs.traction.size(); i++)
   {
-    CheckVectorSize(bc.value, "bcs.traction[].value");
-    const mfem::Vector v = ToVector(bc.value);
-    owned_coefs_.push_back(std::make_unique<mfem::VectorConstantCoefficient>(v));
-    AddTraction(bc.attr, *owned_coefs_.back());
+    const BoundaryCondition &bc = cfg.bcs.traction[i];
+    const std::string what = "bcs.traction[" + std::to_string(i) + "]";
+    owned_coefs_.push_back(MakeBCCoefficient(bc, dim_, what));
+    AddTraction(ResolveBoundaryAttributes(mesh_, bc, what), *owned_coefs_.back());
   }
   if (!cfg.body_force.empty())
   {
@@ -300,12 +264,12 @@ void MixedSolidMechanicsTL::EnsureFields()
   pressure_ = std::make_unique<mfem::ParGridFunction>(&fes_p_);
   *displacement_ = 0.0;
   *pressure_ = 0.0;
-  l2_fec_ = std::make_unique<mfem::L2_FECollection>(order_, dim_);
-  l2_fes_ = std::make_unique<mfem::ParFiniteElementSpace>(&mesh_, l2_fec_.get());
-  vonmises_ = std::make_unique<mfem::ParGridFunction>(l2_fes_.get());
-  jacobian_ = std::make_unique<mfem::ParGridFunction>(l2_fes_.get());
-  *vonmises_ = 0.0;
-  *jacobian_ = 1.0;
+  std::vector<std::string> available;
+  for (const QuantityInfo &q : Quantities())
+  {
+    if (std::string(q.name) != "thickness_stretch") { available.push_back(q.name); }
+  }
+  qfields_ = std::make_unique<QuadratureFields>(mesh_, fec_u_, order_, output_cfg_, available);
 }
 
 void MixedSolidMechanicsTL::UpdateFields(const mfem::Vector &x)
@@ -316,15 +280,22 @@ void MixedSolidMechanicsTL::UpdateFields(const mfem::Vector &x)
                   offsets_[2] - offsets_[1]);
   displacement_->SetFromTrueDofs(xu);
   pressure_->SetFromTrueDofs(xp);
-  std::visit([this](const auto &mat)
+  if (qfields_->Empty()) { return; }
+  const double inv_kappa = incompressible_ ? 0.0 : 1.0 / kappa_;
+  std::visit([&](const auto &mat)
   {
-    using M = std::decay_t<decltype(mat)>;
-    MixedStressCoefficient<M> vm(*displacement_, *pressure_, mat,
-                                 MixedStressCoefficient<M>::VON_MISES);
-    MixedStressCoefficient<M> jac(*displacement_, *pressure_, mat,
-                                  MixedStressCoefficient<M>::JACOBIAN);
-    vonmises_->ProjectCoefficient(vm);
-    jacobian_->ProjectCoefficient(jac);
+    mfem::DenseMatrix grad;
+    qfields_->Update([&](mfem::ElementTransformation &T, const mfem::IntegrationPoint &ip,
+                         QPointState &s)
+    {
+      T.SetIntPoint(&ip);
+      displacement_->GetVectorGradient(T, grad);
+      const double p = pressure_->GetValue(T, ip);
+      s.F = DeformationGradientAt(grad, T.GetDimension());
+      s.P = MixedPK1(mat, s.F, p);
+      // The mixed functional's integrand, consistent with InternalEnergy.
+      s.energy = mat.EnergyIso(s.F) + p * (det(s.F) - 1.0) - 0.5 * inv_kappa * p * p;
+    });
   }, material_);
 }
 
@@ -333,8 +304,7 @@ void MixedSolidMechanicsTL::RegisterFields(FieldRegistry &registry)
   EnsureFields();
   registry.AddExternal("displacement", *displacement_);
   registry.AddExternal("pressure", *pressure_);
-  registry.AddExternal("vonmises", *vonmises_);
-  registry.AddExternal("jacobian", *jacobian_);
+  qfields_->Register(registry);
 }
 
 std::unique_ptr<mfem::Solver>

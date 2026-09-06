@@ -1,13 +1,13 @@
 # Smoke input: unit square, p = 2, zero displacement field written to ParaView.
 mesh:
-  cartesian: { nx: 8, ny: 8, sx: 1.0, sy: 1.0 }
-  serial_refine: 1
+  file: apps/mesh/square.msh      # 4 x 4 quadrilaterals, refined twice below
+  serial_refine: 2
   parallel_refine: 0
   order: 2
 material: { model: neo_hookean, E: 250.0, nu: 0.3, rho0: 1.0 }
 bcs:
-  dirichlet: [ { attr: [4], value: [0.0, 0.0] } ]
-  traction:  [ { attr: [2], value: [0.0, 1.0] } ]
+  dirichlet: [ { attr: [left], value: [0.0, 0.0] } ]
+  traction:  [ { attr: [right], value: [0.0, 1.0] } ]
 body_force: [0.0, 0.0]
 solver:
   load_steps: 1

@@ -41,9 +41,11 @@ int main(int argc, char *argv[])
     const HYPRE_BigInt global_tdofs = physics.GlobalTrueVSize();
     if (root)
     {
-      std::cout << "mesh: dim " << pmesh->Dimension() << ", elements " << global_ne
-                << ", order " << cfg.mesh.order << ", true dofs " << global_tdofs
+      std::cout << "mesh: " << cfg.mesh.file << ", dim " << pmesh->Dimension() << ", elements "
+                << global_ne << ", order " << cfg.mesh.order << ", true dofs " << global_tdofs
                 << ", " << physics.Description() << std::endl;
+      std::cout << "  element attributes: " << cmf::DescribeAttributes(*pmesh, false)
+                << "; boundary attributes: " << cmf::DescribeAttributes(*pmesh, true) << std::endl;
     }
 
     std::unique_ptr<mfem::Solver> linear = physics.MakeLinearSolver(cfg.solver.linear);
@@ -85,19 +87,25 @@ int main(int argc, char *argv[])
                   "internal energy = %.12e\n",
                   report.converged ? "yes" : "no", report.steps.size(), u_l2, energy);
     }
+    // Every registered grid function at every probe point: the nodal unknowns
+    // and the nodal (<name>) and element (<name>_elem) presentations of the
+    // quadrature quantities; point clouds cannot be probed.
     for (const cmf::ProbeConfig &probe : cfg.output.probes)
     {
-      const std::vector<double> value = cmf::ProbeVector(physics.Displacement(), probe.point);
-      if (root)
+      for (const std::string &name : fields.Names())
       {
-        std::printf("probe %s at (", probe.name.c_str());
-        for (std::size_t i = 0; i < probe.point.size(); i++)
+        const std::vector<double> value = cmf::ProbeVector(fields.Get(name), probe.point);
+        if (root)
         {
-          std::printf("%s%g", i ? ", " : "", probe.point[i]);
+          std::printf("probe %s at (", probe.name.c_str());
+          for (std::size_t i = 0; i < probe.point.size(); i++)
+          {
+            std::printf("%s%g", i ? ", " : "", probe.point[i]);
+          }
+          std::printf("): %s =", name.c_str());
+          for (double v : value) { std::printf(" %.12e", v); }
+          std::printf("\n");
         }
-        std::printf("): displacement =");
-        for (double v : value) { std::printf(" %.12e", v); }
-        std::printf("\n");
       }
     }
     if (root && writer) { std::cout << "wrote " << cfg.output.paraview << std::endl; }

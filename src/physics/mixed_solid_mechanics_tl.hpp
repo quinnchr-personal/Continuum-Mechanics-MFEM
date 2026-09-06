@@ -15,6 +15,7 @@
 #include "materials/materials.hpp"
 #include "mfem.hpp"
 #include "physics/solid_problem.hpp"
+#include "physics/quadrature_fields.hpp"
 
 namespace cmf
 {
@@ -107,10 +108,8 @@ private:
 
   std::unique_ptr<mfem::ParGridFunction> displacement_;
   std::unique_ptr<mfem::ParGridFunction> pressure_;
-  std::unique_ptr<mfem::L2_FECollection> l2_fec_;
-  std::unique_ptr<mfem::ParFiniteElementSpace> l2_fes_;
-  std::unique_ptr<mfem::ParGridFunction> vonmises_;
-  std::unique_ptr<mfem::ParGridFunction> jacobian_;
+  OutputConfig output_cfg_;
+  std::unique_ptr<QuadratureFields> qfields_;
 };
 
 } // namespace cmf
