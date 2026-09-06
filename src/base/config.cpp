@@ -1,5 +1,6 @@
 #include "base/config.hpp"
 
+#include <cmath>
 #include <fstream>
 #include <set>
 #include <sstream>
@@ -252,28 +253,106 @@ MeshConfig ParseMeshConfig(const YAML::Node &node, const std::string &path)
   return cfg;
 }
 
+void ValidateMaterialConfig(const MaterialConfig &cfg, const std::string &path)
+{
+  auto set = [](double v) { return !std::isnan(v); };
+  auto key = [&](const char *k) { return "'" + path + "." + k + "'"; };
+  auto reject = [&](bool present, const char *k)
+  {
+    if (present)
+    {
+      throw ConfigError("key " + key(k) + " is not used by model '" + cfg.model + "'");
+    }
+  };
+  const std::string &model = cfg.model;
+  if (model == "neo_hookean" || model == "st_venant_kirchhoff")
+  {
+    if (!set(cfg.E)) { throw ConfigError("missing key " + key("E") + " (model '" + model + "' needs E and nu)"); }
+    if (!set(cfg.nu)) { throw ConfigError("missing key " + key("nu") + " (model '" + model + "' needs E and nu)"); }
+    reject(set(cfg.mu), "mu");
+    reject(set(cfg.kappa), "kappa");
+    reject(set(cfg.c1), "c1");
+    reject(set(cfg.c2), "c2");
+    reject(cfg.incompressible, "incompressible");
+    if (!(cfg.nu < 0.5))
+    {
+      throw ConfigError("key " + key("nu") + " must be < 0.5 for model '" + model +
+                        "' (use iso_neo_hookean or mooney_rivlin with formulation: mixed)");
+    }
+    return;
+  }
+  if (model == "mooney_rivlin")
+  {
+    if (!set(cfg.c1)) { throw ConfigError("missing key " + key("c1") + " (model 'mooney_rivlin' needs c1 and c2)"); }
+    if (!set(cfg.c2)) { throw ConfigError("missing key " + key("c2") + " (model 'mooney_rivlin' needs c1 and c2)"); }
+    reject(set(cfg.mu), "mu");
+    reject(set(cfg.E), "E");
+    if (!(cfg.c1 + cfg.c2 > 0.0))
+    {
+      throw ConfigError("keys " + key("c1") + " + " + key("c2") + " must be positive (shear modulus 2 (c1 + c2))");
+    }
+  }
+  else if (model == "iso_neo_hookean")
+  {
+    reject(set(cfg.c1), "c1");
+    reject(set(cfg.c2), "c2");
+    if (set(cfg.mu) && set(cfg.E))
+    {
+      throw ConfigError("keys " + key("mu") + " and " + key("E") + ": give one, not both");
+    }
+    if (!set(cfg.mu) && !(set(cfg.E) && set(cfg.nu)))
+    {
+      throw ConfigError("missing key " + key("mu") + " (model 'iso_neo_hookean' needs mu, or E and nu)");
+    }
+  }
+  else
+  {
+    throw ConfigError("key " + key("model") + ": unknown model '" + model + "'");
+  }
+  const int ways = int(set(cfg.kappa)) + int(set(cfg.nu)) + int(cfg.incompressible);
+  if (ways != 1)
+  {
+    throw ConfigError("section '" + path + "': model '" + model + "' needs exactly one of " +
+                      key("kappa") + ", " + key("nu") + " (0.5 = incompressible), or " +
+                      key("incompressible") + ": true");
+  }
+}
+
 MaterialConfig ParseMaterialConfig(const YAML::Node &node,
                                    const std::string &path)
 {
   NodeReader r(node, path);
   MaterialConfig cfg;
+  const double unset = std::numeric_limits<double>::quiet_NaN();
   cfg.model = r.Require<std::string>("model");
-  cfg.E = r.Require<double>("E");
-  cfg.nu = r.Require<double>("nu");
+  cfg.E = r.Optional<double>("E", unset);
+  cfg.nu = r.Optional<double>("nu", unset);
+  cfg.mu = r.Optional<double>("mu", unset);
+  cfg.kappa = r.Optional<double>("kappa", unset);
+  cfg.c1 = r.Optional<double>("c1", unset);
+  cfg.c2 = r.Optional<double>("c2", unset);
+  cfg.incompressible = r.Optional<bool>("incompressible", false);
   cfg.rho0 = r.Optional<double>("rho0", 1.0);
-  if (cfg.model != "neo_hookean" && cfg.model != "st_venant_kirchhoff")
+  static const char *models[] = {"neo_hookean", "st_venant_kirchhoff",
+                                 "iso_neo_hookean", "mooney_rivlin"};
+  bool known = false;
+  for (const char *m : models) { known = known || cfg.model == m; }
+  if (!known)
   {
-    throw ConfigError("key '" + r.Path("model") + "': unknown model '" +
-                      cfg.model +
-                      "' (expected neo_hookean or st_venant_kirchhoff)");
+    throw ConfigError("key '" + r.Path("model") + "': unknown model '" + cfg.model +
+                      "' (expected neo_hookean, st_venant_kirchhoff, "
+                      "iso_neo_hookean, or mooney_rivlin)");
   }
-  CheckPositive(cfg.E, r.Path("E"));
+  if (!std::isnan(cfg.E)) { CheckPositive(cfg.E, r.Path("E")); }
+  if (!std::isnan(cfg.mu)) { CheckPositive(cfg.mu, r.Path("mu")); }
+  if (!std::isnan(cfg.kappa)) { CheckPositive(cfg.kappa, r.Path("kappa")); }
   CheckPositive(cfg.rho0, r.Path("rho0"));
-  if (!(cfg.nu > -1.0 && cfg.nu < 0.5))
+  if (!std::isnan(cfg.nu) && !(cfg.nu > -1.0 && cfg.nu <= 0.5))
   {
-    throw ConfigError("key '" + r.Path("nu") + "' must lie in (-1, 0.5), got " +
+    throw ConfigError("key '" + r.Path("nu") + "' must lie in (-1, 0.5], got " +
                       std::to_string(cfg.nu));
   }
+  ValidateMaterialConfig(cfg, path);
   r.Finish();
   return cfg;
 }
@@ -337,6 +416,17 @@ SolverConfig ParseSolverConfig(const YAML::Node &node, const std::string &path)
     lc.max_it = l.Optional<int>("max_it", lc.max_it);
     lc.krylov_dim = l.Optional<int>("krylov_dim", lc.krylov_dim);
     lc.print_level = l.Optional<int>("print_level", lc.print_level);
+    lc.inner_rtol = l.Optional<double>("inner_rtol", lc.inner_rtol);
+    lc.inner_max_it = l.Optional<int>("inner_max_it", lc.inner_max_it);
+    lc.augmentation = l.Optional<double>("augmentation", lc.augmentation);
+    if (!(lc.inner_rtol > 0.0 && lc.inner_rtol < 1.0) || lc.inner_max_it < 1)
+    {
+      throw ConfigError("keys '" + l.Path("inner_rtol") + "'/'inner_max_it' must be in (0,1) / >= 1");
+    }
+    if (!(lc.augmentation >= 0.0))
+    {
+      throw ConfigError("key '" + l.Path("augmentation") + "' must be >= 0");
+    }
     if (lc.type != "gmres_amg" && lc.type != "cg_amg")
     {
       throw ConfigError("key '" + l.Path("type") + "': unknown type '" +
@@ -373,10 +463,10 @@ OutputConfig ParseOutputConfig(const YAML::Node &node, const std::string &path)
   cfg.high_order = r.Optional<bool>("high_order", true);
   for (const std::string &f : cfg.fields)
   {
-    if (f != "displacement" && f != "vonmises" && f != "jacobian")
+    if (f != "displacement" && f != "pressure" && f != "vonmises" && f != "jacobian")
     {
       throw ConfigError("key '" + r.Path("fields") + "': unknown field '" + f +
-                        "' (expected displacement, vonmises, or jacobian)");
+                        "' (expected displacement, pressure, vonmises, or jacobian)");
     }
   }
   if (r.Has("probes"))
@@ -414,6 +504,12 @@ AppConfig ParseConfig(const YAML::Node &root)
   }
   NodeReader r(root, "");
   AppConfig cfg;
+  cfg.formulation = r.Optional<std::string>("formulation", "displacement");
+  if (cfg.formulation != "displacement" && cfg.formulation != "mixed")
+  {
+    throw ConfigError("key 'formulation': unknown value '" + cfg.formulation +
+                      "' (expected displacement or mixed)");
+  }
   cfg.mesh = ParseMeshConfig(r.Raw("mesh"), "mesh");
   cfg.material = ParseMaterialConfig(r.Raw("material"), "material");
   cfg.bcs = ParseBCConfig(r.Raw("bcs"), "bcs");

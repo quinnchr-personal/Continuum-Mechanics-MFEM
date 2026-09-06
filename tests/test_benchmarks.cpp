@@ -13,7 +13,7 @@
 #include "kernels/total_lagrangian.hpp"
 #include "materials/materials.hpp"
 #include "mfem.hpp"
-#include "physics/solid_mechanics_tl.hpp"
+#include "physics/solid_problem.hpp"
 #include "solvers/linear_solver.hpp"
 #include "solvers/quasi_static.hpp"
 #include "test_util.hpp"
@@ -27,6 +27,12 @@ namespace
 // asserted within 1e-8 relative thereafter.
 const double kCookCornerFrozen = 4.905891700497e+00;
 const int kCookFinestRefine = 4;
+
+// Frozen regression oracle of the mixed u-p, fully incompressible Cook's
+// membrane (apps/input/cook_incompressible.yaml, mu = 80.194, resultant 100)
+// on its finest self-convergence mesh (32x32, Q2-Q1).
+const double kCookIncompressibleCornerFrozen = 6.930412595013e+00;
+const int kCookIncompressibleFinestRefine = 3;
 
 struct Run
 {
@@ -65,16 +71,16 @@ double MaxDisplacementGradient(mfem::ParGridFunction &u)
 Run Solve(const cmf::AppConfig &cfg, const std::vector<double> &probe_point)
 {
   std::unique_ptr<mfem::ParMesh> pmesh = cmf::BuildParMesh(MPI_COMM_WORLD, cfg.mesh);
-  const cmf::Material material = cmf::MakeMaterial(cfg.material);
-  cmf::SolidMechanicsTL physics(*pmesh, cfg, material);
+  std::unique_ptr<cmf::SolidProblem> problem = cmf::MakeSolidProblem(*pmesh, cfg);
+  cmf::SolidProblem &physics = *problem;
   physics.Finalize();
-  cmf::LinearSolver linear(cfg.solver.linear, physics.FESpace());
-  mfem::Vector u(physics.FESpace().GetTrueVSize());
+  std::unique_ptr<mfem::Solver> linear = physics.MakeLinearSolver(cfg.solver.linear);
+  mfem::Vector u(physics.Height());
   u = 0.0;
   Run r;
-  r.report = cmf::SolveQuasiStatic(physics, linear, cfg.solver, u);
-  r.ndofs = int(physics.FESpace().GlobalTrueVSize());
-  r.amg_mode = linear.ActiveAMG();
+  r.report = cmf::SolveQuasiStatic(physics, *linear, cfg.solver, u);
+  r.ndofs = int(physics.GlobalTrueVSize());
+  if (auto *ls = dynamic_cast<cmf::LinearSolver *>(linear.get())) { r.amg_mode = ls->ActiveAMG(); }
   physics.UpdateFields(u);
   mfem::Vector zero(pmesh->Dimension());
   zero = 0.0;
@@ -83,6 +89,47 @@ Run Solve(const cmf::AppConfig &cfg, const std::vector<double> &probe_point)
   r.probe = cmf::ProbeVector(physics.Displacement(), probe_point);
   r.max_grad = MaxDisplacementGradient(physics.Displacement());
   return r;
+}
+
+// Mixed u-p, fully incompressible Cook's membrane: monotone self-convergence
+// of the corner displacement and a frozen regression value.
+void CookIncompressibleTest()
+{
+  cmf::AppConfig cfg = cmf::LoadConfig("apps/input/cook_incompressible.yaml");
+  cfg.output.paraview.clear();
+  cfg.solver.newton.print_level = 0;
+  cfg.solver.newton.rtol = 1e-11;
+  cfg.solver.linear.rtol = 1e-13;
+  std::vector<double> corner;
+  for (int refine = 0; refine <= kCookIncompressibleFinestRefine; refine++)
+  {
+    cfg.mesh.serial_refine = refine;
+    Run r = Solve(cfg, {48.0, 60.0});
+    CHECK_MSG(r.report.converged, "cook incompressible refine " + std::to_string(refine) + " converged");
+    corner.push_back(r.probe.at(1));
+    std::printf("  cook incompressible refine %d (%dx%d Q2-Q1, %d dofs): corner uy = %.12e "
+                "(%.1f%% of 16), |u|_L2 = %.10e, newton its %d\n",
+                refine, 4 << refine, 4 << refine, r.ndofs, r.probe.at(1),
+                100.0 * r.probe.at(1) / 16.0, r.u_l2, r.report.steps.back().newton.iterations);
+  }
+  bool monotone = true;
+  for (std::size_t k = 0; k + 2 < corner.size(); k++)
+  {
+    const double d1 = corner[k + 1] - corner[k], d2 = corner[k + 2] - corner[k + 1];
+    if (d1 * d2 <= 0.0) { monotone = false; }
+    std::printf("  cook incompressible difference %zu: %.3e, ratio to next %.3f\n", k + 1, d1,
+                std::abs(d1) / std::abs(d2));
+  }
+  std::printf("  cook incompressible difference %zu: %.3e\n", corner.size() - 1,
+              corner.back() - corner[corner.size() - 2]);
+  CHECK_MSG(monotone, "cook incompressible corner displacement converges monotonically");
+  const double finest = corner.back();
+  std::printf("  cook incompressible finest corner uy = %.12e (frozen %.12e, rel diff %.3e)\n", finest,
+              kCookIncompressibleCornerFrozen,
+              std::abs(finest - kCookIncompressibleCornerFrozen) / std::abs(kCookIncompressibleCornerFrozen));
+  CHECK_MSG(std::abs(finest - kCookIncompressibleCornerFrozen) <=
+              1e-8 * std::abs(kCookIncompressibleCornerFrozen),
+            "cook incompressible frozen regression value within 1e-8 relative");
 }
 
 // With cook_ratio_gate the plan's ">= 3x per refinement" threshold is asserted
@@ -210,6 +257,8 @@ int main(int argc, char *argv[])
   {
     std::cout << "3d cantilever linear limit" << std::endl;
     CantileverTest();
+    std::cout << "cook's membrane, mixed u-p incompressible" << std::endl;
+    CookIncompressibleTest();
   }
   const int code = cmf_test::Report(mfem::Mpi::Root() ? "test_benchmarks" : "test_benchmarks (rank)");
   int global = 0;

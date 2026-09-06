@@ -9,10 +9,8 @@
 #include "base/mesh_input.hpp"
 #include "base/output.hpp"
 #include "base/probes.hpp"
-#include "materials/materials.hpp"
 #include "mfem.hpp"
-#include "physics/solid_mechanics_tl.hpp"
-#include "solvers/linear_solver.hpp"
+#include "physics/solid_problem.hpp"
 #include "solvers/quasi_static.hpp"
 
 int main(int argc, char *argv[])
@@ -35,22 +33,21 @@ int main(int argc, char *argv[])
   {
     const cmf::AppConfig cfg = cmf::LoadConfig(input);
     std::unique_ptr<mfem::ParMesh> pmesh = cmf::BuildParMesh(MPI_COMM_WORLD, cfg.mesh);
-    const cmf::Material material = cmf::MakeMaterial(cfg.material);
-    cmf::SolidMechanicsTL physics(*pmesh, cfg, material);
+    std::unique_ptr<cmf::SolidProblem> problem = cmf::MakeSolidProblem(*pmesh, cfg);
+    cmf::SolidProblem &physics = *problem;
     physics.Finalize();
 
     const HYPRE_BigInt global_ne = pmesh->GetGlobalNE();
-    const HYPRE_BigInt global_tdofs = physics.FESpace().GlobalTrueVSize();
+    const HYPRE_BigInt global_tdofs = physics.GlobalTrueVSize();
     if (root)
     {
       std::cout << "mesh: dim " << pmesh->Dimension() << ", elements " << global_ne
                 << ", order " << cfg.mesh.order << ", true dofs " << global_tdofs
-                << ", material " << cmf::MaterialName(material) << std::endl;
+                << ", " << physics.Description() << std::endl;
     }
 
-    std::unique_ptr<cmf::LinearSolver> linear =
-      cmf::MakeLinearSolver(cfg.solver.linear, physics.FESpace());
-    mfem::Vector u(physics.FESpace().GetTrueVSize());
+    std::unique_ptr<mfem::Solver> linear = physics.MakeLinearSolver(cfg.solver.linear);
+    mfem::Vector u(physics.Height());
     u = 0.0;
 
     cmf::FieldRegistry fields;

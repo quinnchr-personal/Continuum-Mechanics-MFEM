@@ -1,8 +1,10 @@
 // S4 gate: parallel consistency. '--write file' runs the reference case and
 // records norms; '--check file' reruns (typically under mpirun) and asserts
-// they match to 1e-10 relative. Solver tolerances are tightened to 1e-14;
-// Newton stalls at the round-off floor of the residual before reaching
-// 1e-14 relative, so the achieved reduction is reported and must be <= 1e-12.
+// they match to 1e-10 relative. The linear solver tolerance is tightened to
+// 1e-14 and Newton to 1e-12 relative (its round-off floor is ~3e-13 on these
+// problems, so 1e-14 would stall and truncate the load path); the achieved
+// reduction is reported. Both the displacement and the mixed u-p Cook's
+// membrane inputs are checked.
 #include <cmath>
 #include <cstdio>
 #include <fstream>
@@ -14,8 +16,7 @@
 #include "base/probes.hpp"
 #include "materials/materials.hpp"
 #include "mfem.hpp"
-#include "physics/solid_mechanics_tl.hpp"
-#include "solvers/linear_solver.hpp"
+#include "physics/solid_problem.hpp"
 #include "solvers/quasi_static.hpp"
 #include "test_util.hpp"
 
@@ -30,28 +31,30 @@ struct Norms
   double energy = 0.0;
 };
 
-Norms RunReference(double &residual_reduction, int &iterations)
+Norms RunReference(const std::string &input, double &residual_reduction, int &iterations,
+                   bool &all_steps_converged)
 {
-  cmf::AppConfig cfg = cmf::LoadConfig("apps/input/cook.yaml");
+  cmf::AppConfig cfg = cmf::LoadConfig(input);
   cfg.output.paraview.clear();
   cfg.mesh.serial_refine = 2;
   cfg.solver.newton.print_level = 0;
-  cfg.solver.newton.rtol = 1e-14;
+  cfg.solver.newton.rtol = 1e-12;
   cfg.solver.newton.atol = 0.0;
   cfg.solver.newton.max_it = 40;
   cfg.solver.linear.rtol = 1e-14;
   cfg.solver.linear.max_it = 2000;
   std::unique_ptr<mfem::ParMesh> pmesh = cmf::BuildParMesh(MPI_COMM_WORLD, cfg.mesh);
-  const cmf::Material material = cmf::MakeMaterial(cfg.material);
-  cmf::SolidMechanicsTL physics(*pmesh, cfg, material);
+  std::unique_ptr<cmf::SolidProblem> problem = cmf::MakeSolidProblem(*pmesh, cfg);
+  cmf::SolidProblem &physics = *problem;
   physics.Finalize();
-  cmf::LinearSolver linear(cfg.solver.linear, physics.FESpace());
-  mfem::Vector u(physics.FESpace().GetTrueVSize());
+  std::unique_ptr<mfem::Solver> linear = physics.MakeLinearSolver(cfg.solver.linear);
+  mfem::Vector u(physics.Height());
   u = 0.0;
-  cmf::QuasiStaticReport report = cmf::SolveQuasiStatic(physics, linear, cfg.solver, u);
+  cmf::QuasiStaticReport report = cmf::SolveQuasiStatic(physics, *linear, cfg.solver, u);
   const cmf::NewtonReport &newton = report.steps.back().newton;
   residual_reduction = newton.residual / newton.initial_residual;
   iterations = newton.iterations;
+  all_steps_converged = report.converged;
   physics.UpdateFields(u);
   Norms n;
   mfem::Vector zero(2);
@@ -84,17 +87,26 @@ int main(int argc, char *argv[])
     return 1;
   }
 
-  double reduction = 1.0;
-  int iterations = 0;
-  const Norms n = RunReference(reduction, iterations);
-  if (root)
+  const std::vector<std::string> inputs = {"apps/input/cook.yaml",
+                                           "apps/input/cook_incompressible.yaml"};
+  std::vector<Norms> norms;
+  for (const std::string &input : inputs)
   {
-    std::printf("np %d: residual reduced to %.2e relative in %d its, |u|_L2 %.15e, "
-                "corner (%.15e, %.15e), energy %.15e\n",
-                mfem::Mpi::WorldSize(), reduction, iterations,
-                n.u_l2, n.corner_ux, n.corner_uy, n.energy);
+    double reduction = 1.0;
+    int iterations = 0;
+    bool all_steps = false;
+    const Norms n = RunReference(input, reduction, iterations, all_steps);
+    norms.push_back(n);
+    CHECK_MSG(all_steps, input + ": every load step converged");
+    if (root)
+    {
+      std::printf("%s np %d: residual reduced to %.2e relative in %d its, |u|_L2 %.15e, "
+                  "corner (%.15e, %.15e), energy %.15e\n", input.c_str(),
+                  mfem::Mpi::WorldSize(), reduction, iterations,
+                  n.u_l2, n.corner_ux, n.corner_uy, n.energy);
+    }
+    CHECK_MSG(reduction <= 1e-12, input + ": residual reduced to <= 1e-12 relative");
   }
-  CHECK_MSG(reduction <= 1e-12, "reference case residual reduced to <= 1e-12 relative");
 
   if (!std::string(write_path).empty())
   {
@@ -102,28 +114,35 @@ int main(int argc, char *argv[])
     {
       std::ofstream out(write_path);
       out.precision(17);
-      out << std::scientific << n.u_l2 << " " << n.corner_ux << " " << n.corner_uy
-          << " " << n.energy << "\n";
+      for (const Norms &n : norms)
+      {
+        out << std::scientific << n.u_l2 << " " << n.corner_ux << " " << n.corner_uy
+            << " " << n.energy << "\n";
+      }
     }
   }
   else
   {
-    Norms ref;
     std::ifstream in(check_path);
-    CHECK_MSG(bool(in >> ref.u_l2 >> ref.corner_ux >> ref.corner_uy >> ref.energy),
-              std::string("read reference file ") + check_path);
-    auto rel = [](double a, double b) { return std::abs(a - b) / std::abs(b); };
-    const double r1 = rel(n.u_l2, ref.u_l2), r2 = rel(n.corner_uy, ref.corner_uy),
-                 r3 = rel(n.corner_ux, ref.corner_ux), r4 = rel(n.energy, ref.energy);
-    if (root)
+    for (std::size_t c = 0; c < inputs.size(); c++)
     {
-      std::printf("relative differences vs reference: |u|_L2 %.3e, corner ux %.3e, uy %.3e, energy %.3e\n",
-                  r1, r3, r2, r4);
+      Norms ref;
+      const Norms &n = norms[c];
+      CHECK_MSG(bool(in >> ref.u_l2 >> ref.corner_ux >> ref.corner_uy >> ref.energy),
+                std::string("read reference file ") + check_path);
+      auto rel = [](double a, double b) { return std::abs(a - b) / std::abs(b); };
+      const double r1 = rel(n.u_l2, ref.u_l2), r2 = rel(n.corner_uy, ref.corner_uy),
+                   r3 = rel(n.corner_ux, ref.corner_ux), r4 = rel(n.energy, ref.energy);
+      if (root)
+      {
+        std::printf("%s: relative differences vs reference: |u|_L2 %.3e, corner ux %.3e, uy %.3e, energy %.3e\n",
+                    inputs[c].c_str(), r1, r3, r2, r4);
+      }
+      CHECK_MSG(r1 <= 1e-10, inputs[c] + ": |u|_L2 matches serial reference to 1e-10");
+      CHECK_MSG(r2 <= 1e-10, inputs[c] + ": corner uy matches serial reference to 1e-10");
+      CHECK_MSG(r3 <= 1e-10, inputs[c] + ": corner ux matches serial reference to 1e-10");
+      CHECK_MSG(r4 <= 1e-10, inputs[c] + ": energy matches serial reference to 1e-10");
     }
-    CHECK_MSG(r1 <= 1e-10, "|u|_L2 matches serial reference to 1e-10");
-    CHECK_MSG(r2 <= 1e-10, "corner uy matches serial reference to 1e-10");
-    CHECK_MSG(r3 <= 1e-10, "corner ux matches serial reference to 1e-10");
-    CHECK_MSG(r4 <= 1e-10, "energy matches serial reference to 1e-10");
   }
   int code = cmf_test::Report(root ? "test_parallel" : "test_parallel (rank)");
   int global = 0;

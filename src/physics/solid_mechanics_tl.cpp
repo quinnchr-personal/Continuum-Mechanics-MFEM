@@ -3,6 +3,8 @@
 #include <cmath>
 
 #include "kernels/total_lagrangian.hpp"
+#include "physics/mixed_solid_mechanics_tl.hpp"
+#include "solvers/linear_solver.hpp"
 
 namespace cmf
 {
@@ -63,7 +65,7 @@ SolidMechanicsTL::SolidMechanicsTL(mfem::ParMesh &mesh, const YAML::Node &root,
 
 SolidMechanicsTL::SolidMechanicsTL(mfem::ParMesh &mesh, const AppConfig &cfg,
                                    const Material &material)
-  : QuasiStaticProblem(0),
+  : SolidProblem(0),
     mesh_(mesh), dim_(mesh.Dimension()), order_(cfg.mesh.order),
     rho0_(cfg.material.rho0), material_(material),
     fec_(cfg.mesh.order, mesh.Dimension()),
@@ -250,6 +252,31 @@ mfem::Operator &SolidMechanicsTL::GetGradient(const mfem::Vector &x) const
 double SolidMechanicsTL::InternalEnergy(const mfem::Vector &x) const
 {
   return nlf_.GetEnergy(x);
+}
+
+HYPRE_BigInt SolidMechanicsTL::GlobalTrueVSize() const
+{
+  return const_cast<mfem::ParFiniteElementSpace &>(fes_).GlobalTrueVSize();
+}
+
+std::string SolidMechanicsTL::Description() const
+{
+  return "displacement formulation, " + MaterialName(material_);
+}
+
+std::unique_ptr<mfem::Solver>
+SolidMechanicsTL::MakeLinearSolver(const LinearSolverConfig &cfg)
+{
+  return cmf::MakeLinearSolver(cfg, fes_);
+}
+
+std::unique_ptr<SolidProblem> MakeSolidProblem(mfem::ParMesh &mesh, const AppConfig &cfg)
+{
+  if (cfg.formulation == "mixed")
+  {
+    return std::make_unique<MixedSolidMechanicsTL>(mesh, cfg, MakeMixedMaterial(cfg.material));
+  }
+  return std::make_unique<SolidMechanicsTL>(mesh, cfg, MakeMaterial(cfg.material));
 }
 
 void SolidMechanicsTL::EnsureFields()

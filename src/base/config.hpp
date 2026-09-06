@@ -3,6 +3,7 @@
 #pragma once
 
 #include <array>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -40,11 +41,21 @@ struct MeshConfig
   int order = 1;
 };
 
+// Material parameters; unset numeric keys are NaN. Which keys a model needs
+// is validated in materials.cpp (ResolveModuli):
+//   neo_hookean, st_venant_kirchhoff: E, nu
+//   iso_neo_hookean: mu or (E, nu); bulk from kappa | nu | incompressible
+//   mooney_rivlin: c1, c2; bulk from kappa | nu | incompressible
 struct MaterialConfig
 {
-  std::string model = "neo_hookean"; // neo_hookean | st_venant_kirchhoff
-  double E = 1.0;
-  double nu = 0.3;
+  std::string model = "neo_hookean";
+  double E = std::numeric_limits<double>::quiet_NaN();
+  double nu = std::numeric_limits<double>::quiet_NaN();
+  double mu = std::numeric_limits<double>::quiet_NaN();
+  double kappa = std::numeric_limits<double>::quiet_NaN();
+  double c1 = std::numeric_limits<double>::quiet_NaN();
+  double c2 = std::numeric_limits<double>::quiet_NaN();
+  bool incompressible = false;
   double rho0 = 1.0;
 };
 
@@ -79,6 +90,13 @@ struct LinearSolverConfig
   int max_it = 500;
   int krylov_dim = 50;
   int print_level = 0;
+  // Mixed (u-p) formulation only: inner displacement-block solve inside the
+  // block preconditioner (GMRES + AMG to inner_rtol, at most inner_max_it)
+  // and the augmented Lagrangian parameter gamma = augmentation * mu
+  // (0 disables the augmentation).
+  double inner_rtol = 1e-3;
+  int inner_max_it = 50;
+  double augmentation = 1.0;
 };
 
 struct SolverConfig
@@ -97,13 +115,14 @@ struct ProbeConfig
 struct OutputConfig
 {
   std::string paraview;              // collection path; empty -> no output
-  std::vector<std::string> fields;   // displacement | vonmises | jacobian
+  std::vector<std::string> fields;   // displacement | pressure | vonmises | jacobian
   bool high_order = true;
   std::vector<ProbeConfig> probes;   // displacement printed at these points
 };
 
 struct AppConfig
 {
+  std::string formulation = "displacement"; // displacement | mixed (u-p)
   MeshConfig mesh;
   MaterialConfig material;
   BCConfig bcs;
@@ -116,6 +135,11 @@ struct AppConfig
 // mismatches throw ConfigError with the full key path (e.g. 'material.E').
 AppConfig ParseConfig(const YAML::Node &root);
 AppConfig LoadConfig(const std::string &path);
+
+// Per-model key requirements of a MaterialConfig (which keys must be given,
+// which are unused, which bulk-modulus specification). Called by
+// ParseMaterialConfig; errors name the key path under `path`.
+void ValidateMaterialConfig(const MaterialConfig &cfg, const std::string &path = "material");
 
 // Individual section parsers, exposed so tests and other physics can reuse them.
 MeshConfig ParseMeshConfig(const YAML::Node &node, const std::string &path);

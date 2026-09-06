@@ -1,0 +1,24 @@
+# Cook's membrane, mixed u-p formulation (Taylor-Hood Q2-Q1), fully
+# incompressible isochoric neo-Hookean (mu = 80.194), plane strain. Left edge
+# clamped, uniform upward shear traction 6.25 per unit reference length on the
+# right edge (resultant 100). The pressure is a Lagrange multiplier.
+formulation: mixed
+mesh:
+  cartesian: { nx: 4, ny: 4, sx: 1.0, sy: 1.0 }
+  corners: [[0.0, 0.0], [48.0, 44.0], [48.0, 60.0], [0.0, 44.0]]
+  serial_refine: 2
+  parallel_refine: 0
+  order: 2
+material: { model: iso_neo_hookean, mu: 80.194, incompressible: true, rho0: 1.0 }
+bcs:
+  dirichlet: [ { attr: [4], value: [0.0, 0.0] } ]
+  traction:  [ { attr: [2], value: [0.0, 6.25] } ]
+body_force: [0.0, 0.0]
+solver:
+  load_steps: 2
+  newton: { rtol: 1e-10, atol: 1e-12, max_it: 30 }
+  linear: { type: gmres_amg, rtol: 1e-12, max_it: 300, krylov_dim: 100, inner_rtol: 1e-3, inner_max_it: 50 }
+output:
+  paraview: out/cook_incompressible
+  fields: [displacement, pressure, vonmises, jacobian]
+  probes: [ { name: top_right_corner, point: [48.0, 60.0] } ]

@@ -193,6 +193,122 @@ void TestMaterial(const Material &m, const std::string &name, double E, double n
   }
 }
 
+// Decoupled (isochoric + volumetric) models: P = dW/dF, P_iso = dW_iso/dF,
+// isochoric stress is deviatoric (tr(P_iso F^T) = 0), objectivity, AD
+// tangent vs FD, and the small-strain limit with lambda = kappa - 2 mu / 3.
+template <typename Material>
+void TestDecoupled(const Material &m, const std::string &name, double mu, double kappa)
+{
+  std::cout << "material " << name << " (mu " << mu << ", kappa " << kappa << ")" << std::endl;
+  const double scale = mu + kappa;
+  const Mat3 P0 = m.PK1(cmf::I<3>());
+  CHECK_MSG(MaxAbs(P0) <= 1e-15 * scale, name + ": P(I) = " + std::to_string(MaxAbs(P0)));
+
+  std::mt19937 rng(77u);
+  double worst_tangent = 0.0, worst_dev = 0.0, worst_energy = 0.0, worst_obj = 0.0;
+  for (int trial = 0; trial < 5; trial++)
+  {
+    const Mat3 F = RandomF(rng);
+    const Mat3 P = m.PK1(F);
+    const Mat3 Piso = m.PK1Iso(F);
+
+    // Isochoric stress is deviatoric in the Kirchhoff sense.
+    const double dev = std::abs(cmf::tr(Piso * cmf::transpose(F))) / MaxAbs(Piso);
+    worst_dev = std::max(worst_dev, dev);
+    CHECK_MSG(dev <= 1e-12, name + ": tr(P_iso F^T) relative " + std::to_string(dev));
+
+    // P_iso = dW_iso/dF and P = dW/dF via duals.
+    tensor<dual, 3, 3> Fd;
+    for (int i = 0; i < 3; i++)
+      for (int j = 0; j < 3; j++) { Fd(i, j) = dual(F(i, j), 0.0); }
+    double err = 0.0;
+    for (int k = 0; k < 3; k++)
+      for (int l = 0; l < 3; l++)
+      {
+        Fd(k, l).d = 1.0;
+        const dual Wiso = m.EnergyIso(Fd);
+        const dual W = m.Energy(Fd);
+        Fd(k, l).d = 0.0;
+        err = std::max(err, std::abs(Wiso.d - Piso(k, l)) / mu);
+        err = std::max(err, std::abs(W.d - P(k, l)) / scale);
+      }
+    worst_energy = std::max(worst_energy, err);
+    CHECK_MSG(err <= 1e-12, name + ": dW/dF vs PK1 relative error " + std::to_string(err));
+
+    const Tan4 A_ad = cmf::MaterialTangent(m, F);
+    const Tan4 A_fd = FiniteDifferenceTangent(m, F, 1e-6);
+    const double rel = MaxAbs(Subtract(A_ad, A_fd)) / MaxAbs(A_ad);
+    worst_tangent = std::max(worst_tangent, rel);
+    CHECK_MSG(rel <= 1e-6, name + ": tangent AD vs FD relative error " + std::to_string(rel));
+
+    const Mat3 Q = RandomRotation(rng);
+    const double obj = MaxAbs(m.PK1(Q * F) - Q * P) / MaxAbs(P);
+    const double obj_iso = MaxAbs(m.PK1Iso(Q * F) - Q * Piso) / MaxAbs(Piso);
+    worst_obj = std::max(worst_obj, std::max(obj, obj_iso));
+    CHECK_MSG(obj <= 1e-12 && obj_iso <= 1e-12, name + ": objectivity");
+  }
+  std::printf("  P(I) max %.2e, tr(P_iso F^T) rel %.2e, dW/dF rel %.2e, tangent rel %.2e, objectivity rel %.2e\n",
+              MaxAbs(P0), worst_dev, worst_energy, worst_tangent, worst_obj);
+
+  // Small-strain limit: lambda = kappa - 2 mu / 3.
+  {
+    Mat3 H;
+    H(0, 0) = 0.3; H(0, 1) = -0.8; H(0, 2) = 0.2;
+    H(1, 0) = 0.5; H(1, 1) = 0.1; H(1, 2) = 0.7;
+    H(2, 0) = -0.4; H(2, 1) = 0.6; H(2, 2) = -0.2;
+    const double eps = 1e-7;
+    const double lambda = kappa - 2.0 * mu / 3.0;
+    const Mat3 P = m.PK1(cmf::I<3>() + eps * H);
+    const Mat3 e = eps * cmf::sym(H);
+    const Mat3 P_lin = (lambda * cmf::tr(e)) * cmf::I<3>() + (2.0 * mu) * e;
+    const double rel = MaxAbs(P - P_lin) / MaxAbs(P_lin);
+    std::printf("  small-strain limit rel %.2e (eps %.0e)\n", rel, eps);
+    CHECK_MSG(rel <= 1e-6, name + ": small-strain limit relative error " + std::to_string(rel));
+    // Pure dilatation: P_11 = kappa tr(e) + 2 mu (e_11 - tr(e)/3) with e = eps I.
+    const Mat3 Pv = m.PK1((1.0 + eps) * cmf::I<3>());
+    CHECK_MSG(std::abs(Pv(0, 0) - 3.0 * kappa * eps) <= 1e-5 * 3.0 * kappa * eps,
+              name + ": dilatation P11 vs 3 kappa eps");
+  }
+}
+
+void TestModuliResolution()
+{
+  cmf::MaterialConfig c;
+  c.model = "iso_neo_hookean"; c.E = 250.0; c.nu = 0.3;
+  cmf::ResolvedModuli r = cmf::ResolveModuli(c);
+  CHECK_CLOSE(r.mu, 250.0 / 2.6, 1e-12);
+  CHECK_CLOSE(r.kappa, 250.0 / (3.0 * 0.4), 1e-12);
+  CHECK_CLOSE(r.lambda, cmf::LameFromYoungPoisson(250.0, 0.3).lambda, 1e-10);
+  c = cmf::MaterialConfig();
+  c.model = "iso_neo_hookean"; c.mu = 80.0; c.nu = 0.5;
+  r = cmf::ResolveModuli(c);
+  CHECK(r.incompressible && std::isinf(r.kappa) && r.mu == 80.0);
+  c = cmf::MaterialConfig();
+  c.model = "mooney_rivlin"; c.c1 = 30.0; c.c2 = 10.0; c.kappa = 1000.0;
+  r = cmf::ResolveModuli(c);
+  CHECK_CLOSE(r.mu, 80.0, 0.0);
+  CHECK_CLOSE(r.kappa, 1000.0, 0.0);
+  c = cmf::MaterialConfig();
+  c.model = "mooney_rivlin"; c.c1 = 30.0; c.c2 = 10.0; c.incompressible = true;
+  CHECK(cmf::ResolveModuli(c).incompressible);
+  CHECK_THROWS(cmf::MakeMaterial(c), cmf::ConfigError, "formulation: mixed");
+  CHECK(cmf::MaterialName(cmf::MakeMixedMaterial(c)) == "mooney_rivlin");
+  c = cmf::MaterialConfig();
+  c.model = "iso_neo_hookean"; c.mu = 80.0;
+  CHECK_THROWS(cmf::ResolveModuli(c), cmf::ConfigError, "needs exactly one of");
+  c.nu = 0.3; c.kappa = 100.0;
+  CHECK_THROWS(cmf::ResolveModuli(c), cmf::ConfigError, "needs exactly one of");
+  c = cmf::MaterialConfig();
+  c.model = "neo_hookean"; c.E = 1.0; c.nu = 0.3; c.kappa = 5.0;
+  CHECK_THROWS(cmf::ResolveModuli(c), cmf::ConfigError, "'material.kappa' is not used");
+  c = cmf::MaterialConfig();
+  c.model = "neo_hookean"; c.E = 1.0;
+  CHECK_THROWS(cmf::ResolveModuli(c), cmf::ConfigError, "missing key 'material.nu'");
+  c = cmf::MaterialConfig();
+  c.model = "neo_hookean"; c.E = 1.0; c.nu = 0.3;
+  CHECK_THROWS(cmf::MakeMixedMaterial(c), cmf::ConfigError, "formulation: mixed needs");
+}
+
 } // namespace
 
 int main()
@@ -213,5 +329,20 @@ int main()
 
   TestMaterial(std::get<cmf::NeoHookean>(nh), "neo_hookean", E, nu);
   TestMaterial(std::get<cmf::StVenantKirchhoff>(svk), "st_venant_kirchhoff", E, nu);
+
+  // Decoupled models at nu = 0.45 (kappa/mu ~ 9.7).
+  const double mu = lame.mu, kappa = 2.0 * mu * 1.45 / (3.0 * 0.1);
+  TestDecoupled(cmf::IsoNeoHookean(mu, kappa), "iso_neo_hookean", mu, kappa);
+  TestDecoupled(cmf::MooneyRivlin(0.3 * mu, 0.2 * mu, kappa), "mooney_rivlin", mu, kappa);
+  // Mooney-Rivlin with c2 = 0 is the isochoric neo-Hookean model.
+  {
+    const cmf::MooneyRivlin mr(0.5 * mu, 0.0, kappa);
+    const cmf::IsoNeoHookean nhi(mu, kappa);
+    std::mt19937 rng(5u);
+    const Mat3 F = RandomF(rng);
+    CHECK_MSG(MaxAbs(mr.PK1(F) - nhi.PK1(F)) <= 1e-12 * MaxAbs(nhi.PK1(F)),
+              "mooney_rivlin(c2 = 0) equals iso_neo_hookean");
+  }
+  TestModuliResolution();
   return cmf_test::Report("test_materials");
 }

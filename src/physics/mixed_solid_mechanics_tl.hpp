@@ -1,11 +1,13 @@
-// Quasi-static total Lagrangian solid mechanics on the reference mesh.
-//   R(u).w = int P(F) : Grad w dV - lambda [ int rho0 b.w dV + int T.w dA ]
-// Owns the vector H1 space, the essential dofs, the ParNonlinearForm, and the
-// load factor. Mult = residual with essential rows zeroed; GetGradient = the
-// assembled HypreParMatrix with eliminated essential rows/columns.
+// Mixed displacement-pressure total Lagrangian solid mechanics (Taylor-Hood:
+// displacement H1 order p, pressure H1 order p - 1) for near- and fully
+// incompressible decoupled materials.
+//   R_u(u, p).w = int [P_iso(F) + p J F^{-T}] : Grad w dV - lambda [ext. loads]
+//   R_p(u, p).q = int q (J - 1 - p/kappa) dV       (kappa = inf: q (J - 1))
+// The unknown is the block true-dof vector [u; p]; Mult/GetGradient act on it.
 #pragma once
 
 #include <memory>
+#include <string>
 #include <vector>
 
 #include "base/config.hpp"
@@ -13,66 +15,51 @@
 #include "materials/materials.hpp"
 #include "mfem.hpp"
 #include "physics/solid_problem.hpp"
-#include "solvers/quasi_static.hpp"
 
 namespace cmf
 {
 
-class SolidMechanicsTL : public SolidProblem
+class MixedSolidMechanicsTL : public SolidProblem
 {
 public:
-  // Parses the full input schema from root (mesh.order, material.rho0, bcs,
-  // body_force) and installs the YAML boundary conditions.
-  SolidMechanicsTL(mfem::ParMesh &mesh, const YAML::Node &root,
-                   const Material &material);
-  SolidMechanicsTL(mfem::ParMesh &mesh, const AppConfig &cfg,
-                   const Material &material);
-  ~SolidMechanicsTL() override = default;
+  MixedSolidMechanicsTL(mfem::ParMesh &mesh, const AppConfig &cfg,
+                        const MixedMaterial &material);
+  ~MixedSolidMechanicsTL() override = default;
 
-  // Programmatic boundary conditions and loads. Coefficients are not owned
-  // and must outlive this object. Each call invalidates Finalize().
   void AddDirichlet(const std::vector<int> &attrs, mfem::VectorCoefficient &u_bar) override;
   void AddTraction(const std::vector<int> &attrs, mfem::VectorCoefficient &T_bar) override;
-  void SetBodyForce(mfem::VectorCoefficient &b) override; // per unit mass
+  void SetBodyForce(mfem::VectorCoefficient &b) override;
   void ClearBoundaryConditions() override;
-  // Builds the essential dof list and assembles the external load vector;
-  // called lazily by SetLoadFactor/ApplyDirichlet, and required before Mult.
   void Finalize() override;
 
-  // mfem::Operator on true dofs.
   void Mult(const mfem::Vector &x, mfem::Vector &y) const override;
   mfem::Operator &GetGradient(const mfem::Vector &x) const override;
 
-  // QuasiStaticProblem. The load factor scales the tractions, the body
-  // force, and the prescribed (Dirichlet) displacements together, so that
-  // lambda = 1 is the problem of the weak form and lambda < 1 a proportional
-  // path to it.
   void SetLoadFactor(double lambda) override;
   double LoadFactor() const override { return load_factor_; }
   void ApplyDirichlet(mfem::Vector &x) const override;
-  MPI_Comm Comm() const override { return fes_.GetComm(); }
+  MPI_Comm Comm() const override { return fes_u_.GetComm(); }
 
   mfem::ParMesh &Mesh() { return mesh_; }
-  mfem::ParFiniteElementSpace &FESpace() { return fes_; }
-  mfem::ParFiniteElementSpace &DisplacementSpace() override { return fes_; }
+  mfem::ParFiniteElementSpace &DisplacementSpace() override { return fes_u_; }
+  mfem::ParFiniteElementSpace &PressureSpace() { return fes_p_; }
+  const mfem::Array<int> &BlockOffsets() const { return offsets_; }
   const mfem::Array<int> &EssentialTrueDofs() const override { return ess_tdof_list_; }
   HYPRE_BigInt GlobalTrueVSize() const override;
   std::string Description() const override;
-  const mfem::Vector &ExternalLoad() const { return load_true_; }
-  const Material &GetMaterial() const { return material_; }
-  double Rho0() const { return rho0_; }
-  int Order() const { return order_; }
+  const MixedMaterial &GetMaterial() const { return material_; }
+  double ShearModulus() const { return mu_; }
+  double BulkModulus() const { return kappa_; } // inf when incompressible
+  bool Incompressible() const { return incompressible_; }
+  mfem::HypreParMatrix &PressureMass() { return *pressure_mass_; }
 
-  // Stored energy int W(F) dV at x.
   double InternalEnergy(const mfem::Vector &x) const override;
-
-  // Post-processing: refresh displacement, and vonmises / jacobian sampled at
-  // the nodes of an L2 space of the same order, from x.
   void UpdateFields(const mfem::Vector &x) override;
   void RegisterFields(FieldRegistry &registry) override;
   mfem::ParGridFunction &Displacement() override { return *displacement_; }
+  mfem::ParGridFunction &Pressure() { return *pressure_; }
 
-  // GMRES/CG + BoomerAMG on the assembled Jacobian.
+  // FGMRES with a block upper-triangular preconditioner (see saddle_point_solver).
   std::unique_ptr<mfem::Solver> MakeLinearSolver(const LinearSolverConfig &cfg) override;
 
 private:
@@ -92,10 +79,17 @@ private:
   int dim_;
   int order_;
   double rho0_;
-  Material material_;
-  mfem::H1_FECollection fec_;
-  mfem::ParFiniteElementSpace fes_;
-  mfem::ParNonlinearForm nlf_;
+  MixedMaterial material_;
+  double mu_;
+  double kappa_;
+  bool incompressible_;
+  mfem::H1_FECollection fec_u_;
+  mfem::ParFiniteElementSpace fes_u_;
+  mfem::H1_FECollection fec_p_;
+  mfem::ParFiniteElementSpace fes_p_;
+  mfem::Array<mfem::ParFiniteElementSpace *> spaces_;
+  mfem::Array<int> offsets_;
+  std::unique_ptr<mfem::ParBlockNonlinearForm> nlf_;
 
   std::vector<std::unique_ptr<mfem::VectorCoefficient>> owned_coefs_;
   std::vector<BCEntry> dirichlet_;
@@ -105,10 +99,14 @@ private:
 
   bool finalized_ = false;
   double load_factor_ = 1.0;
+  mfem::Array<int> ess_u_marker_;
+  mfem::Array<int> ess_p_marker_;
   mfem::Array<int> ess_tdof_list_;
-  mfem::Vector load_true_;
+  mfem::Vector load_true_; // displacement block
+  std::unique_ptr<mfem::HypreParMatrix> pressure_mass_;
 
   std::unique_ptr<mfem::ParGridFunction> displacement_;
+  std::unique_ptr<mfem::ParGridFunction> pressure_;
   std::unique_ptr<mfem::L2_FECollection> l2_fec_;
   std::unique_ptr<mfem::ParFiniteElementSpace> l2_fes_;
   std::unique_ptr<mfem::ParGridFunction> vonmises_;

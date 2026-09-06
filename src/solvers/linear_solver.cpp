@@ -1,5 +1,6 @@
 #include "solvers/linear_solver.hpp"
 
+#include <algorithm>
 #include <cstdio>
 #include <stdexcept>
 
@@ -67,6 +68,9 @@ void LinearSolver::SetOperator(const mfem::Operator &op)
 void LinearSolver::Mult(const mfem::Vector &b, mfem::Vector &x) const
 {
   if (!amg_) { throw std::runtime_error("LinearSolver::Mult before SetOperator"); }
+  // The elasticity options either converge quickly or stall; give them at
+  // most 100 iterations before the systems fallback takes over.
+  if (amg_mode_ == "elasticity") { krylov_->SetMaxIter(std::min(cfg_.max_it, 100)); }
   krylov_->Mult(b, x);
   if (!krylov_->GetConverged() && amg_mode_ == "elasticity")
   {
@@ -79,6 +83,7 @@ void LinearSolver::Mult(const mfem::Vector &b, mfem::Vector &x) const
     }
     BuildPreconditioner("systems");
     krylov_->SetOperator(*A_);
+    krylov_->SetMaxIter(cfg_.max_it);
     x = 0.0;
     krylov_->Mult(b, x);
   }

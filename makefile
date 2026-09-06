@@ -81,7 +81,7 @@ $(TESTS): tests/%: tests/%.o $(LIB)
 -include $(DEPS)
 
 # Fast gates (S1-S3): serial unit and MMS tests.
-CHECK_TESTS := tests/test_base tests/test_materials tests/test_solid_mms
+CHECK_TESTS := tests/test_base tests/test_materials tests/test_solid_mms tests/test_mixed
 check: $(CHECK_TESTS)
 	@for t in $(CHECK_TESTS); do echo "== $$t"; ./$$t || exit 1; done
 
@@ -96,6 +96,9 @@ test: check apps/solid_mechanics tests/test_benchmarks tests/test_parallel
 	./tests/test_parallel --write tests/out/parallel_reference.txt
 	$(MFEM_MPIEXEC) -np 2 ./tests/test_parallel --check tests/out/parallel_reference.txt
 	$(MFEM_MPIEXEC) -np 4 ./tests/test_parallel --check tests/out/parallel_reference.txt
+	./apps/solid_mechanics -i apps/input/cook_incompressible.yaml
+	$(MFEM_MPIEXEC) -np 4 ./apps/solid_mechanics -i apps/input/cook_incompressible.yaml
+	./tests/test_mixed --full
 	./tests/test_benchmarks
 	$(MFEM_MPIEXEC) -np 4 ./tests/test_benchmarks
 	./tests/test_benchmarks --cook-ratio-gate
