@@ -31,6 +31,7 @@ output:
   paraview: out/anand_coupled_theories/finite_elasticity/09_spherical_inclusion
   fields: [displacement, pressure, jacobian, vonmises, pk1_stress, cauchy_stress]
   probe_every_step: true
+  reactions: true
   probes:
     - { name: corner, point: [10.0, 10.0, 10.0] }
     - { name: interface_pole, point: [0.0, 5.0, 0.0] }
