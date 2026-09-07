@@ -351,6 +351,16 @@ retained only as a regression fingerprint. The stagnation $C_p$ runs
 $2$--$3\%$ below the inviscid pitot value because the AV-thickened
 shock produces slightly more entropy than a discontinuity.
 
+The cylinder and plate cases are also available as driver decks for
+field exploration in ParaView
+(\code{input/m30\_billig\_cylinder.yaml},
+\code{input/m50\_billig\_cylinder.yaml},
+\code{input/m40\_blasius\_plate.yaml}; build the plate mesh with
+\code{make input/plate\_nx45\_ny32.mesh}) --- the quantitative gates
+remain in the test. The oblique-shock case relies on the test-only
+Dirichlet override; passing \code{paraview} to \code{test\_validation}
+saves every case's converged solution to \code{ParaView/validation\_*}.
+
 The flat plate solves a Reynolds continuation ladder
 $\{10^5, 3\times10^5, 10^6\}$ at $M = 4$ (cold isothermal wall,
 pure Newton, admissibility guard, damped start at the resolved

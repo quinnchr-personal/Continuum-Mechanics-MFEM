@@ -70,7 +70,19 @@ make check      # fast gates: physics parity/FD, HDG core MMS, PTC limit,
                 # BC catalog, sensor AV units
 make test       # + np={2,4} parallel fixtures, frozen Mach 8 regression
                 # (serial and np=4), M4.5 sanity + sensor runs, Mach 8
-                # sensor campaign, G7 validation suite
+                # sensor campaign, G7 validation suite (serial and np=4)
+```
+
+The G7 validation cases are also available as driver decks for ParaView
+exploration (the quantitative gates stay in `tests/test_validation.cpp`):
+
+```
+./hycfd -i input/m30_billig_cylinder.yaml    # M=3 cylinder, sensor AV
+./hycfd -i input/m50_billig_cylinder.yaml    # M=5 cylinder, sensor AV
+make input/plate_nx45_ny32.mesh
+./hycfd -i input/m40_blasius_plate.yaml      # M=4 plate, Re ladder to 1e6
+./test_validation oblique paraview           # oblique shock (test-only case)
+./test_validation paraview                   # all cases + field dumps
 ```
 
 Requires MFEM 4.8+ built with MPI/PETSc (config.mk auto-discovered),

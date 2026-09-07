@@ -1,0 +1,775 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1.05in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{verbatim}
+\usepackage[colorlinks=true,linkcolor=blue,urlcolor=blue]{hyperref}
+
+\newcommand{\bu}{\mathbf{u}}
+\newcommand{\bq}{\mathbf{q}}
+\newcommand{\buh}{\widehat{\mathbf{u}}}
+\newcommand{\bn}{\mathbf{n}}
+\newcommand{\bx}{\mathbf{x}}
+\newcommand{\Minf}{M_\infty}
+\newcommand{\Rey}{\mathrm{Re}}
+\newcommand{\Pran}{\mathrm{Pr}}
+\newcommand{\code}[1]{\texttt{#1}}
+
+\title{An MFEM HDG Solver for Steady Hypersonic Viscous Flow:\\
+Physics, Discretization, and Implementation\\
+{\large \code{myapps/hdg\_navierstokes} --- replication of the Exasim
+\code{nsmach8-baseline} run}}
+\author{}
+\date{July 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This document describes the hybridizable discontinuous Galerkin (HDG) solver in
+\code{myapps/hdg\_navierstokes}, an MFEM-based reimplementation of the Exasim
+\code{nsmach8-baseline} case: steady laminar flow of a perfect gas at
+$\Minf = 8.03$, $\Rey = 1.835\times 10^5$ over an isothermal half-cylinder.
+The solver reproduces Exasim's discretization to residual-level parity
+(the Exasim converged state evaluates to a residual of $3.3\times10^{-7}$ in
+this code's assembler) and its converged fields to $\sim\!10^{-10}$ relative
+$L^2$. We document the governing equations and their nondimensionalization
+(including two deliberate idiosyncrasies of the reference run), the artificial
+viscosity and the smoothed density/pressure regularization that the
+continuation requires, the HDG formulation with static condensation, the
+damped-Newton globalization and the four-stage artificial-viscosity
+continuation, and the code layout, data formats, and verification gates.
+\end{abstract}
+
+\tableofcontents
+
+%======================================================================
+\section{Overview and scope}
+%======================================================================
+
+The target of this code is \emph{replication}, not merely simulation: it
+reproduces a specific reference computation, the Exasim run archived at
+\code{Exasim-apps/runs/nsmach8-baseline}, with the same mesh (identical
+discrete geometry), the same physics model (transcribed term by term from the
+generated model code), the same HDG discretization (spaces, stabilization,
+quadrature), and the same nonlinear solver semantics (damped Newton with
+Exasim's exact line-search and abort rules). The only deliberate deviation is
+the linear solver (a sparse direct factorization instead of Exasim's
+preconditioned GMRES), which changes iteration counts but not the Newton fixed
+point.
+
+Development was organized in four milestones. M1: physics/mesh/IO foundations
+verified against the Exasim data structures. M2: the HDG core verified on
+benign problems (manufactured solutions, freestream preservation, a Mach~4.5
+sanity case). M3: the Mach~8 baseline replication from Exasim's restart data.
+M4: a self-contained four-stage artificial-viscosity continuation from a
+damped-freestream initial condition, requiring no Exasim state data. All four
+milestone gates pass (\S\ref{sec:verification}).
+
+%======================================================================
+\section{Physical problem}
+%======================================================================
+
+The flow is two-dimensional, steady, laminar, compressible flow of a
+calorically perfect gas over the front half of a circular cylinder:
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+Mach number & $\Minf = 8.03$ \\
+Reynolds number (based on cylinder radius) & $\Rey = 1.835\times 10^{5}$ \\
+Prandtl number & $\Pran = 0.71$ \\
+Specific-heat ratio & $\gamma = 1.4$ \\
+Freestream static temperature & $T_{\mathrm{ref}} = 124.49~\mathrm{K}$ \\
+Wall temperature (isothermal) & $T_{\mathrm{wall}} = 294.44~\mathrm{K}$ \\
+Sutherland constant & $T_s = 110.4~\mathrm{K}$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+The domain is a half-annulus: the inner boundary is the cylinder surface
+(radius $1$ after scaling), the outer boundary is a smooth arc standing off
+the bow shock, and the two straight segments on the $x=0$ plane are supersonic
+outflow planes. A strong detached bow shock forms upstream of the cylinder
+(standoff $\approx 0.4$ radii on the stagnation line); downstream of it the
+flow compresses to $\rho \approx 5.6$ (inviscid Rankine--Hugoniot level), and
+in the cold-wall thermal boundary layer density rises further (the converged
+field reaches $\rho \approx 28$ at this Reynolds number). The steady solution
+is found directly by Newton's method; there is no time stepping.
+
+%======================================================================
+\section{Governing equations}
+%======================================================================
+
+\subsection{Conservative form}
+
+With conservative variables
+$\bu = (\rho,\ \rho u,\ \rho v,\ \rho E)^{T}$, the steady compressible
+Navier--Stokes equations are
+\begin{equation}
+\nabla\cdot\bigl(F_{\mathrm{inv}}(\bu) - F_{\mathrm{visc}}(\bu,\nabla\bu)
+- F_{\mathrm{av}}(\nabla\bu)\bigr) = 0 ,
+\label{eq:ns}
+\end{equation}
+\begin{equation}
+F_{\mathrm{inv}} =
+\begin{pmatrix}
+\rho u & \rho v\\
+\rho u^2 + p & \rho u v\\
+\rho u v & \rho v^2 + p\\
+\rho u H & \rho v H
+\end{pmatrix},
+\qquad
+F_{\mathrm{visc}} =
+\begin{pmatrix}
+0 & 0\\
+\tau_{xx} & \tau_{xy}\\
+\tau_{xy} & \tau_{yy}\\
+u\tau_{xx}+v\tau_{xy}+f_c\,\partial_x T &
+u\tau_{xy}+v\tau_{yy}+f_c\,\partial_y T
+\end{pmatrix},
+\end{equation}
+with $p = (\gamma-1)\bigl(\rho E - \tfrac12\rho(u^2+v^2)\bigr)$, total
+enthalpy $H = E + p/\rho$, and Stokes-hypothesis stresses
+\begin{equation}
+\tau_{xx} = \mu\,\tfrac23\,(2u_x - v_y),\qquad
+\tau_{xy} = \mu\,(u_y + v_x),\qquad
+\tau_{yy} = \mu\,\tfrac23\,(2v_y - u_x).
+\end{equation}
+The ``temperature'' variable used throughout the model is the specific
+internal energy,
+\begin{equation}
+T \;=\; \frac{p}{(\gamma-1)\,\rho} \;=\; e,
+\end{equation}
+and the heat conduction coefficient is $f_c = \mu\gamma/\Pran$, so that
+$f_c \nabla T = (\mu\gamma/\Pran)\nabla e$ equals the Fourier flux
+$ (\mu c_p / \Pran) \nabla T_{\mathrm{thermo}}$ in dimensional terms. This
+convention (temperature $\equiv$ internal energy) matters when comparing wall
+heat flux with other codes.
+
+\subsection{Sutherland viscosity}
+
+The dynamic viscosity follows Sutherland's law, evaluated algebraically from
+the local state. Defining the nondimensional temperature ratio
+\begin{equation}
+T_r \;=\; \gamma \Minf^2\, \frac{p}{\rho}
+\;=\; \frac{T}{T_\infty},
+\qquad T_{\mathrm{phys}} = T_{\mathrm{ref}}\, T_r,
+\end{equation}
+the code computes
+\begin{equation}
+\mu \;=\; \frac{1}{\Rey}\; T_r^{3/2}\;
+\frac{T_{\mathrm{ref}} + T_s}{T_{\mathrm{phys}} + T_s},
+\qquad T_s = 110.4~\mathrm{K}.
+\label{eq:sutherland}
+\end{equation}
+Note $T_r^{3/2}$: for $p<0$ this is the square root of a negative number ---
+the origin of the robustness problem addressed by the regularization of
+\S\ref{sec:floors}.
+
+\subsection{Artificial viscosity}
+\label{sec:av}
+
+Shock capturing uses a \emph{frozen} Laplacian artificial viscosity: a fixed
+scalar field $a(\bx)\ge 0$ adds isotropic diffusion to all four equations,
+\begin{equation}
+F_{\mathrm{av}} = a(\bx)\,\nabla\bu ,
+\end{equation}
+i.e.\ the term $-\nabla\cdot(a\nabla\bu)$ on the left side of \eqref{eq:ns}.
+The field $a$ is \emph{data}: it is never differentiated with respect to the
+state and never updated inside a Newton solve, so the exact Jacobian is
+preserved. Two sources are supported: the archived Exasim field
+(\code{vdg.bin}, which equals $0.025\tanh(5(r-1))$ to $2.8\times10^{-17}$) and
+the analytic family
+\begin{equation}
+a(\bx) = \lambda \tanh\!\bigl(c\,d(\bx)\bigr),
+\qquad d(\bx) = \sqrt{x^2+y^2} - 1
+\end{equation}
+($d$ is the wall distance; exact for this geometry). The M4 continuation
+lowers $(\lambda, c)$ through the schedule of \S\ref{sec:continuation}.
+
+\subsection{First-order (mixed) form and the gradient sign convention}
+
+The HDG discretization rewrites \eqref{eq:ns} as a first-order system with an
+auxiliary gradient variable. Following Exasim's convention \emph{verbatim},
+\begin{equation}
+\bq \;=\; -\nabla \bu \qquad (\text{eight components in 2D}),
+\end{equation}
+\begin{equation}
+\bq + \nabla\bu = 0, \qquad
+\nabla\cdot F(\bu, \bq) = 0 .
+\end{equation}
+All model formulas are then written in the ``model-signed'' gradient slots.
+For example, with $r_x \equiv -\partial_x\rho$ etc., the transcribed
+$x$-flux reads
+\begin{equation}
+f_x = \begin{pmatrix}
+\rho u + a\,r_x\\[2pt]
+\rho u^2 + p + \tau_{xx} + a\,(ru)_x\\[2pt]
+\rho u v + \tau_{xy} + a\,(rv)_x\\[2pt]
+\rho u H + u\tau_{xx} + v\tau_{xy} + f_c T_x + a\,(rE)_x
+\end{pmatrix},
+\label{eq:modelflux}
+\end{equation}
+where $\tau_{xx},\dots,T_x$ are built from the model-signed slots, so the
+\emph{plus} signs in \eqref{eq:modelflux} are dissipative. Adopting this
+convention project-wide lets the generated Exasim model code (values and
+analytic Jacobians) be transcribed without any sign surgery; a dissipativity
+unit test (linearized entropy production $\le 0$) pins the convention.
+
+\subsection{Density and pressure regularization (``floors'')}
+\label{sec:floors}
+
+The physics model exists in two variants, selected at run time
+(\code{physics.regularization} in the YAML deck):
+
+\paragraph{Floor-free model (default).} Equations
+\eqref{eq:ns}--\eqref{eq:modelflux} exactly as exported in the reference
+run's \code{pdemodel.txt}. This is the model certified by the M3 parity
+gates.
+
+\paragraph{Regularized model (\code{floors}).} The model of the original
+\code{pdemodel\_ns.m}, which clamps density and pressure through the smoothed
+hinge
+\begin{equation}
+\mathrm{lmax}(x;\alpha) \;=\;
+x\left(\frac{\arctan(\alpha x)}{\pi} + \frac12\right)
+- \frac{\arctan\alpha}{\pi} + \frac12,
+\qquad \alpha = 10^{3},
+\end{equation}
+which satisfies $\mathrm{lmax}(x)\to x$ for $x\gg 1/\alpha$,
+$\mathrm{lmax}(x)\to 0$ for $x\ll -1/\alpha$. Inside the flux only,
+\begin{align}
+\rho &\leftarrow \rho_{\min} + \mathrm{lmax}(\rho - \rho_{\min};\alpha),
+& \rho_{\min} &= 10^{-2},\\
+p &\leftarrow p_{\min} + \mathrm{lmax}(p - p_{\min};\alpha),
+& p_{\min} &= 10^{-3},
+\end{align}
+and the density and pressure gradient slots are scaled by the corresponding
+sensors (the derivative of the clamp),
+\begin{equation}
+d(x) = \frac{\arctan(\alpha \tilde x)}{\pi}
++ \frac{\alpha \tilde x}{\pi(\alpha^2 \tilde x^2 + 1)} + \frac12,
+\qquad \tilde x = (\text{clamped value}) - (\text{floor}),
+\end{equation}
+applied as $(r_x, r_y) \leftarrow d_\rho\,(r_x, r_y)$ and
+$(p_x, p_y) \leftarrow d_p\,(p_x, p_y)$. The Sutherland law
+\eqref{eq:sutherland} is evaluated at the clamped $(\rho, p)$, so the flux is
+a smooth, globally defined function of the state --- in particular finite at
+$p<0$.
+
+Two properties make this safe and necessary, respectively:
+\begin{itemize}
+\item \textbf{Inactive at converged states.} The clamp deviates from the
+identity by $O\!\bigl(1/(\alpha^3 x^2)\bigr)$; at the converged states of
+this problem ($\min p \approx 0.0111 \gg p_{\min}$) the two models agree to
+$\sim\!10^{-9}$ relative. All M3 parity gates are therefore blind to the
+difference, and both models share the same fixed points.
+\item \textbf{Load-bearing in the continuation.} Lowering the artificial
+viscosity from $0.06$ to $0.04$ sharpens the captured shock; the first Newton
+correction necessarily undershoots to $p \approx -0.009$ at the
+stagnation-line shock foot (both this code and Exasim's own solver produce
+this trial state, agreeing to $0.02\%$). Without floors the trial residual is
+NaN (via $T_r^{3/2}$) and no line-search or pseudo-transient strategy can
+recover, because deciding to damp already requires evaluating the residual.
+With floors the same trial evaluates to a small finite residual, the step is
+accepted, and Newton restores positivity by itself within three iterations.
+The full forensic account is in \code{M4\_FAILURE\_REPORT.md}.
+\end{itemize}
+
+The regularized flux and its analytic Jacobian in \code{ns\_physics.hpp} are
+mechanical transcriptions of symbolically generated code
+(\code{m4\_diagnostic/my\_model\_floored.hpp}, produced by Exasim's
+\code{text2code} from the floored model source); a unit test pins the
+transcription at exactly zero error over admissible \emph{and}
+negative-pressure states.
+
+%======================================================================
+\section{Nondimensionalization}
+%======================================================================
+\label{sec:nondim}
+
+All quantities are scaled by freestream density $\rho_\infty$, freestream
+speed $V_\infty$, and the cylinder radius $R$:
+\begin{equation}
+\rho^* = \frac{\rho}{\rho_\infty},\quad
+(u^*,v^*) = \frac{(u,v)}{V_\infty},\quad
+p^* = \frac{p}{\rho_\infty V_\infty^2},\quad
+E^* = \frac{E}{V_\infty^2},\quad
+\bx^* = \frac{\bx}{R},\quad
+\mu^* = \frac{\mu}{\rho_\infty V_\infty R}.
+\end{equation}
+(The asterisks are dropped everywhere else in this document.) Consequently
+\begin{equation}
+\rho_\infty^* = 1,\qquad
+(u,v)_\infty^* = (1, 0),\qquad
+p_\infty = \frac{1}{\gamma \Minf^2} = 0.011077\ldots,\qquad
+\mu_\infty^* = \frac{1}{\Rey},
+\end{equation}
+\begin{equation}
+T_\infty = \frac{p_\infty}{(\gamma-1)\rho_\infty}
+= \frac{1}{\gamma(\gamma-1)\Minf^2} = 0.0276937\ldots,
+\qquad
+(\rho E)_\infty = \frac12 + \frac{p_\infty}{\gamma-1} = 0.5276937\ldots
+\end{equation}
+Physical temperature is recovered through
+$T_{\mathrm{phys}} = T_{\mathrm{ref}}\, T/T_\infty$ with
+$T_{\mathrm{ref}} = 124.49$~K; the nondimensional isothermal-wall value is
+\begin{equation}
+T_{\mathrm{isoW}} \;=\; T_\infty\,
+\frac{T_{\mathrm{wall}}}{T_{\mathrm{ref}}} .
+\end{equation}
+
+\subsection{The rounded deck constants (deliberately replicated)}
+\label{sec:rounded}
+
+The reference run's parameter vector (in the code:
+\code{NSParams::mu[0..10]}) is, verbatim,
+\begin{equation*}
+[\gamma,\ \Rey,\ \Pran,\ \Minf,\ \rho_\infty,\ (\rho u)_\infty,\
+(\rho v)_\infty,\ (\rho E)_\infty,\ T_\infty,\ T_{\mathrm{ref}},\
+T_{\mathrm{wall}}]
+\end{equation*}
+\begin{equation*}
+= [1.4,\ 183500,\ 0.71,\ 8.03,\ 1,\ 1,\ 0,\
+\mathbf{0.52769},\ \mathbf{0.027694},\ 124.49,\ 294.44].
+\end{equation*}
+The bold entries are \emph{rounded literals}: the exact values are
+$0.5276937\ldots$ and $0.0276937\ldots$, so the deck is internally
+inconsistent at the $4\times10^{-6}$ level. The model uses the two versions
+in different places, and this split must be replicated exactly (mixing them
+up costs $1.1\times10^{-5}$ relative in the fields --- enough to fail the
+parity gates):
+\begin{itemize}
+\item the \textbf{flux/Sutherland path} never reads the rounded
+$T_\infty$; it forms $T_r = \gamma\Minf^2 p/\rho$ algebraically, i.e.\ uses
+the full-precision $T_\infty = 1/(\gamma(\gamma-1)\Minf^2)$ derived from
+$\gamma$ and $\Minf$ (\code{NSParams::TinfFlux()});
+\item the \textbf{wall boundary condition} uses the rounded literal
+verbatim:
+$T_{\mathrm{isoW}} = 0.027694 \times 294.44 / 124.49
+= 0.06550101502128686$ (\code{NSParams::TisoW()}).
+\end{itemize}
+The freestream state used in Newton initializations is likewise the rounded
+$(1, 1, 0, 0.52769)$.
+
+%======================================================================
+\section{Boundary conditions}
+%======================================================================
+\label{sec:bcs}
+
+Boundary conditions are imposed \emph{weakly through the trace unknown}
+$\buh$ (\S\ref{sec:hdg}): on a boundary face the flux-continuity rows of the
+trace equation are replaced by residual rows
+$\oint_F \mu\, f_b\,\mathrm{d}s = 0$, with $f_b$ per boundary type
+($\hat u_i$ denote trace components, $u_i$ interior-state components):
+\begin{center}
+\begin{tabular}{llll}
+\toprule
+Attribute & Boundary & Type & $f_b$ \\
+\midrule
+1 (21 faces) & cylinder $r=1$ & isothermal no-slip wall &
+$\bigl(u_0-\hat u_0,\ -\hat u_1,\ -\hat u_2,\
+\hat u_0 T_{\mathrm{isoW}} - \hat u_3\bigr)$\\
+2 (62 faces) & $x=0$ plane & supersonic outflow &
+$\bu - \buh$ (extrapolation)\\
+3 (21 faces) & outer arc & supersonic freestream &
+$\bu_\infty - \buh$ (Dirichlet on trace)\\
+\bottomrule
+\end{tabular}
+\end{center}
+The wall rows extrapolate density, set zero velocity, and set trace internal
+energy to $T_{\mathrm{isoW}}$ (via $\widehat{\rho E} = \hat\rho\,
+T_{\mathrm{isoW}}$ at zero velocity). Two structural points, both verified
+against the generated Exasim code: the stabilization parameter $\tau$ does
+\emph{not} appear in $f_b$; and the \emph{element} equation is unchanged on
+boundary faces (it keeps the interior numerical flux $\widehat f$) --- only
+the trace rows change. The energy wall row is bilinear in $\buh$, so its
+Jacobian carries both $-1$ and $+T_{\mathrm{isoW}}$ entries.
+
+%======================================================================
+\section{HDG discretization}
+%======================================================================
+\label{sec:hdg}
+
+\subsection{Mesh and geometry}
+
+The mesh is the reference run's mesh: 651 curved quadrilaterals
+($31\times 21$, graded toward the wall), 704 vertices, 1{,}354 edges (104 on
+the boundary). Topology comes from \code{grid.bin}; the curved geometry is
+taken \emph{exactly} from \code{xdg.bin}, the discrete $Q_4$ coordinate map
+on Exasim's tensor Chebyshev--Gauss--Lobatto nodes (1D nodes
+$[0,\ (3-\sqrt5)/4,\ 1/2,\ (1+\sqrt5)/4,\ 1]$). Because a $Q_4$ polynomial
+re-expressed in a different nodal basis is exact, the MFEM $H^1$ $Q_4$ mesh
+nodes are set by evaluating Exasim's basis at MFEM's node locations; the
+resulting geometry reproduces \code{xdg.bin} to $1.1\times10^{-15}$. An
+analytic mesh generator (same $31\times21$ grading law:
+$\theta = 3\pi/2 - \pi\,\eta_2$, outer radius $4.7 + 1.7\cos\theta$, radial
+stretching $\mathrm{logdec}(\eta_1,5) = (1-e^{-5\eta_1})/(1-e^{-5})$)
+provides meshes for convergence studies and an independent M4 variant.
+
+\subsection{Spaces and unknowns}
+
+All spaces are \emph{broken} (discontinuous) tensor-product polynomials of
+degree $p=4$ on the reference square:
+\begin{itemize}
+\item $\bu_h$: 4 components $\times$ 25 nodes per element
+($651\times100 = 65{,}100$ unknowns);
+\item $\bq_h$: 8 components $\times$ 25 nodes per element (never a solver
+unknown --- eliminated exactly, see below);
+\item $\buh_h$: single-valued polynomial of degree 4 on every mesh edge
+(MFEM \code{DG\_Interface\_FECollection}), 4 components $\times$ 5 nodes
+$\times$ 1{,}354 faces $= 27{,}080$ unknowns --- \emph{the only globally
+coupled unknowns}. Boundary faces carry genuine trace unknowns (BCs are
+weak; nothing is eliminated strongly).
+\end{itemize}
+The trace space is stored with component-fastest ordering per face (20
+contiguous scalar dofs per face), matching Exasim's layout and giving clean
+$20\times20$ face blocks.
+
+\subsection{Weak forms}
+
+Let $\varphi$ denote element test functions and $\mu$ face test functions.
+Per element $K$:
+
+\paragraph{Gradient equation (linear, geometry-only).} For each scalar
+component and direction $d$,
+\begin{equation}
+\int_K \bq\,\varphi
+= \int_K \bu\,\partial_{x_d}\varphi
+- \oint_{\partial K} \buh\, n_d\, \varphi ,
+\qquad\Longrightarrow\qquad
+\bq_d = C_d\,\bu - E_d\,\buh
+\label{eq:qrel}
+\end{equation}
+with precomputed $25\times25$ and $25\times20$ matrices
+$C_d = M^{-1}\!\int \partial_d\varphi\,\varphi$ and
+$E_d = M^{-1}\!\oint \varphi\,\varphi_{\mathrm{face}} n_d$ (shared by all
+components; geometry-constant). $\bq$ is eliminated through
+\eqref{eq:qrel} from the start.
+
+\paragraph{Element equation.}
+\begin{equation}
+R_u \;=\; \int_K \nabla\varphi : F(\bu, \bq, a)\,\mathrm{d}\bx
+\;-\; \oint_{\partial K} \varphi\, \widehat f\,\mathrm{d}s \;=\; 0,
+\end{equation}
+with the HDG numerical flux
+\begin{equation}
+\widehat f \;=\; F(\buh, \bq)\cdot\bn \;+\; \tau\,(\bu - \buh),
+\qquad \tau = 1 \ \text{(all equations, all faces)}.
+\label{eq:fhat}
+\end{equation}
+The flux in \eqref{eq:fhat} is the \emph{full} (inviscid + viscous + AV) flux
+with the state slot replaced by the trace $\buh$ and the gradient slots kept
+from the element interior $\bq$ --- this specific evaluation point is
+load-bearing for both stability and Jacobian structure, and holds on boundary
+faces too.
+
+\paragraph{Trace equation.} On interior faces, flux continuity
+\begin{equation}
+\oint_F \mu\,\bigl(\widehat f\big|_{K_1} + \widehat f\big|_{K_2}\bigr)
+\mathrm{d}s = 0
+\end{equation}
+(outward normals opposite); on boundary faces the rows are replaced by the
+weak boundary residuals of \S\ref{sec:bcs}, mass-weighted with the same
+5-point face rule. Because Exasim assembles the same weighted residuals,
+residual \emph{norms} are comparable between the two codes, not just
+solutions.
+
+\subsection{Quadrature}
+
+Volume: $5\times5$ tensor Gauss--Legendre (degree 8, 25 points); faces:
+5-point Gauss--Legendre. These match Exasim's decoded rules exactly. Shape
+tables, geometry factors ($\det J$, $\mathrm{adj}\,J$, face normals times
+surface Jacobians) and the frozen AV values at all volume/face quadrature
+points are tabulated once in the operator constructor (the mesh never moves).
+
+\subsection{Newton linearization and static condensation}
+
+Each Newton iteration assembles, per element, the exact-Jacobian blocks
+\begin{equation}
+A = \frac{\partial R_u}{\partial \bu},\quad
+B = \frac{\partial R_u}{\partial \bq},\quad
+F = \frac{\partial R_u}{\partial \buh},\quad
+K = \frac{\partial R_h}{\partial \bu},\quad
+G = \frac{\partial R_h}{\partial \bq},\quad
+H = \frac{\partial R_h}{\partial \buh},
+\end{equation}
+folds the gradient dependence through \eqref{eq:qrel}
+($A \mathrel{+}= \sum_d B_d C_d$, $F \mathrel{-}= \sum_d B_d E_d$, and
+likewise for $K, G, H$), and condenses:
+\begin{equation}
+H_c = H - K A^{-1} F \ (80\times80),\qquad
+b_c = K A^{-1} R_u - R_h .
+\end{equation}
+Eliminating $\bq$ first reduces the per-element factorization from
+$300\times300$ to $100\times100$ (a $27\times$ flop reduction); peak solver
+memory is $\approx 106$~MB. The condensed system
+$H_c^{\mathrm{glob}}\,\Delta\buh = b_c^{\mathrm{glob}}$ is a
+$27{,}080\times27{,}080$ sparse matrix with $\le 140$ nonzeros per row (each
+face couples to itself and at most six sibling faces). After the trace solve,
+the local recovery is
+\begin{equation}
+\Delta\bu = -A^{-1}(R_u + F\,\Delta\buh),
+\qquad\text{then}\qquad
+\bq := C\bu - E\buh \ \ \text{(full recompute)}.
+\end{equation}
+
+%======================================================================
+\section{Solution algorithm}
+%======================================================================
+
+\subsection{Damped Newton (Exasim semantics, replicated exactly)}
+\label{sec:newton}
+
+Per iteration: full reassembly at the current $(\bu, \bq, \buh)$; direct
+solve of the condensed system; update $\buh \mathrel{+}= \alpha\,\Delta\buh$
+with local recovery of $\bu$ and recomputation of $\bq$; then the line
+search. The line-search and abort rules are transcribed from Exasim's
+\code{NewtonSolver}:
+\begin{itemize}
+\item trial $\alpha = 1$; \textbf{while} the residual increased
+\emph{and} $\alpha > 0.1$: halve $\alpha$ and retry. Because the guard tests
+$\alpha$ \emph{before} halving, the admissible steps are
+$\alpha \in \{1, \tfrac12, \tfrac14, \tfrac18, \tfrac1{16}\}$ and the step
+$\alpha = 0.0625$ is \emph{accepted even if the residual still increased}
+--- a quirk that is load-bearing at Mach 8;
+\item hard abort only if the trial residual is NaN, or increased
+\emph{and} exceeds $10^6$;
+\item convergence when $\lVert R_u\rVert + \lVert R_h\rVert < 10^{-6}$
+(stacked-norm definition, matching Exasim); at most 30 iterations.
+\end{itemize}
+
+\subsection{Linear solver (deliberate deviation)}
+
+The condensed systems are solved by a sparse direct factorization (MUMPS via
+PETSc, \code{KSPPREONLY} + \code{PCLU}). Exasim uses restarted GMRES with a
+degree-20 polynomial preconditioner; that choice affects inner iteration
+counts only, not the Newton fixed point, and is deliberately not replicated.
+An optional GMRES + face-block-Jacobi mode exists for solver studies. A
+pseudo-transient continuation hook (backward-Euler term $(1/\Delta\tau)$
+added to $A$, SER ramp) is wired but \emph{off} in all passing
+configurations --- the reference schedule needs no PTC.
+
+\subsection{Initialization modes}
+
+\begin{itemize}
+\item \code{udg\_file} (M3): load $\bu$ from Exasim's \code{udg.bin}
+(components 0--3 only), set $\buh$ to the one-sided trace of $\bu$ (from the
+lower-index element on each face, matching Exasim's restart), then recompute
+$\bq = C\bu - E\buh$. The stored gradient slots are deliberately discarded,
+exactly as Exasim's solver does on restart.
+\item \code{damped\_freestream} (M4): the \code{pdeapp\_ns.m} initial
+condition
+\begin{equation}
+\rho = 1,\quad
+\rho u = \tanh(10\,d),\quad
+\rho v = 0,\quad
+\rho E = T_\infty\!\left[\Bigl(\tfrac{T_{\mathrm{wall}}}{T_{\mathrm{ref}}}
+- 1\Bigr)e^{-10 d} + 1\right] + \tfrac12\tanh^2(10\,d),
+\end{equation}
+with $d = r - 1$ the wall distance: freestream flow smoothly brought to rest
+at the wall with a near-wall thermal layer consistent with the hot wall.
+\end{itemize}
+
+\subsection{Artificial-viscosity continuation (M4)}
+\label{sec:continuation}
+
+The self-contained solve replicates the reference script's four steady
+solves with frozen AV fields, each warm-starting from the previous:
+\begin{equation}
+a_k(\bx) = \lambda_k \tanh(c_k\, d),\qquad
+(\lambda_k, c_k) \in \bigl\{(0.06, 30),\ (0.04, 30),\
+(0.025, 30),\ (0.025, 5)\bigr\}.
+\end{equation}
+At each stage start the trace is re-initialized to the one-sided interior
+trace and $\bq$ recomputed (Exasim's per-stage restart semantics; this makes
+the per-stage residual histories directly comparable between the codes). The
+regularized model of \S\ref{sec:floors} is required from stage 2 on; with it,
+the run needs no PTC, no extra stages, and no damping after stage 1:
+\begin{center}
+\begin{tabular}{clccc}
+\toprule
+Stage & AV field & Newton updates & Damped steps & Final residual\\
+\midrule
+1 & $0.06\tanh(30 d)$ & 9 & 5 (min $\alpha = 0.125$) & $2.52\times10^{-9}$\\
+2 & $0.04\tanh(30 d)$ & 4 & 0 & $2.30\times10^{-8}$\\
+3 & $0.025\tanh(30 d)$ & 4 & 0 & $2.49\times10^{-7}$\\
+4 & $0.025\tanh(5 d)$ & 4 & 0 & $3.30\times10^{-7}$\\
+\bottomrule
+\end{tabular}
+\end{center}
+The $9/4/4/4$ signature matches Exasim's own (floored) runs of the same
+schedule; the stage-2 histories track step for step, both accepting a first
+trial whose minimum pressure is $\approx -0.0090$ (absorbed by the floors).
+The end state matches the M3 replication to $3.4\times10^{-6}$ in wall heat
+flux --- far inside the 1\% acceptance gate.
+
+\subsection{Wall outputs}
+
+Wall postprocessing evaluates, at the 5 Gauss points of each wall face and
+with the trace state in the state slot and interior $\bq$ in the gradient
+slots (exactly the reference \code{Fint} functional),
+\begin{equation}
+q_w = f_c\,(T_x n_x + T_y n_y) + \tau\,(\rho E - \widehat{\rho E}),
+\qquad
+C_p = 2\,(p(\buh) - p_\infty),
+\end{equation}
+the latter because the dynamic pressure is
+$\tfrac12\rho_\infty V_\infty^2 = \tfrac12$ in these units. The shock
+standoff is located as the maximum of $|\partial_x \rho|$ along the
+stagnation line from 1{,}000 samples.
+
+%======================================================================
+\section{Code implementation}
+%======================================================================
+\label{sec:code}
+
+\subsection{Layout}
+
+The app is a flat directory of small translation units over MFEM 4.8.1-dev
+(MPI + METIS + PETSc/MUMPS build; serial execution --- 651 elements is
+decisively serial territory):
+\begin{center}
+\begin{tabular}{lp{0.66\textwidth}}
+\toprule
+File & Contents\\
+\midrule
+\code{ns\_physics.hpp} & Header-only physics on raw \code{double} arrays (no
+MFEM types; shared with the planned DG driver): fluxes, Sutherland, boundary
+residuals, analytic Jacobians transcribed from the generated Exasim model;
+the regularized (floored) flux/Jacobian pair behind
+\code{NSParams::regularized}; sign-flip adapters for physical-gradient
+callers.\\
+\code{exasim\_io} & Exasim binary readers (3-double header + column-major
+payload), Chebyshev--Gauss--Lobatto basis evaluation, exact $25\times25$
+change-of-basis, per-rank \code{elempart} parsing for the partitioned
+reference outputs.\\
+\code{exasim\_mesh} & Mesh converter (\code{grid.bin} topology +
+\code{xdg.bin} exact geometry + boundary attribution by the run's own
+predicates) and the analytic mesh generator.\\
+\code{hdg\_ns\_operator} & The HDG core: precomputed tables, $C_d/E_d$,
+residual and Jacobian assembly, boundary-row substitution, static
+condensation into an MFEM \code{SparseMatrix}, local recovery,
+residual-only path, diagnostics (min $\rho$/$p$, symmetry error).\\
+\code{hdg\_newton.hpp} & Damped Newton of \S\ref{sec:newton} with the PETSc
+direct solve and the optional PTC hook; failures are reported, not thrown.\\
+\code{wall\_post} & $C_p$, \code{Fint} heat flux, shock standoff, and the
+field/wall comparison machinery used by the M3/M4 gates.\\
+\code{hdg\_ns\_driver.cpp} & YAML-configured driver (mesh source, physics,
+AV mode, init mode, Newton/PTC, continuation schedule, outputs); ParaView
+output of conservative/primitive/AV fields.\\
+\code{test\_*} & The verification suite (\S\ref{sec:verification}).\\
+\code{m4\_diagnostic/} & Forensic artifacts of the M4 investigation: the
+floored model source and its generated code (the transcription reference),
+stage-driving script, logs, and the first-failing-step dumps.\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Selected implementation details}
+
+\begin{itemize}
+\item \textbf{Exact geometry and state transfer.} Both the $Q_4$ geometry
+and all state I/O go through exact polynomial change-of-basis between
+Exasim's Chebyshev--Lobatto nodes and MFEM's node sets (round-trip error
+$\le 7\times10^{-14}$); naive nodal copying would be $O(10^{-3})$ wrong at
+$p=4$.
+\item \textbf{Jacobians are transcribed, not derived.} Both model variants'
+analytic Jacobians come from Exasim's symbolic code generator; unit tests
+compare the transcriptions against lightly adapted copies of the generated
+headers at $10^{-13}$ (the floored pair matches \emph{exactly}), plus
+central finite-difference checks. Hand-differentiation of the Sutherland/
+sensor chain rules was deliberately avoided.
+\item \textbf{Sparsity with explicit zeros.} The condensed matrix graph is
+built once with \code{skip\_zeros=0}; exact zeros are guaranteed in boundary
+blocks and dropping them would corrupt later re-assemblies.
+\item \textbf{Frozen-AV tabulation.} $a(\bx)$ is tabulated once at all
+volume and face quadrature points; it enters the Jacobian only as
+$\partial f_{c,d}/\partial q_{c,d} \mathrel{+}= a$ (identity blocks scaled
+by data).
+\item \textbf{Face transformations.} Face physical coordinates are always
+evaluated through the face transformation objects; MFEM reuses mutable
+transformation storage, and retaining stale element pointers across face
+queries corrupts face data (found the hard way in M2).
+\item \textbf{Build hygiene.} Every translation unit that includes
+\code{ns\_physics.hpp} lists it as a makefile dependency; \code{NSParams}
+is passed across TU boundaries, and a stale-object ABI mismatch after the
+struct grew produced a heap abort before the dependencies were fixed.
+\item \textbf{Timings} (single process, development host): a full M3 Newton
+solve (4 iterations) spends $\approx 5.1$~s in assembly and $\approx 1.1$~s
+in the direct trace solves; each M4 stage runs in $\approx 7$--$14$~s.
+\end{itemize}
+
+\subsection{Verification gates}
+\label{sec:verification}
+
+\code{make test} runs the milestone gates in sequence:
+\begin{center}
+\small
+\begin{tabular}{lp{0.5\textwidth}l}
+\toprule
+Gate & Statement & Result\\
+\midrule
+M1 physics & flux/BC values and all Jacobians vs the generated model at
+1000 random states; FD consistency; dissipativity sign & $\le 10^{-13}$;
+$4\times10^{-9}$\\
+M1 regularized & floored flux/Jacobian vs generated floored model over
+admissible + floor-straddling (incl.\ $p<0$) states; FD; floored/unfloored
+agreement at admissible states; M4 failure state finite (floored) and NaN
+(unfloored) & exactly 0; $4.9\times10^{-7}$; $4.2\times10^{-7}$; pass\\
+M1 mesh/IO & topology/attributes; exact \code{xdg} geometry; change-of-basis
+round trips; quadrature identity & $1.1\times10^{-15}$\\
+M2 core & trace-orientation consistency; global condensed Jacobian vs
+directional FD; MMS convergence order $\ge 4.8$; freestream preservation;
+$M{=}4.5$ sanity case & pass ($9.7\times10^{-10}$ FD)\\
+M3 replication & residual of Exasim's converged state in this assembler;
+Newton from \code{udg.bin}; field $L^2$ vs Exasim; wall $C_p$/heat
+flux/standoff & $3.3\times10^{-7}$; $\sim10^{-10}$;
+$\sim10^{-9}$\\
+M4 continuation & four-stage schedule (no PTC) on converted and analytic
+meshes; final wall heat flux and standoff vs M3 within 1\% & $9/4/4/4$;
+$3.4\times10^{-6}$\\
+\bottomrule
+\end{tabular}
+\end{center}
+The strongest single test is the M3 residual cross-check: Exasim's converged
+$(\bu, \bq, \buh)$, loaded into this code's assembler, must evaluate to a
+residual at Exasim's own convergence tolerance. It certifies discretization
+parity independent of any solver behavior, and it gates everything
+downstream.
+
+\subsection{Running}
+
+\begin{verbatim}
+make            # builds driver + all test binaries
+make test       # M1-M4 verification gates
+./hdg_ns_driver -i Input/input_mach8_baseline.yaml       # M3 replication
+./hdg_ns_driver -i Input/input_mach8_continuation.yaml   # M4 continuation
+\end{verbatim}
+A deck selects the mesh source (\code{exasim} converter or \code{analytic}),
+physics constants and regularization, AV mode (\code{file} or \code{tanh}),
+initialization, Newton/PTC settings, the continuation schedule, and output
+paths. Outputs are high-order ParaView collections
+(conservative/primitive/AV fields), wall CSVs
+$(\theta, x, y, C_p, q_w)$ at wall Gauss points, and per-stage
+continuation history/summary CSVs.
+
+%======================================================================
+\section*{Further reading in the repository}
+%======================================================================
+
+\begin{itemize}
+\item \code{PLAN\_HDG.md} --- the full implementation plan, with
+file/line references into the Exasim sources for every discretization
+decision.
+\item \code{M4\_FAILURE\_REPORT.md} --- the continuation failure forensics:
+the negative-pressure mechanism, the cross-code first-failing-step
+comparison, and the floored-model reconstruction that resolved it.
+\item \code{NOTES.md} --- milestone-to-milestone findings (data-format
+gotchas, orderings, measured parity numbers).
+\item \code{PLAN\_DG.md} --- the planned sibling nodal-DG driver sharing
+\code{ns\_physics}/\code{exasim\_io}/\code{exasim\_mesh}.
+\end{itemize}
+
+\end{document}
