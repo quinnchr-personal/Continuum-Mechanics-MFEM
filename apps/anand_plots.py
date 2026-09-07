@@ -13,8 +13,10 @@ out/anand_coupled_theories/finite_elasticity/logs and the plots go next to it.
 The reference site overlays no analytical curves; the ones added here are:
 
   01 uniaxial tension     nominal stress vs stretch of the homogeneous
-                          incompressible Arruda-Boyce block, with this code's
-                          five-term series and the reference's Pade form
+                          Arruda-Boyce block at K = 1000 G (lateral stretch
+                          from sigma_22 = 0), with this code's five-term
+                          series and the reference's Pade form, and the
+                          incompressible limit
   02 simple shear         nominal shear stress vs shear strain, same models
   03 torsion              torque and axial force from Rivlin's universal
                           torsion with the Arruda-Boyce law (quadrature in r)
@@ -42,14 +44,15 @@ STEP = re.compile(r"^step (\d+) t = ([0-9.eE+-]+) (probe|reaction) (\S+?)(?: at 
 
 def psi1_series(I1):
     """Psi_1 = dPsi/dI1 of this code's Arruda-Boyce (five-term series in I1/N)."""
+    I1 = np.asarray(I1, dtype=float)
     return G0 * sum((i + 1) * AB_C[i] * (I1 / N_CHAINS) ** i for i in range(5))
 
 
 def psi1_pade(I1):
     """Psi_1 of the reference: Gshear/2 with the Pade inverse Langevin,
     Gshear = G0 (lambda_L / (3 lambda_bar)) L^-1(lambda_bar / lambda_L)."""
-    lb = math.sqrt(I1 / 3.0)
-    z = min(lb / LAMBDA_L, 0.95)
+    lb = np.sqrt(np.asarray(I1, dtype=float) / 3.0)
+    z = np.minimum(lb / LAMBDA_L, 0.95)
     beta = z * (3.0 - z * z) / (1.0 - z * z)
     return 0.5 * G0 * LAMBDA_L / (3.0 * lb) * beta
 
@@ -96,10 +99,27 @@ def reaction(data, name):
 
 # ------------------------------------------------------------------ references
 
-def uniaxial_nominal(lam, psi1):
-    """Incompressible uniaxial tension: P = 2 Psi_1 (lambda - lambda^-2)."""
-    I1 = lam ** 2 + 2.0 / lam
-    return 2.0 * psi1(I1) * (lam - lam ** -2)
+def uniaxial_nominal(lam, psi1, kappa=KBULK):
+    """Nominal stress of homogeneous uniaxial tension of the decoupled model
+    sigma = 2 Psi_1(I1bar) J^-1 dev(Bbar) + kappa (J - 1) I with the lateral
+    stretch from sigma_22 = 0 (kappa = None: incompressible, 2 Psi_1 (lambda - lambda^-2))."""
+    lam = np.atleast_1d(np.asarray(lam, dtype=float))
+    if kappa is None:
+        I1 = lam ** 2 + 2.0 / lam
+        return 2.0 * psi1(I1) * (lam - lam ** -2)
+    from scipy.optimize import brentq
+    out = np.empty_like(lam)
+    for k, l1 in enumerate(lam):
+        def sigma22(l2):
+            J = l1 * l2 * l2
+            I1b = J ** (-2.0 / 3.0) * (l1 * l1 + 2.0 * l2 * l2)
+            return 2.0 * float(psi1(I1b)) * J ** (-5.0 / 3.0) * (l2 * l2 - l1 * l1) / 3.0 + kappa * (J - 1.0)
+        l2 = brentq(sigma22, 0.2, 1.5)
+        J = l1 * l2 * l2
+        I1b = J ** (-2.0 / 3.0) * (l1 * l1 + 2.0 * l2 * l2)
+        s11 = 2.0 * float(psi1(I1b)) * J ** (-5.0 / 3.0) * 2.0 * (l1 * l1 - l2 * l2) / 3.0 + kappa * (J - 1.0)
+        out[k] = s11 * J / l1
+    return out
 
 
 def shear_nominal(gamma, psi1):
@@ -152,7 +172,9 @@ def plot_01(data, ax):
     ax.plot(lam, f[:, 1] / 100.0 / 1e3, "o-", ms=3, label="this code (reaction / area)")
     lam_ref = np.linspace(1.0, lam.max(), 200)
     for label, psi1, ls in MODELS:
-        ax.plot(lam_ref, uniaxial_nominal(lam_ref, psi1) / 1e3, ls, label=f"homogeneous, {label}")
+        ax.plot(lam_ref, uniaxial_nominal(lam_ref, psi1) / 1e3, ls, label=f"homogeneous, K = 1000 G, {label}")
+    ax.plot(lam_ref, uniaxial_nominal(lam_ref, psi1_series, None) / 1e3, ":", color="C1", alpha=0.7,
+            label="homogeneous, incompressible, series")
     ax.set_xlabel("stretch")
     ax.set_ylabel("nominal stress P22 (MPa)")
     ax.set_title("01 uniaxial tension")
@@ -252,7 +274,7 @@ def plot_09(data, ax):
     lam = (10.0 + u[:, 1]) / 10.0
     ax.plot(lam, f[:, 1] / 100.0 / 1e3, "o-", ms=3, label="cube with inclusion, this code")
     lam_ref = np.linspace(1.0, lam.max(), 200)
-    ax.plot(lam_ref, uniaxial_nominal(lam_ref, psi1_series) / 1e3, "-", label="matrix alone, homogeneous")
+    ax.plot(lam_ref, uniaxial_nominal(lam_ref, psi1_series) / 1e3, "-", label="matrix alone, homogeneous (K = 1000 G)")
     ax.set_xlabel("stretch")
     ax.set_ylabel("nominal stress P22 (MPa)")
     ax.set_title("09 spherical inclusion")
