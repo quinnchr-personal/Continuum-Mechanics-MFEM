@@ -47,8 +47,8 @@ apps/           solid_mechanics.cpp (YAML parsing and wiring only), apps/mesh/*.
                 apps/input/finite_elasticity/:
                   cooks_membrane/ (compressible, incompressible and nearly incompressible Cook's
                     membrane; literature benchmark, frozen regression values),
-                  verification/ (cases checked against a reference in the test suite: cantilever3d.yaml
-                    vs Euler-Bernoulli in the small-load limit, cylinder_inflation.yaml vs the Rivlin
+                  verification/ (cases checked against a reference in the test suite: euler_bernoulli_cantilever3d.yaml
+                    vs Euler-Bernoulli in the small-load limit, rivlin_cylinder_inflation.yaml vs the Rivlin
                     inflation, homogeneous_deformations/*.yaml vs the closed forms of the incompressible
                     neo-Hookean model through apps/homogeneous_compare.py; any of the six models works in
                     those inputs and tests/test_homogeneous covers all six);
@@ -105,7 +105,7 @@ and the probe at the top-right corner (48, 60); the frozen regression value
 on the 64x64 p = 2 mesh is uy = 4.905891700497 (30.7% of the 16 mm edge).
 ParaView output goes to `out/cook/cook` (`displacement` for Warp by Vector,
 `vonmises`, `jacobian`), one cycle per load step. The 3D cantilever of the
-linear-limit test runs the same way from `apps/input/finite_elasticity/verification/cantilever3d.yaml`.
+linear-limit test runs the same way from `apps/input/finite_elasticity/verification/euler_bernoulli_cantilever3d.yaml`.
 
 The incompressible variant of the same benchmark (mixed u-p formulation,
 isochoric neo-Hookean with mu = 80.194, resultant 100, the pressure a
@@ -225,7 +225,7 @@ reassembled at every step; the others once.
 indices) prescribes only those components; the others on that boundary are
 free (natural). Rollers and symmetry planes are then one line each, e.g.
 `apps/input/finite_elasticity/verification/homogeneous_deformations/symmetry_uniaxial_neo_hookean.yaml` (an octant of
-the uniaxial cube with three rollers) and `apps/input/finite_elasticity/verification/cylinder_inflation.yaml`
+the uniaxial cube with three rollers) and `apps/input/finite_elasticity/verification/rivlin_cylinder_inflation.yaml`
 (a quarter annulus). The data is still a full vector; the unlisted
 components are simply not applied.
 
@@ -235,7 +235,7 @@ follower_pressure` is a pressure per unit current area, `T = -p J F^-T N`,
 which depends on the displacement and enters the nonlinear form as a
 boundary face term with its own (non-symmetric) tangent by dual numbers;
 `solver.linear.type: cg_amg` is refused for such inputs. The two coincide
-at `F = I` and differ at second order in `p`. `cylinder_inflation.yaml`
+at `F = I` and differ at second order in `p`. `rivlin_cylinder_inflation.yaml`
 reproduces the closed-form inflation of a thick-walled incompressible
 cylinder (Rivlin) to 1e-6 on the 4 x 8 mesh with one refinement.
 

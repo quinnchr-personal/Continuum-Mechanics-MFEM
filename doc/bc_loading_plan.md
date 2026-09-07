@@ -259,7 +259,7 @@ as now.
   - Inflation of a thick-walled incompressible neo-Hookean cylinder under internal follower
     pressure (2D plane strain, quarter model with `components` rollers from L3): compare
     inner-radius stretch with the closed-form relation of Rivlin (Ogden, *Non-linear Elastic
-    Deformations*, Sec. 5.3.1). Add `apps/input/finite_elasticity/verification/cylinder_inflation.yaml` and the Gmsh `.geo`.
+    Deformations*, Sec. 5.3.1). Add `apps/input/finite_elasticity/verification/rivlin_cylinder_inflation.yaml` and the Gmsh `.geo`.
 - **Acceptance:** above tests; `doc/solid_mechanics_forms.tex` gains the follower-pressure
   weak form and tangent; the TODO seam at `solid_mechanics_tl.cpp:171` is removed.
 

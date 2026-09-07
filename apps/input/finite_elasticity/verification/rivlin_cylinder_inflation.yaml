@@ -24,7 +24,7 @@ solver:
   newton: { rtol: 1e-10, atol: 1e-12, max_it: 30 }
   linear: { type: gmres_amg, rtol: 1e-12, max_it: 400, krylov_dim: 100, inner_rtol: 1e-4, inner_max_it: 100 }
 output:
-  paraview: out/cylinder_inflation
+  paraview: out/rivlin_cylinder_inflation
   fields: [displacement, pressure, vonmises, jacobian, cauchy_stress]
   probes:
     - { name: inner, point: [1.0, 0.0] }

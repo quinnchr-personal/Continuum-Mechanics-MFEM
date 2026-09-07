@@ -649,7 +649,7 @@ void FollowerVsDeadTest()
 }
 
 // Thick-walled incompressible cylinder under internal follower pressure
-// (apps/input/finite_elasticity/verification/cylinder_inflation.yaml) vs the closed-form inflation.
+// (apps/input/finite_elasticity/verification/rivlin_cylinder_inflation.yaml) vs the closed-form inflation.
 void CylinderInflationTest()
 {
   const double mu = 1.0, A = 1.0, B = 2.0, P = 0.3;
@@ -667,7 +667,7 @@ void CylinderInflationTest()
   const double a_exact = 0.5 * (lo + hi);
   const double b_exact = std::sqrt(B * B - A * A + a_exact * a_exact);
 
-  cmf::AppConfig cfg = cmf::LoadConfig("apps/input/finite_elasticity/verification/cylinder_inflation.yaml");
+  cmf::AppConfig cfg = cmf::LoadConfig("apps/input/finite_elasticity/verification/rivlin_cylinder_inflation.yaml");
   cfg.output.paraview.clear();
   cfg.output.fields = {"displacement"};
   cfg.solver.newton.print_level = 0;
