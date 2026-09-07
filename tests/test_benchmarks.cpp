@@ -196,7 +196,7 @@ void CookTest(bool cook_ratio_gate)
 
 void CantileverTest()
 {
-  cmf::AppConfig cfg = cmf::LoadConfig("apps/input/finite_elasticity/cantilever3d.yaml");
+  cmf::AppConfig cfg = cmf::LoadConfig("apps/input/finite_elasticity/verification/cantilever3d.yaml");
   cfg.output.paraview.clear();
   cfg.solver.newton.print_level = 0;
   cfg.solver.linear.rtol = 1e-13;

@@ -152,7 +152,7 @@ homogeneous: $(APP)
 test: check $(APP) $(BUILD_DIR)/tests/test_benchmarks $(BUILD_DIR)/tests/test_parallel
 	$(APP) -i apps/input/finite_elasticity/cooks_membrane/cook.yaml
 	$(MFEM_MPIEXEC) -np 4 $(APP) -i apps/input/finite_elasticity/cooks_membrane/cook.yaml
-	$(APP) -i apps/input/finite_elasticity/cantilever3d.yaml
+	$(APP) -i apps/input/finite_elasticity/verification/cantilever3d.yaml
 	mkdir -p $(TEST_OUT)
 	$(BUILD_DIR)/tests/test_parallel --write $(TEST_OUT)/parallel_reference.txt
 	$(MFEM_MPIEXEC) -np 2 $(BUILD_DIR)/tests/test_parallel --check $(TEST_OUT)/parallel_reference.txt

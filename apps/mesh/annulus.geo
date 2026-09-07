@@ -3,7 +3,7 @@
 //   gmsh -2 -order 2 -format msh22 -o annulus.msh annulus.geo
 // Physical groups: bottom (y = 0) 1, outer (r = B) 2, left (x = 0) 3,
 // inner (r = A) 4; surface "domain" (1). The thick-walled cylinder under
-// internal pressure of apps/input/finite_elasticity/cylinder_inflation.yaml.
+// internal pressure of apps/input/finite_elasticity/verification/cylinder_inflation.yaml.
 DefineConstant[ A = {1.0}, B = {2.0}, nr = {4}, nt = {8} ];
 Point(1) = {0, 0, 0};
 Point(2) = {A, 0, 0};
