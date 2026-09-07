@@ -31,7 +31,7 @@ namespace
 // the YAML loads removed so each test installs its own.
 cmf::AppConfig CookConfig()
 {
-  cmf::AppConfig cfg = cmf::LoadConfig("apps/input/finite_elasticity/cook.yaml");
+  cmf::AppConfig cfg = cmf::LoadConfig("apps/input/finite_elasticity/cook/cook.yaml");
   cfg.output.paraview.clear();
   cfg.output.fields = {"displacement"};
   cfg.output.probes.clear();

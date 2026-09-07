@@ -87,8 +87,8 @@ int main(int argc, char *argv[])
     return 1;
   }
 
-  const std::vector<std::string> inputs = {"apps/input/finite_elasticity/cook.yaml",
-                                           "apps/input/finite_elasticity/cook_incompressible.yaml"};
+  const std::vector<std::string> inputs = {"apps/input/finite_elasticity/cook/cook.yaml",
+                                           "apps/input/finite_elasticity/cook/cook_incompressible.yaml"};
   std::vector<Norms> norms;
   for (const std::string &input : inputs)
   {

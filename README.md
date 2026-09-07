@@ -92,8 +92,8 @@ final step is green; the threshold is kept as written rather than relaxed.
 ### Running Cook's membrane
 
 ```
-./build/apps/solid_mechanics -i apps/input/finite_elasticity/cook.yaml
-mpirun -np 4 ./build/apps/solid_mechanics -i apps/input/finite_elasticity/cook.yaml
+./build/apps/solid_mechanics -i apps/input/finite_elasticity/cook/cook.yaml
+mpirun -np 4 ./build/apps/solid_mechanics -i apps/input/finite_elasticity/cook/cook.yaml
 ```
 
 Plane strain, NeoHookean with E = 250, nu = 0.3, left edge clamped, uniform
@@ -101,13 +101,13 @@ upward shear traction of 3.75 per unit reference length on the right edge
 (resultant 60). The run prints the Newton log, `|u|_L2`, the internal energy,
 and the probe at the top-right corner (48, 60); the frozen regression value
 on the 64x64 p = 2 mesh is uy = 4.905891700497 (30.7% of the 16 mm edge).
-ParaView output goes to `out/cook` (`displacement` for Warp by Vector,
+ParaView output goes to `out/cook/cook` (`displacement` for Warp by Vector,
 `vonmises`, `jacobian`), one cycle per load step. The 3D cantilever of the
 linear-limit test runs the same way from `apps/input/finite_elasticity/cantilever3d.yaml`.
 
 The incompressible variant of the same benchmark (mixed u-p formulation,
 isochoric neo-Hookean with mu = 80.194, resultant 100, the pressure a
-Lagrange multiplier) is `apps/input/finite_elasticity/cook_incompressible.yaml`; its frozen
+Lagrange multiplier) is `apps/input/finite_elasticity/cook/cook_incompressible.yaml`; its frozen
 value on the 32x32 Q2-Q1 mesh is corner uy = 6.930412595013 (43.3% of the
 edge), and `cook_nearly_incompressible.yaml` is the same problem with
 nu = 0.4999 (kappa = 4.0e5). Both add a `pressure` output field.
