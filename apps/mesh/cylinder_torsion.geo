@@ -1,6 +1,6 @@
 // Solid cylinder of radius R and length L along z (tetrahedra, second-order
 // geometry), the fixed-end torsion example of
-// apps/input/finite_elasticity/03_cylinder_torsion.yaml (after the FEniCSx
+// apps/input/anand_coupled_theories/finite_elasticity/03_cylinder_torsion.yaml (after the FEniCSx
 // example of solidmechanicscoupledtheories.github.io):
 //   gmsh -3 -order 2 -format msh22 -o cylinder_torsion.msh cylinder_torsion.geo
 // Physical groups: bottom (z = 0) 1, top (z = L) 2, wall 3; volume "domain" (1).

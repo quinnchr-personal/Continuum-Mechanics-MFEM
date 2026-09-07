@@ -111,8 +111,8 @@ $(MESH_DIR)/beam.msh: $(MESH_DIR)/box.geo
 	$(GMSH) -3 -format msh22 -setnumber Lx 10 -setnumber nx 20 -setnumber ny 2 -setnumber nz 2 -o $@ $< > /dev/null
 $(MESH_DIR)/annulus.msh: $(MESH_DIR)/annulus.geo
 	$(GMSH) -2 -order 2 -format msh22 -o $@ $< > /dev/null
-# Meshes of apps/input/finite_elasticity (the FEniCSx examples of
-# solidmechanicscoupledtheories.github.io, section 1).
+# Meshes of apps/input/anand_coupled_theories/finite_elasticity (the examples of Anand's book,
+# FEniCSx codes at solidmechanicscoupledtheories.github.io, section 1).
 $(MESH_DIR)/cube10.msh: $(MESH_DIR)/box.geo
 	$(GMSH) -3 -format msh22 -setnumber Lx 10 -setnumber Ly 10 -setnumber Lz 10 -setnumber nx 4 -setnumber ny 4 -setnumber nz 4 -o $@ $< > /dev/null
 $(MESH_DIR)/shear_cube.msh: $(MESH_DIR)/box.geo

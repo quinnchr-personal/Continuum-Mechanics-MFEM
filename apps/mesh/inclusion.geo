@@ -1,7 +1,7 @@
 // Octant of a cube of side L with a spherical inclusion of radius a centred at
 // the corner (the eighth-symmetry model of a 2L cube with a centred sphere),
 // tetrahedra graded towards the inclusion; the two-material example
-// apps/input/finite_elasticity/09_spherical_inclusion.yaml (after the FEniCSx
+// apps/input/anand_coupled_theories/finite_elasticity/09_spherical_inclusion.yaml (after the FEniCSx
 // example sphere_inclusion.geo of solidmechanicscoupledtheories.github.io):
 //   gmsh -3 -format msh22 -o inclusion.msh inclusion.geo
 // Physical groups: volumes inclusion 1, matrix 2; surfaces left (x = 0) 1,

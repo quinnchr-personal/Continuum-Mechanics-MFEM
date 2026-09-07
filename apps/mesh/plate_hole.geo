@@ -1,6 +1,6 @@
 // Quarter of a plate with a hole (L0 x W0 x t0 = 15 x 10 x 1, hole radius a = 3
 // at the corner), tetrahedra with second-order geometry; the tension example
-// apps/input/finite_elasticity/04_plate_with_hole.yaml (after the FEniCSx
+// apps/input/anand_coupled_theories/finite_elasticity/04_plate_with_hole.yaml (after the FEniCSx
 // example 3D_hip_v2.geo of solidmechanicscoupledtheories.github.io):
 //   gmsh -3 -order 2 -format msh22 -o plate_hole.msh plate_hole.geo
 // Physical groups: xbot (x = 0) 1, ybot (y = 0) 2, xtop (x = L0) 3, ytop (y = W0) 4,

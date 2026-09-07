@@ -1,6 +1,6 @@
 // Octant of a thick-walled sphere Ri <= r <= Ro (tetrahedra, second-order
 // geometry); the inflation example
-// apps/input/finite_elasticity/06_sphere_inflation.yaml (after the FEniCSx
+// apps/input/anand_coupled_theories/finite_elasticity/06_sphere_inflation.yaml (after the FEniCSx
 // example spherical_shell.geo of solidmechanicscoupledtheories.github.io):
 //   gmsh -3 -order 2 -format msh22 -o sphere_octant.msh sphere_octant.geo
 // Physical groups: xplane (x = 0) 1, yplane (y = 0) 2, zplane (z = 0) 3,

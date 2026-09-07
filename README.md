@@ -49,7 +49,8 @@ apps/           solid_mechanics.cpp (YAML parsing and wiring only), apps/input/*
                 models: plane strain, plane stress, uniaxial / equibiaxial / pure shear in 3D, the
                 uniaxial symmetry model) with apps/homogeneous_compare.py (runs them against the
                 closed forms); apps/input/cylinder_inflation.yaml (follower pressure vs Rivlin);
-                apps/input/finite_elasticity/*.yaml (the FEniCSx finite elasticity examples)
+                apps/input/anand_coupled_theories/<chapter>/*.yaml (the examples of Anand's coupled-theories
+                book, from its FEniCSx companion codes; finite_elasticity so far)
 tests/          test_base, test_materials, test_solid_mms, test_mixed, test_homogeneous, test_loading
                 (make check); test_mixed --full, test_benchmarks, test_parallel, homogeneous compare,
                 test_loading np=4 (make test); tests/input/*.yaml (inputs of the tests)
@@ -266,11 +267,13 @@ Not supported: point loads and nodal constraints (use a small physical
 group), multi-point or periodic constraints, contact, true dynamics (`t` is
 a pseudo-time), automatic step growth after a bisection.
 
-### Finite elasticity examples (`apps/input/finite_elasticity/`)
+### Anand's coupled-theories examples (`apps/input/anand_coupled_theories/`)
 
-The ten "Finite Elasticity" examples of the FEniCSx companion to *Introduction
-to coupled theories in solid mechanics* (solidmechanicscoupledtheories.github.io,
-section 1) as inputs of this code: Arruda-Boyce with
+Inputs after the FEniCSx companion codes of Lallit Anand's *Introduction to
+coupled theories in solid mechanics* (Oxford University Press, 2025;
+solidmechanicscoupledtheories.github.io, codes by Eric Stewart and Lallit
+Anand), one subdirectory per chapter of the site. `finite_elasticity/` holds
+the ten "1. Finite Elasticity" examples: Arruda-Boyce with
 G0 = 280 kPa, lambda_L = 5.12 and K = 1000 G0 in kPa and mm, mixed Q2-Q1 or
 P2-P1, the same geometry, boundary conditions, load histories and step counts.
 Meshes come from `apps/mesh/*.geo` (`make meshes`); the curved ones are

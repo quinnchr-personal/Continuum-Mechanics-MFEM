@@ -1,6 +1,6 @@
 // Cube of side L with the quarter patch x, y <= L/2 of its top face as a
 // separate surface (tetrahedra); the partial-face pressure example
-// apps/input/finite_elasticity/07_cube_footing.yaml (after the FEniCSx
+// apps/input/anand_coupled_theories/finite_elasticity/07_cube_footing.yaml (after the FEniCSx
 // example of solidmechanicscoupledtheories.github.io):
 //   gmsh -3 -format msh22 -o footing.msh footing.geo
 // Physical groups: left (x = 0) 1, front (y = 0) 2, bottom (z = 0) 3,

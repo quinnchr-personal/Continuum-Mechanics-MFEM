@@ -1,6 +1,6 @@
 // Quarter of a thick-walled tube Ri <= r <= Ro, 0 <= z <= L (tetrahedra,
 // second-order geometry); the inflation example
-// apps/input/finite_elasticity/05_cylinder_inflation.yaml (after the FEniCSx
+// apps/input/anand_coupled_theories/finite_elasticity/05_cylinder_inflation.yaml (after the FEniCSx
 // example cylinder_inflate.geo of solidmechanicscoupledtheories.github.io):
 //   gmsh -3 -order 2 -format msh22 -o tube_quarter.msh tube_quarter.geo
 // Physical groups: xplane (x = 0) 1, yplane (y = 0) 2, zbot (z = 0) 3,

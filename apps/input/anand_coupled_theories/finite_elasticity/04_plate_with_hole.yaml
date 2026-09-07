@@ -17,7 +17,7 @@ solver:
   newton: { rtol: 1e-8, atol: 1e-10, max_it: 30 }
   linear: { type: gmres_amg, rtol: 1e-10, max_it: 400, krylov_dim: 100, inner_rtol: 1e-4, inner_max_it: 200 }
 output:
-  paraview: out/finite_elasticity/04_plate_with_hole
+  paraview: out/anand_coupled_theories/finite_elasticity/04_plate_with_hole
   fields: [displacement, pressure, jacobian, vonmises, pk1_stress, cauchy_stress]
   probe_every_step: true            # the curves of the reference: probe values vs t
   probes:
