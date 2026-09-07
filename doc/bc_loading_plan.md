@@ -12,7 +12,11 @@ written with L1 (the shared `LoadSet` carries them) and tested in L4; the cylind
 uses a curved second-order Gmsh mesh (`apps/mesh/annulus.geo`) so refinement follows the
 arcs; in addition to L5, equibiaxial and pure-shear cube inputs for every incompressible
 model were added under `apps/input/homogeneous/` and the comparison script derives the
-free axis from the constrained faces.
+free axis from the constrained faces. After review the `value`/`gradient` data form
+(and the plain `body_force` list) was removed from the YAML schema at the user's request:
+every entry is an `expression`, the default schedule is the ramp unless the expression
+mentions `t`, and all inputs were rewritten (`["x", "-0.5*y"]` for an affine stretch).
+`AffineVectorCoefficient` remains as a programmatic helper for the tests.
 
 **Goal:** replace the single proportional load path (one `load_factor` scaling every
 Dirichlet value, traction and body force together, in `load_steps` equal increments) with a

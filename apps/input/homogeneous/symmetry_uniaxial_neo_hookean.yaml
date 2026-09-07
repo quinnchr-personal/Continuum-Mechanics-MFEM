@@ -12,11 +12,10 @@ mesh:
 material: { model: iso_neo_hookean, mu: 1.0, incompressible: true }
 bcs:
   dirichlet:
-    - { attr: [left],   value: [0.0, 0.0, 0.0], components: [x] }   # X = 0 symmetry plane
-    - { attr: [front],  value: [0.0, 0.0, 0.0], components: [y] }   # Y = 0
-    - { attr: [bottom], value: [0.0, 0.0, 0.0], components: [z] }   # Z = 0
-    - { attr: [right], value: [0.0, 0.0, 0.0], components: [x],
-        gradient: [[1, 0.0, 0.0], [0.0, -0.2928932188134525, 0.0], [0.0, 0.0, -0.2928932188134525]] }
+    - { attr: [left], expression: ["0", "0", "0"], components: [x] }   # X = 0 symmetry plane
+    - { attr: [front], expression: ["0", "0", "0"], components: [y] }   # Y = 0
+    - { attr: [bottom], expression: ["0", "0", "0"], components: [z] }   # Z = 0
+    - { attr: [right], expression: ["x", "-0.2928932188134525*y", "-0.2928932188134525*z"], components: [x] }
 solver:
   load_steps: 8
   newton: { rtol: 1e-11, atol: 1e-13, max_it: 30 }

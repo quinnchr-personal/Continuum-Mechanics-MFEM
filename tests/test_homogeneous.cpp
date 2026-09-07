@@ -578,12 +578,12 @@ void MeshFileTest()
     cfg.material.incompressible = true;
     cmf::BoundaryCondition bc;
     bc.attr_names = {"left", "right"};
-    bc.value.assign(dim, 0.0);
     for (int i = 0; i < dim; i++)
     {
-      std::vector<double> row(dim, 0.0);
-      row[i] = a.lam[i] - 1.0;
-      bc.gradient.push_back(row);
+      // u_i = (lambda_i - 1) X_i, written as the YAML expression string.
+      char buf[64];
+      std::snprintf(buf, sizeof(buf), "%.17g*%c", a.lam[i] - 1.0, "xyz"[i]);
+      bc.expression.push_back(buf);
     }
     cfg.bcs.dirichlet.push_back(bc);
     cfg.output.fields = {"displacement", "pressure"};
@@ -634,7 +634,7 @@ void MeshFileTest()
     cfg.material.nu = 0.3;
     cmf::BoundaryCondition bc;
     bc.attr_names = {"lefft"};
-    bc.value = {0.0, 0.0};
+    bc.expression = {"0", "0"};
     cfg.bcs.dirichlet.push_back(bc);
     std::unique_ptr<mfem::ParMesh> pmesh = cmf::BuildParMesh(MPI_COMM_WORLD, cfg.mesh);
     CHECK_THROWS(cmf::MakeSolidProblem(*pmesh, cfg), cmf::ConfigError,

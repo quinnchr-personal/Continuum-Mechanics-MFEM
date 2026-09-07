@@ -389,9 +389,9 @@ void FormulationAgreementTest(int finest_nx)
     cmf::AppConfig cfg = BaseConfig(nx, 2, 0.0, "iso_neo_hookean", 0.45, false);
     cmf::BoundaryCondition clamp, load;
     clamp.attr = {4};
-    clamp.value = {0.0, 0.0};
+    clamp.expression = {"0", "0"};
     load.attr = {2};
-    load.value = {0.0, 8.0};
+    load.expression = {"0", "8.0"};
     cfg.bcs.dirichlet.push_back(clamp);
     cfg.bcs.traction.push_back(load);
     cfg.solver.load_steps = 2;

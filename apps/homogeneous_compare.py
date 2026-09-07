@@ -14,15 +14,15 @@ quantities are compared in their nodal presentation and, where the input
 writes it, in their element-average presentation (rows tagged elem). The
 sigma and P rows report the largest error over the six Cauchy / nine first
 Piola-Kirchhoff components of the nodal stress fields, with the xx component
-shown. Each input is a box whose constrained faces carry the affine
-displacement u = gradient X (exactly one Dirichlet entry has the
-`gradient`; the others are zero rollers) and whose remaining faces are
-free, so the principal stretches are the diagonal of I + gradient (2D plane
-strain: the out-of-plane stretch is 1) and the principal stress of the
-first free axis vanishes (2D plane stress with every edge constrained: the
-thickness). Inputs with `expression` data have no closed form here and are
-refused. Exit status 1 if a run fails or any relative error exceeds the
-tolerance.
+shown. Each input is a box whose constrained faces carry an affine
+displacement u = G X written as expressions (exactly one Dirichlet entry is
+nonzero; the others are zero rollers) and whose remaining faces are free,
+so the principal stretches are the diagonal of I + G (2D plane strain: the
+out-of-plane stretch is 1) and the principal stress of the first free axis
+vanishes (2D plane stress with every edge constrained: the thickness). The
+expressions are evaluated here at the origin and the unit points, and must
+be affine and independent of t. Exit status 1 if a run fails or any
+relative error exceeds the tolerance.
 """
 import argparse
 import glob
@@ -74,6 +74,28 @@ def analytic(material, lam, free_axis=1):
     return sigma, p, vm
 
 
+def evaluate(expr, x, y, z, t=1.0):
+    """Evaluate a data expression of the input schema (README grammar) in Python."""
+    env = {"x": x, "y": y, "z": z, "t": t, "pi": math.pi, "sin": math.sin, "cos": math.cos, "tan": math.tan,
+           "exp": math.exp, "log": math.log, "sqrt": math.sqrt, "abs": abs, "pow": math.pow, "min": min,
+           "max": max, "if": lambda c, a, b: a if c else b}
+    return float(eval(expr.replace("^", "**").replace("if(", "if_("), {"__builtins__": {}}, dict(env, if_=env["if"])))
+
+
+def affine_data(expression, dim):
+    """value and G of u = value + G X from expression strings; None if not affine."""
+    unit = [[1.0 if i == j else 0.0 for j in range(3)] for i in range(3)]
+    value = [evaluate(e, 0.0, 0.0, 0.0) for e in expression]
+    G = [[evaluate(expression[i], *unit[j]) - value[i] for j in range(dim)] for i in range(dim)]
+    # Affinity check at a third point and independence of t.
+    for i, e in enumerate(expression):
+        pt = [0.3, -0.7, 0.4][:dim] + [0.0] * (3 - dim)
+        want = value[i] + sum(G[i][j] * pt[j] for j in range(dim))
+        if abs(evaluate(e, *pt) - want) > 1e-12 or abs(evaluate(e, *pt, t=0.25) - want) > 1e-12:
+            return None
+    return value, G
+
+
 # Faces of apps/mesh/square.geo and box.geo by axis: (name at X_a = 0, name at X_a = L).
 FACES = {2: [("left", "right"), ("bottom", "top")],
          3: [("left", "right"), ("front", "back"), ("bottom", "top")]}
@@ -82,15 +104,20 @@ FACES = {2: [("left", "right"), ("bottom", "top")],
 def load_case(path):
     cfg = yaml.safe_load(open(path))
     dirichlet = cfg["bcs"]["dirichlet"]
-    for bc in dirichlet + cfg["bcs"].get("traction", []):
-        if "expression" in bc:
-            raise SystemExit(f"{path}: entries with 'expression' have no closed form to compare against")
-    grads = [bc for bc in dirichlet if "gradient" in bc]
-    if len(grads) != 1:
-        raise SystemExit(f"{path}: expected exactly one Dirichlet entry with a gradient")
-    G = grads[0]["gradient"]
+    if cfg["bcs"].get("traction"):
+        raise SystemExit(f"{path}: homogeneous inputs have no tractions")
+    loaded = []
+    for bc in dirichlet:
+        dim = len(bc["expression"])
+        data = affine_data(bc["expression"], dim)
+        if data is None:
+            raise SystemExit(f"{path}: Dirichlet data must be affine in X and independent of t")
+        if any(abs(g) > 0.0 for row in data[1] for g in row) or any(abs(v) > 0.0 for v in data[0]):
+            loaded.append(data)
+    if len(loaded) != 1:
+        raise SystemExit(f"{path}: expected exactly one nonzero Dirichlet entry (the affine stretch)")
+    value, G = loaded[0]
     dim = len(G)
-    value = grads[0]["value"]
     lam = [G[i][i] + 1.0 for i in range(dim)]
     if dim == 2:
         # plane strain: lambda3 = 1; plane stress: the thickness stretch of an

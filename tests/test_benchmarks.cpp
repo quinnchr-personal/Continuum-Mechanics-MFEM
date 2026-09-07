@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "base/config.hpp"
+#include "base/expression.hpp"
 #include "base/mesh_input.hpp"
 #include "base/probes.hpp"
 #include "kernels/total_lagrangian.hpp"
@@ -142,7 +143,7 @@ void CookTest(bool cook_ratio_gate)
   cfg.solver.newton.print_level = 0;
   cfg.solver.newton.rtol = 1e-11;
   cfg.solver.linear.rtol = 1e-13;
-  const double traction = cfg.bcs.traction.at(0).value.at(1);
+  const double traction = cmf::Expression::Parse(cfg.bcs.traction.at(0).expression.at(1)).Eval(0, 0, 0, 1);
   std::printf("  cook: traction %.4f per unit length, resultant %.3f\n", traction, 16.0 * traction);
   // Base 4x4 mesh plus 4 uniform refinements (up to 64x64, p = 2).
   std::vector<double> corner;
@@ -203,7 +204,7 @@ void CantileverTest()
   mfem::Vector bb_min, bb_max;
   cmf::BuildSerialMesh(cfg.mesh)->GetBoundingBox(bb_min, bb_max);
   const double L = bb_max(0) - bb_min(0), w = bb_max(1) - bb_min(1), h = bb_max(2) - bb_min(2);
-  const double P = -cfg.bcs.traction.at(0).value.at(2) * w * h; // resultant
+  const double P = -cmf::Expression::Parse(cfg.bcs.traction.at(0).expression.at(2)).Eval(0, 0, 0, 1) * w * h; // resultant
   const double I = w * h * h * h / 12.0;
   const double euler_bernoulli = P * L * L * L / (3.0 * cfg.material.E * I);
 

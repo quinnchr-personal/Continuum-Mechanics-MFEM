@@ -98,21 +98,19 @@ struct Schedule
 
 // Boundary attributes by number (attr) and/or by physical-group name
 // (attr_names, resolved against the mesh when the physics is built). The
-// data is either value + gradient X in the reference coordinates X (gradient
-// optional; affine, for homogeneous deformation tests) or `expression`, one
-// string f(x, y, z, t) per component (base/expression.hpp; a single string
-// for the scalar pressure types). Dirichlet entries may restrict the
+// data is `expression`: one string f(x, y, z, t) per component in the
+// reference coordinates and the pseudo-time (base/expression.hpp; a single
+// string for the scalar pressure types). Dirichlet entries may restrict the
 // prescribed components (empty = all). Every entry carries a schedule; its
-// data is schedule(t) * data (an expression entry defaults to the constant
-// schedule, t entering through the function). Traction types: vector
-// (nominal traction per reference area), pressure (dead, T = -p N),
-// follower_pressure (T = -p J F^{-T} N per current area).
+// data is schedule(t) * f. The default schedule is the ramp s = t unless the
+// expression mentions t, in which case it is constant (t enters through the
+// function only). Traction types: vector (nominal traction per reference
+// area), pressure (dead, T = -p N), follower_pressure (T = -p J F^{-T} N per
+// current area).
 struct BoundaryCondition
 {
   std::vector<int> attr;
   std::vector<std::string> attr_names;
-  std::vector<double> value;
-  std::vector<std::vector<double>> gradient;
   std::vector<std::string> expression;
   std::vector<int> components;   // Dirichlet only; 0-based, empty = all
   Schedule schedule;
@@ -126,14 +124,13 @@ struct BCConfig
   std::vector<BoundaryCondition> traction;
 };
 
-// Body force per unit mass (rho0 b enters the weak form): value or
-// expression (one string per component), with a schedule.
+// Body force per unit mass (rho0 b enters the weak form): an expression per
+// component, with a schedule (same default rule as the boundary entries).
 struct BodyForceConfig
 {
-  std::vector<double> value;
   std::vector<std::string> expression;
   Schedule schedule;
-  bool Empty() const { return value.empty() && expression.empty(); }
+  bool Empty() const { return expression.empty(); }
 };
 
 struct NewtonConfig

@@ -725,9 +725,12 @@ tension to $\lambda = 2$, thickness stretch $\lambda^{-1/2}$, no pressure
 unknown) and \code{uniaxial\_<model>.yaml} (unit cube \code{apps/mesh/cube.msh},
 uniaxial tension to $\lambda = 2$, the affine displacement of Section 4.1
 prescribed on the faces \code{left} and \code{right}, the four lateral faces
-free) exist for all six models.  Their
-Dirichlet entries carry a \code{gradient} key, so the data is
-$\bu = \bm{G}\bX$ with $\bm{G} = \operatorname{diag}(\lambda_a - 1)$.
+free) exist for all six models, together with equibiaxial and pure-shear
+cubes (\code{equibiaxial\_<model>.yaml}, \code{pure\_shear\_<model>.yaml};
+Sections 4.2 and 4.3, the faces $Z = 0, 1$ free) and the uniaxial symmetry
+model with rollers.  Their Dirichlet entries write the affine data
+$\bu = \bm{G}\bX$, $\bm{G} = \operatorname{diag}(\lambda_a - 1)$, as
+expression strings (e.g.\ \code{["x", "-0.5*y"]}).
 \code{apps/homogeneous\_compare.py} runs them and prints the probed
 displacement, pressure, von Mises stress, $J$, and the components of
 $\bsig$ and $\bP$ next to the closed forms of Sections 4.1 and 5.1

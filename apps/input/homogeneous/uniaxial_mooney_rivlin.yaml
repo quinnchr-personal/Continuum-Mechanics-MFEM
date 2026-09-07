@@ -13,7 +13,7 @@ mesh:
 material: { model: mooney_rivlin, c1: 0.4, c2: 0.1, incompressible: true }
 bcs:
   dirichlet:
-    - { attr: [left, right], value: [0.0, 0.0, 0.0], gradient: [[1, 0.0, 0.0], [0.0, -0.2928932188134525, 0.0], [0.0, 0.0, -0.2928932188134525]] }
+    - { attr: [left, right], expression: ["x", "-0.2928932188134525*y", "-0.2928932188134525*z"] }
 solver:
   load_steps: 8
   newton: { rtol: 1e-11, atol: 1e-13, max_it: 30 }

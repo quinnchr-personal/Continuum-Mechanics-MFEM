@@ -12,9 +12,8 @@ mesh:
   order: 2
 material: { model: neo_hookean, E: 250.0, nu: 0.3, rho0: 1.0 }
 bcs:
-  dirichlet: [ { attr: [left], value: [0.0, 0.0, 0.0] } ]
-  traction:  [ { attr: [right], value: [0.0, 0.0, -2.0e-5] } ]
-body_force: [0.0, 0.0, 0.0]
+  dirichlet: [ { attr: [left], expression: ["0", "0", "0"] } ]
+  traction:  [ { attr: [right], expression: ["0", "0", "-2e-05"] } ]
 solver:
   load_steps: 1
   # rtol 1e-6 of the 5e-6 initial residual is ~10x above the round-off floor

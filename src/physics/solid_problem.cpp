@@ -58,31 +58,15 @@ void InstallYamlLoads(SolidProblem &problem, mfem::Mesh &mesh, const AppConfig &
   if (!cfg.body_force.Empty())
   {
     const BodyForceConfig &bf = cfg.body_force;
+    if (int(bf.expression.size()) != dim)
+    {
+      throw ConfigError("body_force.expression has " + std::to_string(bf.expression.size()) +
+                        " entries, expected " + std::to_string(dim));
+    }
+    owned_vectors.push_back(std::make_unique<ExpressionVectorCoefficient>(bf.expression));
     BCOptions opt;
     opt.schedule = bf.schedule;
-    if (!bf.expression.empty())
-    {
-      if (int(bf.expression.size()) != dim)
-      {
-        throw ConfigError("body_force.expression has " + std::to_string(bf.expression.size()) +
-                          " entries, expected " + std::to_string(dim));
-      }
-      std::vector<Expression> f;
-      for (const std::string &e : bf.expression) { f.push_back(Expression::Parse(e)); }
-      owned_vectors.push_back(std::make_unique<ExpressionVectorCoefficient>(f));
-      opt.time_dependent = ExpressionsUseTime(bf.expression);
-    }
-    else
-    {
-      if (int(bf.value.size()) != dim)
-      {
-        throw ConfigError("body_force has " + std::to_string(bf.value.size()) +
-                          " entries, expected " + std::to_string(dim));
-      }
-      mfem::Vector v(dim);
-      for (int i = 0; i < dim; i++) { v(i) = bf.value[i]; }
-      owned_vectors.push_back(std::make_unique<mfem::VectorConstantCoefficient>(v));
-    }
+    opt.time_dependent = ExpressionsUseTime(bf.expression);
     problem.SetBodyForce(*owned_vectors.back(), opt);
   }
 }

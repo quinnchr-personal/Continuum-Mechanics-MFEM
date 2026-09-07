@@ -184,9 +184,9 @@ const char *kGoodYaml = R"(
 mesh: { file: apps/mesh/cook.msh, serial_refine: 1, parallel_refine: 0, order: 2 }
 material: { model: neo_hookean, E: 250.0, nu: 0.3, rho0: 1.0 }
 bcs:
-  dirichlet: [ { attr: [4], value: [0.0, 0.0] } ]
-  traction:  [ { attr: [2], value: [0.0, 6.25] } ]
-body_force: [0.0, 0.0]
+  dirichlet: [ { attr: [4], expression: ["0", "0"] } ]
+  traction:  [ { attr: [2], expression: ["0", "6.25"] } ]
+body_force: { expression: ["0", "0"] }
 solver: { load_steps: 1, newton: { rtol: 1e-10, atol: 1e-12, max_it: 25 },
           linear: { type: gmres_amg, rtol: 1e-12, max_it: 500 } }
 output: { paraview: out/cook, fields: [displacement, vonmises] }
@@ -201,8 +201,8 @@ void TestYaml()
   CHECK(cfg.material.model == "neo_hookean");
   CHECK_CLOSE(cfg.material.E, 250.0, 0.0);
   CHECK(cfg.bcs.dirichlet.size() == 1 && cfg.bcs.dirichlet[0].attr[0] == 4);
-  CHECK(cfg.bcs.traction.size() == 1 && cfg.bcs.traction[0].value[1] == 6.25);
-  CHECK(cfg.body_force.value.size() == 2);
+  CHECK(cfg.bcs.traction.size() == 1 && cfg.bcs.traction[0].expression[1] == "6.25");
+  CHECK(cfg.body_force.expression.size() == 2);
   CHECK(cfg.solver.newton.max_it == 25 && cfg.solver.linear.type == "gmres_amg");
   CHECK_CLOSE(cfg.solver.linear.rtol, 1e-12, 0.0);
   CHECK(cfg.output.paraview == "out/cook" && cfg.output.fields.size() == 2);
@@ -247,12 +247,12 @@ void TestYaml()
     cmf::ConfigError, "mesh.file");
   CHECK_THROWS(cmf::ParseConfig(YAML::Load(
     "mesh: { file: square.msh }\nmaterial: { model: neo_hookean, E: 1.0, nu: 0.3 }\n"
-    "bcs: { dirichlet: [ { attr: 1, value: [0, 0] } ] }\n")),
+    "bcs: { dirichlet: [ { attr: 1, expression: [\"0\", \"0\"] } ] }\n")),
     cmf::ConfigError, "bcs.dirichlet[0].attr");
   CHECK_THROWS(cmf::ParseConfig(YAML::Load(
     "mesh: { file: square.msh }\nmaterial: { model: neo_hookean, E: 1.0, nu: 0.3 }\n"
     "bcs: { traction: [ { attr: [2] } ] }\n")),
-    cmf::ConfigError, "bcs.traction[0].value");
+    cmf::ConfigError, "bcs.traction[0].expression");
   CHECK_THROWS(cmf::ParseConfig(YAML::Load(
     "mesh: { file: square.msh }\nmaterial: 42\n")),
     cmf::ConfigError, "'material' must be a map");
@@ -306,13 +306,13 @@ void TestYaml()
   {
     const cmf::AppConfig c = cmf::ParseConfig(YAML::Load(
       "mesh: { file: square.msh }\nmaterial: { model: neo_hookean, E: 1.0, nu: 0.3 }\n"
-      "bcs: { dirichlet: [ { attr: [left, 2, top], value: [0, 0] } ] }\n"));
+      "bcs: { dirichlet: [ { attr: [left, 2, top], expression: [\"0\", \"0\"] } ] }\n"));
     const cmf::BoundaryCondition &bc = c.bcs.dirichlet.at(0);
     CHECK(bc.attr.size() == 1 && bc.attr[0] == 2);
     CHECK(bc.attr_names.size() == 2 && bc.attr_names[0] == "left" && bc.attr_names[1] == "top");
     CHECK_THROWS(cmf::ParseConfig(YAML::Load(
       "mesh: { file: square.msh }\nmaterial: { model: neo_hookean, E: 1.0, nu: 0.3 }\n"
-      "bcs: { dirichlet: [ { attr: [], value: [0, 0] } ] }\n")),
+      "bcs: { dirichlet: [ { attr: [], expression: [\"0\", \"0\"] } ] }\n")),
       cmf::ConfigError, "bcs.dirichlet[0].attr");
     // Resolution against a mesh: numbers must exist, names come from the
     // boundary attribute sets (Gmsh physical names).
@@ -384,11 +384,11 @@ void TestLoading()
     const cmf::AppConfig c = cmf::ParseConfig(YAML::Load(head +
       "bcs:\n"
       "  dirichlet:\n"
-      "    - { attr: [left], value: [0, 0], components: [x] }\n"
-      "    - { attr: [bottom], value: [0, 0], components: [1], schedule: { type: ramp, from: 0.5 } }\n"
+      "    - { attr: [left], expression: [\"0\", \"0\"], components: [x] }\n"
+      "    - { attr: [bottom], expression: [\"0\", \"0\"], components: [1], schedule: { type: ramp, from: 0.5 } }\n"
       "  traction:\n"
-      "    - { attr: [right], value: [0, 1], schedule: { type: table, t: [0, 0.5, 1], s: [0, 1, 0] } }\n"
-      "body_force: { value: [0, -1], schedule: { type: constant } }\n"
+      "    - { attr: [right], expression: [\"0\", \"1\"], schedule: { type: table, t: [0, 0.5, 1], s: [0, 1, 0] } }\n"
+      "body_force: { expression: [\"0\", \"-1\"], schedule: { type: constant } }\n"
       "solver: { steps: [ { to: 0.5, n: 2 }, { to: 1.0, n: 3 } ], "
       "substep: { on_failure: true, max_bisections: 3, min_dt: 0.01 } }\n"));
     CHECK(c.bcs.dirichlet[0].components == std::vector<int>({0}));
@@ -398,7 +398,7 @@ void TestLoading()
     CHECK(c.bcs.traction[0].schedule.kind == cmf::Schedule::Kind::Table);
     CHECK_CLOSE(c.bcs.traction[0].schedule.Eval(0.75), 0.5, 1e-15);
     CHECK(c.body_force.schedule.kind == cmf::Schedule::Kind::Constant);
-    CHECK(c.body_force.value.size() == 2);
+    CHECK(c.body_force.expression.size() == 2);
     CHECK(c.solver.load_steps == 5);
     const std::vector<double> want = {0.25, 0.5, 0.5 + 1.0 / 6.0, 0.5 + 2.0 / 6.0, 1.0};
     CHECK(c.solver.breakpoints.size() == 5);
@@ -412,7 +412,7 @@ void TestLoading()
   // Defaults: ramp schedules, all components, no breakpoints, no bisection.
   {
     const cmf::AppConfig c = cmf::ParseConfig(YAML::Load(head +
-      "bcs: { dirichlet: [ { attr: [left], value: [0, 0] } ] }\nbody_force: [0, -1]\n"
+      "bcs: { dirichlet: [ { attr: [left], expression: [\"0\", \"0\"] } ] }\nbody_force: { expression: [\"0\", \"-1\"] }\n"
       "solver: { load_steps: 4 }\n"));
     CHECK(c.bcs.dirichlet[0].components.empty());
     CHECK(c.bcs.dirichlet[0].schedule.kind == cmf::Schedule::Kind::Ramp);
@@ -421,25 +421,25 @@ void TestLoading()
     CHECK(!c.solver.substep.on_failure);
   }
   CHECK_THROWS(cmf::ParseConfig(YAML::Load(head +
-    "bcs: { dirichlet: [ { attr: [left], value: [0, 0], components: [x, x] } ] }\n")),
+    "bcs: { dirichlet: [ { attr: [left], expression: [\"0\", \"0\"], components: [x, x] } ] }\n")),
     cmf::ConfigError, "bcs.dirichlet[0].components");
   CHECK_THROWS(cmf::ParseConfig(YAML::Load(head +
-    "bcs: { dirichlet: [ { attr: [left], value: [0, 0], components: [w] } ] }\n")),
+    "bcs: { dirichlet: [ { attr: [left], expression: [\"0\", \"0\"], components: [w] } ] }\n")),
     cmf::ConfigError, "components[0]");
   CHECK_THROWS(cmf::ParseConfig(YAML::Load(head +
-    "bcs: { traction: [ { attr: [left], value: [0, 0], components: [x] } ] }\n")),
+    "bcs: { traction: [ { attr: [left], expression: [\"0\", \"0\"], components: [x] } ] }\n")),
     cmf::ConfigError, "Dirichlet entries only");
   CHECK_THROWS(cmf::ParseConfig(YAML::Load(head +
-    "bcs: { dirichlet: [ { attr: [left], value: [0, 0], schedule: { type: sine } } ] }\n")),
+    "bcs: { dirichlet: [ { attr: [left], expression: [\"0\", \"0\"], schedule: { type: sine } } ] }\n")),
     cmf::ConfigError, "unknown schedule 'sine'");
   CHECK_THROWS(cmf::ParseConfig(YAML::Load(head +
-    "bcs: { dirichlet: [ { attr: [left], value: [0, 0], schedule: { type: ramp, from: 0.7, to: 0.2 } } ] }\n")),
+    "bcs: { dirichlet: [ { attr: [left], expression: [\"0\", \"0\"], schedule: { type: ramp, from: 0.7, to: 0.2 } } ] }\n")),
     cmf::ConfigError, "schedule.from");
   CHECK_THROWS(cmf::ParseConfig(YAML::Load(head +
-    "bcs: { dirichlet: [ { attr: [left], value: [0, 0], schedule: { type: table, t: [0, 1], s: [1] } } ] }\n")),
+    "bcs: { dirichlet: [ { attr: [left], expression: [\"0\", \"0\"], schedule: { type: table, t: [0, 1], s: [1] } } ] }\n")),
     cmf::ConfigError, "schedule.t");
   CHECK_THROWS(cmf::ParseConfig(YAML::Load(head +
-    "bcs: { dirichlet: [ { attr: [left], value: [0, 0], schedule: { type: table, t: [0.5, 0.2], s: [1, 2] } } ] }\n")),
+    "bcs: { dirichlet: [ { attr: [left], expression: [\"0\", \"0\"], schedule: { type: table, t: [0.5, 0.2], s: [1, 2] } } ] }\n")),
     cmf::ConfigError, "increase strictly");
   CHECK_THROWS(cmf::ParseConfig(YAML::Load(head +
     "solver: { steps: [ { to: 0.5, n: 2 } ] }\n")),
@@ -454,8 +454,10 @@ void TestLoading()
     "solver: { substep: { min_dt: 0 } }\n")),
     cmf::ConfigError, "solver.substep.min_dt");
   CHECK_THROWS(cmf::ParseConfig(YAML::Load(head + "body_force: { schedule: { type: constant } }\n")),
-    cmf::ConfigError, "body_force.value");
-  CHECK_THROWS(cmf::ParseConfig(YAML::Load(head + "body_force: { value: [0, 1], scale: 2 }\n")),
+    cmf::ConfigError, "body_force.expression");
+  CHECK_THROWS(cmf::ParseConfig(YAML::Load(head + "body_force: [0, 1]\n")),
+    cmf::ConfigError, "'body_force' must be a map");
+  CHECK_THROWS(cmf::ParseConfig(YAML::Load(head + "body_force: { expression: [\"0\", \"1\"], scale: 2 }\n")),
     cmf::ConfigError, "unknown key 'body_force.scale'");
 }
 
@@ -516,7 +518,7 @@ void TestExpression()
   CHECK_THROWS(cmf::Expression::Parse("1 < 2 < 3"), cmf::ConfigError, "do not chain");
   CHECK_THROWS(cmf::Expression::Parse("x $ 2"), cmf::ConfigError, "unexpected '$' at column 3");
 
-  // YAML: expression entries, defaults, exclusivity with value, errors by key.
+  // YAML: expression entries, default schedules, errors by key.
   const std::string head =
     "mesh: { file: square.msh }\nmaterial: { model: neo_hookean, E: 1.0, nu: 0.3 }\n";
   {
@@ -526,20 +528,21 @@ void TestExpression()
       "  traction:\n"
       "    - { attr: [right], expression: [\"0\", \"if(t < 0.5, 2*t, 1)\"], schedule: { type: ramp } }\n"
       "    - { attr: [left], type: pressure, expression: \"0.3*t\" }\n"
-      "    - { attr: [bottom], type: follower_pressure, value: 0.2 }\n"
+      "    - { attr: [bottom], type: follower_pressure, expression: \"0.2\" }\n"
       "body_force: { expression: [\"0\", \"-9.81*t\"] }\n"));
-    CHECK(c.bcs.dirichlet[0].expression.size() == 2 && c.bcs.dirichlet[0].value.empty());
+    CHECK(c.bcs.dirichlet[0].expression.size() == 2);
     CHECK(c.bcs.dirichlet[0].schedule.kind == cmf::Schedule::Kind::Constant);
     CHECK(c.bcs.traction[0].schedule.kind == cmf::Schedule::Kind::Ramp);
     CHECK(c.bcs.traction[1].type == "pressure" && c.bcs.traction[1].expression.size() == 1);
-    CHECK(c.bcs.traction[2].type == "follower_pressure" && c.bcs.traction[2].value == std::vector<double>({0.2}));
+    CHECK(c.bcs.traction[2].type == "follower_pressure" && c.bcs.traction[2].expression == std::vector<std::string>({"0.2"}));
+    CHECK(c.bcs.traction[2].schedule.kind == cmf::Schedule::Kind::Ramp); // no t in the data: ramp
     CHECK(c.body_force.expression.size() == 2 && c.body_force.schedule.kind == cmf::Schedule::Kind::Constant);
   }
   CHECK_THROWS(cmf::ParseConfig(YAML::Load(head +
-    "bcs: { dirichlet: [ { attr: [top], value: [0, 0], expression: [\"0\", \"0\"] } ] }\n")),
-    cmf::ConfigError, "'bcs.dirichlet[0].expression': give one, not both");
+    "bcs: { dirichlet: [ { attr: [top], value: [0, 0] } ] }\n")),
+    cmf::ConfigError, "missing key 'bcs.dirichlet[0].expression'");
   CHECK_THROWS(cmf::ParseConfig(YAML::Load(head + "bcs: { dirichlet: [ { attr: [top] } ] }\n")),
-    cmf::ConfigError, "missing key 'bcs.dirichlet[0].value'");
+    cmf::ConfigError, "missing key 'bcs.dirichlet[0].expression'");
   CHECK_THROWS(cmf::ParseConfig(YAML::Load(head +
     "bcs: { dirichlet: [ { attr: [top], expression: [\"0\", \"2 *\"] } ] }\n")),
     cmf::ConfigError, "bcs.dirichlet[0].expression[1]");
@@ -547,17 +550,17 @@ void TestExpression()
     "bcs: { dirichlet: [ { attr: [top], expression: \"x\" } ] }\n")),
     cmf::ConfigError, "one string per component");
   CHECK_THROWS(cmf::ParseConfig(YAML::Load(head +
-    "bcs: { traction: [ { attr: [top], type: pressure, value: [1, 2] } ] }\n")),
-    cmf::ConfigError, "expected a number (a pressure)");
+    "bcs: { traction: [ { attr: [top], type: pressure, expression: [\"1\", \"2\"] } ] }\n")),
+    cmf::ConfigError, "must be a string");
   CHECK_THROWS(cmf::ParseConfig(YAML::Load(head +
-    "bcs: { traction: [ { attr: [top], type: suction, value: 1 } ] }\n")),
+    "bcs: { traction: [ { attr: [top], type: suction, expression: \"1\" } ] }\n")),
     cmf::ConfigError, "unknown type 'suction'");
   CHECK_THROWS(cmf::ParseConfig(YAML::Load(head +
-    "bcs: { dirichlet: [ { attr: [top], type: pressure, value: [1, 0] } ] }\n")),
+    "bcs: { dirichlet: [ { attr: [top], type: pressure, expression: [\"1\", \"0\"] } ] }\n")),
     cmf::ConfigError, "unknown key 'bcs.dirichlet[0].type'");
   CHECK_THROWS(cmf::ParseConfig(YAML::Load(head +
-    "bcs: { traction: [ { attr: [top], type: pressure, value: 1, gradient: [[1, 0], [0, 1]] } ] }\n")),
-    cmf::ConfigError, "gradient' needs a vector 'value'");
+    "bcs: { traction: [ { attr: [top], expression: [\"1\", \"0\"], gradient: [[1, 0], [0, 1]] } ] }\n")),
+    cmf::ConfigError, "unknown key 'bcs.traction[0].gradient'");
   CHECK_THROWS(cmf::ParseConfig(YAML::Load(head + "body_force: { expression: [\"0\", \"y +\"] }\n")),
     cmf::ConfigError, "body_force.expression[1]");
 }

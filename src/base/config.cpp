@@ -109,6 +109,16 @@ private:
   std::set<std::string> used_;
 };
 
+// Ramp s = t, unless the data already depends on t (then constant).
+Schedule DefaultSchedule(const std::vector<std::string> &expression)
+{
+  for (const std::string &e : expression)
+  {
+    if (Expression::Parse(e).UsesTime()) { return Schedule::Constant(); }
+  }
+  return Schedule::Ramp();
+}
+
 std::vector<BoundaryCondition> ParseBCList(const YAML::Node &node,
                                            const std::string &path, bool dirichlet)
 {
@@ -116,7 +126,7 @@ std::vector<BoundaryCondition> ParseBCList(const YAML::Node &node,
   if (!node.IsDefined() || node.IsNull()) { return list; }
   if (!node.IsSequence())
   {
-    throw ConfigError("'" + path + "' must be a list of {attr, value} maps");
+    throw ConfigError("'" + path + "' must be a list of {attr, expression} maps");
   }
   for (std::size_t i = 0; i < node.size(); i++)
   {
@@ -150,36 +160,12 @@ std::vector<BoundaryCondition> ParseBCList(const YAML::Node &node,
                           "' (expected vector, pressure, or follower_pressure)");
       }
     }
-    // Data: value (+ gradient) or expression, never both.
-    const bool has_value = item.Has("value");
-    const bool has_expression = item.Has("expression");
-    if (has_value && has_expression)
+    // Data: expression strings, one per component (one string for a pressure).
+    if (!item.Has("expression"))
     {
-      throw ConfigError("keys '" + item_path + ".value' and '" + item_path +
-                        ".expression': give one, not both");
+      throw ConfigError("missing key '" + item_path + ".expression'");
     }
-    if (!has_value && !has_expression)
     {
-      throw ConfigError("missing key '" + item_path + ".value' (or '" + item_path + ".expression')");
-    }
-    if (has_value)
-    {
-      if (bc.IsPressure())
-      {
-        double p = 0.0;
-        try { p = item.Raw("value").as<double>(); }
-        catch (const YAML::Exception &)
-        {
-          throw ConfigError("key '" + item_path + ".value' expected a number (a pressure), got " +
-                            Describe(item.Raw("value")));
-        }
-        bc.value = {p};
-      }
-      else { bc.value = item.Require<std::vector<double>>("value"); }
-    }
-    else
-    {
-      item.Optional<int>("value", 0);
       YAML::Node ex = item.Raw("expression");
       if (ex.IsScalar())
       {
@@ -209,32 +195,6 @@ std::vector<BoundaryCondition> ParseBCList(const YAML::Node &node,
         }
       }
     }
-    if (item.Has("gradient") && (has_expression || bc.IsPressure()))
-    {
-      throw ConfigError("key '" + item_path + ".gradient' needs a vector 'value'");
-    }
-    if (item.Has("gradient"))
-    {
-      const std::string gpath = item_path + ".gradient";
-      YAML::Node g = item.Raw("gradient");
-      if (!g.IsSequence())
-      {
-        throw ConfigError("key '" + gpath + "' must be a list of rows (data = value + gradient X)");
-      }
-      for (std::size_t r = 0; r < g.size(); r++)
-      {
-        std::vector<double> row;
-        try { row = g[r].as<std::vector<double>>(); }
-        catch (const YAML::Exception &) { row.clear(); }
-        if (row.empty())
-        {
-          throw ConfigError("key '" + gpath + "[" + std::to_string(r) +
-                            "]' must be a list of numbers");
-        }
-        bc.gradient.push_back(row);
-      }
-    }
-    else { item.Optional<int>("gradient", 0); }
     if (item.Has("components"))
     {
       const std::string cpath = item_path + ".components";
@@ -274,7 +234,7 @@ std::vector<BoundaryCondition> ParseBCList(const YAML::Node &node,
     else
     {
       item.Optional<int>("schedule", 0);
-      if (has_expression) { bc.schedule = Schedule::Constant(); }
+      bc.schedule = DefaultSchedule(bc.expression);
     }
     for (int a : bc.attr)
     {
@@ -636,50 +596,30 @@ BCConfig ParseBCConfig(const YAML::Node &node, const std::string &path)
   return cfg;
 }
 
-// body_force: [bx, by, bz] (ramp schedule) or { value: [..], schedule: {..} }.
+// body_force: { expression: ["bx", "by", "bz"], schedule: {..} }.
 BodyForceConfig ParseBodyForceConfig(const YAML::Node &node, const std::string &path)
 {
   BodyForceConfig cfg;
   if (!node.IsDefined() || node.IsNull()) { return cfg; }
-  if (node.IsSequence())
+  if (!node.IsMap())
   {
-    try { cfg.value = node.as<std::vector<double>>(); }
-    catch (const YAML::Exception &)
-    {
-      throw ConfigError("key '" + path + "' expected a list of numbers");
-    }
-    return cfg;
+    throw ConfigError("'" + path + "' must be a map { expression: [..], schedule: {..} }");
   }
   NodeReader r(node, path);
-  const bool has_value = r.Has("value");
-  const bool has_expression = r.Has("expression");
-  if (has_value && has_expression)
+  cfg.expression = r.Require<std::vector<std::string>>("expression");
+  for (std::size_t k = 0; k < cfg.expression.size(); k++)
   {
-    throw ConfigError("keys '" + path + ".value' and '" + path + ".expression': give one, not both");
-  }
-  if (!has_value && !has_expression)
-  {
-    throw ConfigError("missing key '" + path + ".value' (or '" + path + ".expression')");
-  }
-  if (has_value) { cfg.value = r.Require<std::vector<double>>("value"); r.Optional<int>("expression", 0); }
-  else
-  {
-    r.Optional<int>("value", 0);
-    cfg.expression = r.Require<std::vector<std::string>>("expression");
-    for (std::size_t k = 0; k < cfg.expression.size(); k++)
+    try { Expression::Parse(cfg.expression[k]); }
+    catch (const ConfigError &e)
     {
-      try { Expression::Parse(cfg.expression[k]); }
-      catch (const ConfigError &e)
-      {
-        throw ConfigError("key '" + path + ".expression[" + std::to_string(k) + "]': " + e.what());
-      }
+      throw ConfigError("key '" + path + ".expression[" + std::to_string(k) + "]': " + e.what());
     }
   }
   if (r.Has("schedule")) { cfg.schedule = ParseSchedule(r.Raw("schedule"), r.Path("schedule")); }
   else
   {
     r.Optional<int>("schedule", 0);
-    if (has_expression) { cfg.schedule = Schedule::Constant(); }
+    cfg.schedule = DefaultSchedule(cfg.expression);
   }
   r.Finish();
   return cfg;

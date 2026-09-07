@@ -137,19 +137,18 @@ material: { model: neo_hookean, E: 250.0, nu: 0.3, rho0: 1.0 }
   #   in the displacement formulation), kappa = inf needs formulation: mixed.
   #   Closed forms and homogeneous solutions: doc/incompressible_hyperelasticity.tex.
 bcs:
-  dirichlet: [ { attr: [left], value: [0.0, 0.0] } ]   # attr: physical-group names and/or attribute numbers;
-  traction:  [ { attr: [right], value: [0.0, 3.75] } ]  # all components prescribed / nominal traction per
-                                                        # unit reference area (dead load)
-  # Either entry may add gradient: [[..],[..]] (dim x dim): the data is then value + gradient X in the
-  # reference coordinates (affine, e.g. the exact displacement of a homogeneous deformation), or give
-  # expression: ["f_x(x,y,z,t)", "f_y(...)"] instead of value. Dirichlet entries may add
-  # components: [x, z] (or 0-based indices) to prescribe a subset (rollers, symmetry planes). Tractions
-  # may set type: pressure (dead, T = -p N; scalar value/expression) or type: follower_pressure
-  # (T = -p J F^-T N per current area). Every entry may add schedule: { type: ramp, from: 0.0, to: 1.0 }
-  # (default) | { type: constant } | { type: table, t: [..], s: [..] }: its data is schedule(t) * data
-  # over the pseudo-time t in [0, 1]. See "Boundary conditions and loading" below.
-body_force: [0.0, 0.0]            # per unit mass; rho0 * b enters the weak form; or
-                                  # { value: [..] | expression: [..], schedule: {..} }
+  dirichlet: [ { attr: [left], expression: ["0", "0"] } ]      # attr: physical-group names and/or numbers;
+  traction:  [ { attr: [right], expression: ["0", "3.75"] } ]  # expression: one string f(x, y, z, t) per
+                                                               # component in the reference coordinates
+  # (e.g. ["x", "-0.5*y"] for an affine stretch); nominal traction per unit reference area (dead load).
+  # Dirichlet entries may add components: [x, z] (or 0-based indices) to prescribe a subset (rollers,
+  # symmetry planes). Tractions may set type: pressure (dead, T = -p N; a single string) or
+  # type: follower_pressure (T = -p J F^-T N per current area). Every entry may add
+  # schedule: { type: ramp, from: 0.0, to: 1.0 } | { type: constant } | { type: table, t: [..], s: [..] }:
+  # its data is schedule(t) * f over the pseudo-time t in [0, 1]; the default is the ramp unless f
+  # mentions t (then constant). See "Boundary conditions and loading" below.
+body_force: { expression: ["0", "0"], schedule: { type: ramp } }   # per unit mass; rho0 * b enters the
+                                                                   # weak form; omit for none
 solver:
   load_steps: 1                   # equal increments of t; or steps: [ { to: 0.5, n: 2 }, { to: 1.0, n: 4 } ]
   substep: { on_failure: false, max_bisections: 4, min_dt: 1e-4 }   # halve a failed increment and retry
@@ -183,11 +182,10 @@ data and its own schedule in a pseudo-time `t` that the stepper advances
 from 0 to 1 (`doc/bc_loading_plan.md` is the design record,
 `doc/solid_mechanics_forms.tex` Section 5 the formulation).
 
-**Data.** An entry gives `value` (a vector; a scalar for the pressure
-types), optionally with `gradient` so that the data is `value + gradient X`
-in the reference coordinates, or `expression`: one string per component,
+**Data.** An entry gives `expression`: one string per component,
 `f(x, y, z, t)` in the reference coordinates and the pseudo-time (a single
-string for pressures). The expression grammar is numbers, `x y z t` (`z` is
+string for pressures). Constants are strings too (`["0", "3.75"]`), and an
+affine stretch is `["x", "-0.5*y"]`. The expression grammar is numbers, `x y z t` (`z` is
 0 in 2D), `pi`, the operators `+ - * / ^` (`^` binds tightest and
 associates to the right, so `2^3^2 = 512` and `-x^2 = -(x^2)`),
 parentheses, the functions `sin cos tan exp log sqrt abs pow(a, b) min(a, b)
@@ -201,11 +199,11 @@ only the follower pressure below is provided.
 { type: ramp, from: 0, to: 1 }` (the default) is 0 before `from`, 1 after
 `to`, linear between; `{ type: constant }` is 1 for `t > 0`, i.e. the load
 is applied in full at the first step; `{ type: table, t: [..], s: [..] }`
-interpolates linearly and clamps outside. Entries given as expressions
-default to the constant schedule, so `t` enters through the function; if a
-schedule is given as well the two multiply. With the default ramp on every
-entry, `t < 1` solves a proportionally scaled problem and `t = 1` the problem
-of the weak form, which is exactly the former `load_steps` behaviour. A
+interpolates linearly and clamps outside. The default is the ramp, unless
+the expression mentions `t`, in which case it is the constant schedule and
+`t` enters through the function only; if a schedule is given as well the
+two multiply. With the ramp on every entry, `t < 1` solves a proportionally
+scaled problem and `t = 1` the problem of the weak form. A
 prestress-then-stretch path is two entries with ramps over `[0, 0.5]` and
 `[0.5, 1]`; load-unload is a table `s: [0, 1, 0]`. Two Dirichlet entries may
 overlap on shared edges or corners: the later entry wins there, and the
@@ -244,10 +242,12 @@ report lists the failed attempts and the bisection count; the app prints
 prints every probe after every step with its `t`.
 
 **Programmatic use.** `AddDirichlet`, `AddTraction`, `AddPressure(attrs, p,
-follower)` and `SetBodyForce` take an optional `BCOptions{components,
-schedule, time_dependent}`; MFEM coefficients with a `(X, t)` callback work
-because `SetLoadFactor(t)` calls `SetTime(t)` on every coefficient (set
-`time_dependent` so that a dead load is reassembled per step). All of the
+follower)` and `SetBodyForce` take any MFEM coefficient (the tests use
+`AffineVectorCoefficient` and function coefficients) and an optional
+`BCOptions{components, schedule, time_dependent}`; coefficients with a
+`(X, t)` callback work because `SetLoadFactor(t)` calls `SetTime(t)` on every
+coefficient (set `time_dependent` so that a dead load is reassembled per
+step). The YAML schema itself has only the expression form. All of the
 above lives in `physics/loads.{hpp,cpp}` (`LoadSet`), shared by both
 formulations; `tests/test_loading.cpp` exercises every feature (staged
 loading is path independent, load-unload returns to zero, bisection recovers
@@ -428,7 +428,7 @@ solutions in two places:
 
 - `apps/input/homogeneous/plane_strain_<model>.yaml` (unit square
   `apps/mesh/square.msh`, plane-strain extension to lambda = 2, affine
-  displacement on the faces `left` and `right` through the `gradient` key,
+  displacement on the faces `left` and `right` as expressions (`["x", "-0.5*y"]`),
   lateral faces free), `plane_stress_<model>.yaml` (the same
   sheet in plane stress: uniaxial tension, thickness stretch lambda^-1/2, no
   pressure unknown) and `uniaxial_<model>.yaml` (unit cube `apps/mesh/cube.msh`, uniaxial

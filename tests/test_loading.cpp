@@ -304,7 +304,7 @@ void ExpressionReassemblyTest()
   cfg.solver.load_steps = 4;
   std::unique_ptr<mfem::ParMesh> mesh = cmf::BuildParMesh(MPI_COMM_WORLD, cfg.mesh);
   cmf::BoundaryCondition ramp_bc, expr_bc, fixed_bc;
-  ramp_bc.value = {0.0, 3.75};
+  ramp_bc.expression = {"0", "3.75"};
   expr_bc.expression = {"0", "3.75*t*(1 + 0.2*sin(pi*y/16))"};
   expr_bc.schedule = cmf::Schedule::Constant();
   fixed_bc.expression = {"0", "3.75*(1 + 0.2*sin(pi*y/16))"};

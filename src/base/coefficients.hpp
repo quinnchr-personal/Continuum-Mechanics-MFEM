@@ -1,7 +1,6 @@
-// Boundary data built from the YAML boundary conditions: constant vectors,
-// affine fields u(X) = value + gradient X in the reference coordinates (the
-// data of homogeneous deformation tests), and expressions f(x, y, z, t) per
-// component (base/expression.hpp; t is the coefficient's time).
+// Boundary data: expressions f(x, y, z, t) per component (the YAML form,
+// base/expression.hpp; t is the coefficient's time) and, for programmatic
+// use in the tests, affine fields u(X) = value + gradient X.
 #pragma once
 
 #include <memory>
@@ -103,45 +102,12 @@ private:
 inline std::unique_ptr<mfem::VectorCoefficient>
 MakeBCCoefficient(const BoundaryCondition &bc, int dim, const std::string &what)
 {
-  if (!bc.expression.empty())
+  if (int(bc.expression.size()) != dim)
   {
-    if (int(bc.expression.size()) != dim)
-    {
-      throw ConfigError(what + ".expression has " + std::to_string(bc.expression.size()) +
-                        " components, mesh dimension is " + std::to_string(dim));
-    }
-    std::vector<Expression> f;
-    for (const std::string &e : bc.expression) { f.push_back(Expression::Parse(e)); }
-    return std::make_unique<ExpressionVectorCoefficient>(f);
-  }
-  if (int(bc.value.size()) != dim)
-  {
-    throw ConfigError(what + ".value has " + std::to_string(bc.value.size()) +
+    throw ConfigError(what + ".expression has " + std::to_string(bc.expression.size()) +
                       " components, mesh dimension is " + std::to_string(dim));
   }
-  mfem::Vector v(dim);
-  for (int i = 0; i < dim; i++) { v(i) = bc.value[i]; }
-  if (bc.gradient.empty())
-  {
-    return std::make_unique<mfem::VectorConstantCoefficient>(v);
-  }
-  if (int(bc.gradient.size()) != dim)
-  {
-    throw ConfigError(what + ".gradient has " + std::to_string(bc.gradient.size()) +
-                      " rows, mesh dimension is " + std::to_string(dim));
-  }
-  mfem::DenseMatrix G(dim);
-  for (int i = 0; i < dim; i++)
-  {
-    if (int(bc.gradient[i].size()) != dim)
-    {
-      throw ConfigError(what + ".gradient row " + std::to_string(i) + " has " +
-                        std::to_string(bc.gradient[i].size()) +
-                        " entries, mesh dimension is " + std::to_string(dim));
-    }
-    for (int j = 0; j < dim; j++) { G(i, j) = bc.gradient[i][j]; }
-  }
-  return std::make_unique<AffineVectorCoefficient>(v, G);
+  return std::make_unique<ExpressionVectorCoefficient>(bc.expression);
 }
 
 // The scalar coefficient of a pressure entry (type pressure or
@@ -149,19 +115,11 @@ MakeBCCoefficient(const BoundaryCondition &bc, int dim, const std::string &what)
 inline std::unique_ptr<mfem::Coefficient>
 MakeScalarBCCoefficient(const BoundaryCondition &bc, const std::string &what)
 {
-  if (!bc.expression.empty())
+  if (bc.expression.size() != 1)
   {
-    if (bc.expression.size() != 1)
-    {
-      throw ConfigError(what + ".expression must be a single string for a pressure");
-    }
-    return std::make_unique<ExpressionCoefficient>(Expression::Parse(bc.expression[0]));
+    throw ConfigError(what + ".expression must be a single string for a pressure");
   }
-  if (bc.value.size() != 1)
-  {
-    throw ConfigError(what + ".value must be a single number for a pressure");
-  }
-  return std::make_unique<mfem::ConstantCoefficient>(bc.value[0]);
+  return std::make_unique<ExpressionCoefficient>(Expression::Parse(bc.expression[0]));
 }
 
 } // namespace cmf
