@@ -283,7 +283,9 @@ def plot_09(data, ax):
 def plot_10(data, ax):
     t, f, m = reaction(data, "top")
     theta = 2.0 * math.pi * t
-    ax.plot(theta, m[:, 2], "o-", ms=3, label="torque, this code")
+    # The reference's rotation matrix turns the face clockwise about z, so
+    # the torque about +z is negative; its magnitude is plotted.
+    ax.plot(theta, -m[:, 2], "o-", ms=3, label="torque (magnitude), this code")
     ax2 = ax.twinx()
     ax2.plot(theta, f[:, 2], "s-", ms=3, color="C3", label="axial force, this code")
     ax.set_xlabel("twist angle (rad)")
