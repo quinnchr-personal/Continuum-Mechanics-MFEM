@@ -107,8 +107,8 @@ $(MESH_DIR)/cube.msh: $(MESH_DIR)/box.geo
 $(MESH_DIR)/beam.msh: $(MESH_DIR)/box.geo
 	$(GMSH) -3 -format msh22 -setnumber Lx 10 -setnumber nx 20 -setnumber ny 2 -setnumber nz 2 -o $@ $< > /dev/null
 
-# Fast gates (S1-S3 + mixed + homogeneous deformations): serial unit and MMS tests.
-CHECK_TESTS := $(addprefix $(BUILD_DIR)/tests/,test_base test_materials test_solid_mms test_mixed test_homogeneous)
+# Fast gates (S1-S3 + mixed + homogeneous deformations + loading): serial unit and MMS tests.
+CHECK_TESTS := $(addprefix $(BUILD_DIR)/tests/,test_base test_materials test_solid_mms test_mixed test_homogeneous test_loading)
 check: $(CHECK_TESTS)
 	@for t in $(CHECK_TESTS); do echo "== $$t"; ./$$t || exit 1; done
 
@@ -135,6 +135,7 @@ test: check $(APP) $(BUILD_DIR)/tests/test_benchmarks $(BUILD_DIR)/tests/test_pa
 	$(BUILD_DIR)/tests/test_mixed --full
 	$(BUILD_DIR)/tests/test_benchmarks
 	$(MFEM_MPIEXEC) -np 4 $(BUILD_DIR)/tests/test_benchmarks
+	$(MFEM_MPIEXEC) -np 4 $(BUILD_DIR)/tests/test_loading
 	$(BUILD_DIR)/tests/test_benchmarks --cook-ratio-gate
 
 clean:

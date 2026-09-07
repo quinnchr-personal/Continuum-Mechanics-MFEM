@@ -7,6 +7,7 @@
 #include <string>
 
 #include "base/config.hpp"
+#include "base/expression.hpp"
 #include "base/mesh_input.hpp"
 #include "base/dual.hpp"
 #include "base/tensor.hpp"
@@ -201,7 +202,7 @@ void TestYaml()
   CHECK_CLOSE(cfg.material.E, 250.0, 0.0);
   CHECK(cfg.bcs.dirichlet.size() == 1 && cfg.bcs.dirichlet[0].attr[0] == 4);
   CHECK(cfg.bcs.traction.size() == 1 && cfg.bcs.traction[0].value[1] == 6.25);
-  CHECK(cfg.body_force.size() == 2);
+  CHECK(cfg.body_force.value.size() == 2);
   CHECK(cfg.solver.newton.max_it == 25 && cfg.solver.linear.type == "gmres_amg");
   CHECK_CLOSE(cfg.solver.linear.rtol, 1e-12, 0.0);
   CHECK(cfg.output.paraview == "out/cook" && cfg.output.fields.size() == 2);
@@ -352,6 +353,215 @@ void TestYaml()
 
 } // namespace
 
+// Load schedules: evaluation and the YAML of schedules, components, the
+// body-force map form, step segments and bisection control.
+void TestLoading()
+{
+  const cmf::Schedule ramp;
+  CHECK_CLOSE(ramp.Eval(0.0), 0.0, 0.0);
+  CHECK_CLOSE(ramp.Eval(0.25), 0.25, 1e-15);
+  CHECK_CLOSE(ramp.Eval(1.0), 1.0, 0.0);
+  CHECK_CLOSE(ramp.Eval(1.5), 1.0, 0.0);
+  const cmf::Schedule late = cmf::Schedule::Ramp(0.5, 1.0);
+  CHECK_CLOSE(late.Eval(0.5), 0.0, 0.0);
+  CHECK_CLOSE(late.Eval(0.75), 0.5, 1e-15);
+  CHECK_CLOSE(late.Eval(0.2), 0.0, 0.0);
+  const cmf::Schedule constant = cmf::Schedule::Constant();
+  CHECK_CLOSE(constant.Eval(0.0), 0.0, 0.0);
+  CHECK_CLOSE(constant.Eval(1e-9), 1.0, 0.0);
+  const cmf::Schedule table = cmf::Schedule::Table({0.0, 0.5, 1.0}, {0.0, 1.0, 0.0});
+  CHECK_CLOSE(table.Eval(0.25), 0.5, 1e-15);
+  CHECK_CLOSE(table.Eval(0.5), 1.0, 0.0);
+  CHECK_CLOSE(table.Eval(0.875), 0.25, 1e-15);
+  CHECK_CLOSE(table.Eval(2.0), 0.0, 0.0);
+  const cmf::Schedule offset = cmf::Schedule::Table({0.2, 0.6}, {2.0, 4.0});
+  CHECK_CLOSE(offset.Eval(0.0), 2.0, 0.0);
+  CHECK_CLOSE(offset.Eval(0.4), 3.0, 1e-15);
+
+  const std::string head =
+    "mesh: { file: square.msh }\nmaterial: { model: neo_hookean, E: 1.0, nu: 0.3 }\n";
+  {
+    const cmf::AppConfig c = cmf::ParseConfig(YAML::Load(head +
+      "bcs:\n"
+      "  dirichlet:\n"
+      "    - { attr: [left], value: [0, 0], components: [x] }\n"
+      "    - { attr: [bottom], value: [0, 0], components: [1], schedule: { type: ramp, from: 0.5 } }\n"
+      "  traction:\n"
+      "    - { attr: [right], value: [0, 1], schedule: { type: table, t: [0, 0.5, 1], s: [0, 1, 0] } }\n"
+      "body_force: { value: [0, -1], schedule: { type: constant } }\n"
+      "solver: { steps: [ { to: 0.5, n: 2 }, { to: 1.0, n: 3 } ], "
+      "substep: { on_failure: true, max_bisections: 3, min_dt: 0.01 } }\n"));
+    CHECK(c.bcs.dirichlet[0].components == std::vector<int>({0}));
+    CHECK(c.bcs.dirichlet[1].components == std::vector<int>({1}));
+    CHECK(c.bcs.dirichlet[1].schedule.kind == cmf::Schedule::Kind::Ramp);
+    CHECK_CLOSE(c.bcs.dirichlet[1].schedule.from, 0.5, 0.0);
+    CHECK(c.bcs.traction[0].schedule.kind == cmf::Schedule::Kind::Table);
+    CHECK_CLOSE(c.bcs.traction[0].schedule.Eval(0.75), 0.5, 1e-15);
+    CHECK(c.body_force.schedule.kind == cmf::Schedule::Kind::Constant);
+    CHECK(c.body_force.value.size() == 2);
+    CHECK(c.solver.load_steps == 5);
+    const std::vector<double> want = {0.25, 0.5, 0.5 + 1.0 / 6.0, 0.5 + 2.0 / 6.0, 1.0};
+    CHECK(c.solver.breakpoints.size() == 5);
+    for (std::size_t i = 0; i < want.size() && i < c.solver.breakpoints.size(); i++)
+    {
+      CHECK_CLOSE(c.solver.breakpoints[i], want[i], 1e-15);
+    }
+    CHECK(c.solver.substep.on_failure && c.solver.substep.max_bisections == 3);
+    CHECK_CLOSE(c.solver.substep.min_dt, 0.01, 0.0);
+  }
+  // Defaults: ramp schedules, all components, no breakpoints, no bisection.
+  {
+    const cmf::AppConfig c = cmf::ParseConfig(YAML::Load(head +
+      "bcs: { dirichlet: [ { attr: [left], value: [0, 0] } ] }\nbody_force: [0, -1]\n"
+      "solver: { load_steps: 4 }\n"));
+    CHECK(c.bcs.dirichlet[0].components.empty());
+    CHECK(c.bcs.dirichlet[0].schedule.kind == cmf::Schedule::Kind::Ramp);
+    CHECK(c.body_force.schedule.kind == cmf::Schedule::Kind::Ramp);
+    CHECK(c.solver.breakpoints.empty() && c.solver.load_steps == 4);
+    CHECK(!c.solver.substep.on_failure);
+  }
+  CHECK_THROWS(cmf::ParseConfig(YAML::Load(head +
+    "bcs: { dirichlet: [ { attr: [left], value: [0, 0], components: [x, x] } ] }\n")),
+    cmf::ConfigError, "bcs.dirichlet[0].components");
+  CHECK_THROWS(cmf::ParseConfig(YAML::Load(head +
+    "bcs: { dirichlet: [ { attr: [left], value: [0, 0], components: [w] } ] }\n")),
+    cmf::ConfigError, "components[0]");
+  CHECK_THROWS(cmf::ParseConfig(YAML::Load(head +
+    "bcs: { traction: [ { attr: [left], value: [0, 0], components: [x] } ] }\n")),
+    cmf::ConfigError, "Dirichlet entries only");
+  CHECK_THROWS(cmf::ParseConfig(YAML::Load(head +
+    "bcs: { dirichlet: [ { attr: [left], value: [0, 0], schedule: { type: sine } } ] }\n")),
+    cmf::ConfigError, "unknown schedule 'sine'");
+  CHECK_THROWS(cmf::ParseConfig(YAML::Load(head +
+    "bcs: { dirichlet: [ { attr: [left], value: [0, 0], schedule: { type: ramp, from: 0.7, to: 0.2 } } ] }\n")),
+    cmf::ConfigError, "schedule.from");
+  CHECK_THROWS(cmf::ParseConfig(YAML::Load(head +
+    "bcs: { dirichlet: [ { attr: [left], value: [0, 0], schedule: { type: table, t: [0, 1], s: [1] } } ] }\n")),
+    cmf::ConfigError, "schedule.t");
+  CHECK_THROWS(cmf::ParseConfig(YAML::Load(head +
+    "bcs: { dirichlet: [ { attr: [left], value: [0, 0], schedule: { type: table, t: [0.5, 0.2], s: [1, 2] } } ] }\n")),
+    cmf::ConfigError, "increase strictly");
+  CHECK_THROWS(cmf::ParseConfig(YAML::Load(head +
+    "solver: { steps: [ { to: 0.5, n: 2 } ] }\n")),
+    cmf::ConfigError, "end at to: 1.0");
+  CHECK_THROWS(cmf::ParseConfig(YAML::Load(head +
+    "solver: { load_steps: 2, steps: [ { to: 1.0, n: 2 } ] }\n")),
+    cmf::ConfigError, "give one, not both");
+  CHECK_THROWS(cmf::ParseConfig(YAML::Load(head +
+    "solver: { steps: [ { to: 0.5, n: 0 }, { to: 1.0, n: 1 } ] }\n")),
+    cmf::ConfigError, "solver.steps[0].n");
+  CHECK_THROWS(cmf::ParseConfig(YAML::Load(head +
+    "solver: { substep: { min_dt: 0 } }\n")),
+    cmf::ConfigError, "solver.substep.min_dt");
+  CHECK_THROWS(cmf::ParseConfig(YAML::Load(head + "body_force: { schedule: { type: constant } }\n")),
+    cmf::ConfigError, "body_force.value");
+  CHECK_THROWS(cmf::ParseConfig(YAML::Load(head + "body_force: { value: [0, 1], scale: 2 }\n")),
+    cmf::ConfigError, "unknown key 'body_force.scale'");
+}
+
+// Expression parser: precedence, functions, comparisons, errors with columns.
+void TestExpression()
+{
+  auto ev = [](const char *text, double x = 0.0, double y = 0.0, double z = 0.0, double t = 0.0)
+  {
+    return cmf::Expression::Parse(text).Eval(x, y, z, t);
+  };
+  struct Row { const char *text; double x, y, z, t, want; };
+  const Row rows[] = {
+    {"1 + 2 * 3", 0, 0, 0, 0, 7.0},
+    {"(1 + 2) * 3", 0, 0, 0, 0, 9.0},
+    {"1 - 2 - 3", 0, 0, 0, 0, -4.0},
+    {"2 / 4 / 2", 0, 0, 0, 0, 0.25},
+    {"2^3^2", 0, 0, 0, 0, 512.0},
+    {"-x^2", 3, 0, 0, 0, -9.0},
+    {"(-x)^2", 3, 0, 0, 0, 9.0},
+    {"2^-1", 0, 0, 0, 0, 0.5},
+    {"-2 + 3", 0, 0, 0, 0, 1.0},
+    {"+x", 1.5, 0, 0, 0, 1.5},
+    {"x*y - z + t", 2, 3, 4, 5, 7.0},
+    {"sin(pi/2) + cos(0)", 0, 0, 0, 0, 2.0},
+    {"exp(log(3.5))", 0, 0, 0, 0, 3.5},
+    {"sqrt(16) + abs(-2)", 0, 0, 0, 0, 6.0},
+    {"tan(pi/4)", 0, 0, 0, 0, 1.0},
+    {"pow(2, 10)", 0, 0, 0, 0, 1024.0},
+    {"min(x, y) + max(x, y)", -1, 4, 0, 0, 3.0},
+    {"if(t < 0.5, 2*t, 1)", 0, 0, 0, 0.25, 0.5},
+    {"if(t < 0.5, 2*t, 1)", 0, 0, 0, 0.75, 1.0},
+    {"if(x <= 1, 1, 0) + if(x >= 1, 1, 0) + if(x == 1, 1, 0) + if(x != 1, 1, 0) + if(x > 1, 1, 0)", 1, 0, 0, 0, 3.0},
+    {"1e-3 * 2.5E2", 0, 0, 0, 0, 0.25},
+    {".5 + 1.", 0, 0, 0, 0, 1.5},
+    {"0.1*t*sin(pi*x)", 0.5, 0, 0, 0.3, 0.03},
+    {"x*(1-y)*exp(-z)", 2, 0.5, 0, 0, 1.0},
+    {" 3 ", 0, 0, 0, 0, 3.0},
+  };
+  for (const Row &r : rows)
+  {
+    const double got = ev(r.text, r.x, r.y, r.z, r.t);
+    CHECK_MSG(std::abs(got - r.want) <= 1e-13 * std::max(1.0, std::abs(r.want)),
+              std::string("expression '") + r.text + "' = " + std::to_string(got) +
+              ", want " + std::to_string(r.want));
+  }
+  CHECK(cmf::Expression::Parse("x + t").UsesTime());
+  CHECK(!cmf::Expression::Parse("x + y*z").UsesTime());
+  CHECK(!cmf::Expression::Parse("tan(x)").UsesTime());
+
+  CHECK_THROWS(cmf::Expression::Parse(""), cmf::ConfigError, "empty expression");
+  CHECK_THROWS(cmf::Expression::Parse("(1 + 2"), cmf::ConfigError, "expected ')' at column 7");
+  CHECK_THROWS(cmf::Expression::Parse("1 + 2)"), cmf::ConfigError, "unexpected ')' at column 6");
+  CHECK_THROWS(cmf::Expression::Parse("2 * foo"), cmf::ConfigError, "unknown identifier 'foo' at column 5");
+  CHECK_THROWS(cmf::Expression::Parse("1 +"), cmf::ConfigError, "unexpected end of expression at column 4");
+  CHECK_THROWS(cmf::Expression::Parse("sin(1, 2)"), cmf::ConfigError, "closing 'sin'");
+  CHECK_THROWS(cmf::Expression::Parse("min(1)"), cmf::ConfigError, "'min' takes 2 arguments");
+  CHECK_THROWS(cmf::Expression::Parse("sin 1"), cmf::ConfigError, "expected '(' after 'sin'");
+  CHECK_THROWS(cmf::Expression::Parse("1 < 2 < 3"), cmf::ConfigError, "do not chain");
+  CHECK_THROWS(cmf::Expression::Parse("x $ 2"), cmf::ConfigError, "unexpected '$' at column 3");
+
+  // YAML: expression entries, defaults, exclusivity with value, errors by key.
+  const std::string head =
+    "mesh: { file: square.msh }\nmaterial: { model: neo_hookean, E: 1.0, nu: 0.3 }\n";
+  {
+    const cmf::AppConfig c = cmf::ParseConfig(YAML::Load(head +
+      "bcs:\n"
+      "  dirichlet: [ { attr: [top], expression: [\"0.1*t*sin(pi*x)\", \"0\"] } ]\n"
+      "  traction:\n"
+      "    - { attr: [right], expression: [\"0\", \"if(t < 0.5, 2*t, 1)\"], schedule: { type: ramp } }\n"
+      "    - { attr: [left], type: pressure, expression: \"0.3*t\" }\n"
+      "    - { attr: [bottom], type: follower_pressure, value: 0.2 }\n"
+      "body_force: { expression: [\"0\", \"-9.81*t\"] }\n"));
+    CHECK(c.bcs.dirichlet[0].expression.size() == 2 && c.bcs.dirichlet[0].value.empty());
+    CHECK(c.bcs.dirichlet[0].schedule.kind == cmf::Schedule::Kind::Constant);
+    CHECK(c.bcs.traction[0].schedule.kind == cmf::Schedule::Kind::Ramp);
+    CHECK(c.bcs.traction[1].type == "pressure" && c.bcs.traction[1].expression.size() == 1);
+    CHECK(c.bcs.traction[2].type == "follower_pressure" && c.bcs.traction[2].value == std::vector<double>({0.2}));
+    CHECK(c.body_force.expression.size() == 2 && c.body_force.schedule.kind == cmf::Schedule::Kind::Constant);
+  }
+  CHECK_THROWS(cmf::ParseConfig(YAML::Load(head +
+    "bcs: { dirichlet: [ { attr: [top], value: [0, 0], expression: [\"0\", \"0\"] } ] }\n")),
+    cmf::ConfigError, "'bcs.dirichlet[0].expression': give one, not both");
+  CHECK_THROWS(cmf::ParseConfig(YAML::Load(head + "bcs: { dirichlet: [ { attr: [top] } ] }\n")),
+    cmf::ConfigError, "missing key 'bcs.dirichlet[0].value'");
+  CHECK_THROWS(cmf::ParseConfig(YAML::Load(head +
+    "bcs: { dirichlet: [ { attr: [top], expression: [\"0\", \"2 *\"] } ] }\n")),
+    cmf::ConfigError, "bcs.dirichlet[0].expression[1]");
+  CHECK_THROWS(cmf::ParseConfig(YAML::Load(head +
+    "bcs: { dirichlet: [ { attr: [top], expression: \"x\" } ] }\n")),
+    cmf::ConfigError, "one string per component");
+  CHECK_THROWS(cmf::ParseConfig(YAML::Load(head +
+    "bcs: { traction: [ { attr: [top], type: pressure, value: [1, 2] } ] }\n")),
+    cmf::ConfigError, "expected a number (a pressure)");
+  CHECK_THROWS(cmf::ParseConfig(YAML::Load(head +
+    "bcs: { traction: [ { attr: [top], type: suction, value: 1 } ] }\n")),
+    cmf::ConfigError, "unknown type 'suction'");
+  CHECK_THROWS(cmf::ParseConfig(YAML::Load(head +
+    "bcs: { dirichlet: [ { attr: [top], type: pressure, value: [1, 0] } ] }\n")),
+    cmf::ConfigError, "unknown key 'bcs.dirichlet[0].type'");
+  CHECK_THROWS(cmf::ParseConfig(YAML::Load(head +
+    "bcs: { traction: [ { attr: [top], type: pressure, value: 1, gradient: [[1, 0], [0, 1]] } ] }\n")),
+    cmf::ConfigError, "gradient' needs a vector 'value'");
+  CHECK_THROWS(cmf::ParseConfig(YAML::Load(head + "body_force: { expression: [\"0\", \"y +\"] }\n")),
+    cmf::ConfigError, "body_force.expression[1]");
+}
+
 int main()
 {
   TestTensor2x2();
@@ -359,5 +569,7 @@ int main()
   TestDualScalar();
   TestDualTensor();
   TestYaml();
+  TestLoading();
+  TestExpression();
   return cmf_test::Report("test_base");
 }

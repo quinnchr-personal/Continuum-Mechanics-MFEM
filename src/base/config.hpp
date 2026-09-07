@@ -77,22 +77,63 @@ struct MaterialConfig
   double rho0 = 1.0;
 };
 
+// Scalar load schedule s(t) of the pseudo-time t in [0, 1] (piecewise
+// linear). ramp: 0 at t <= from, 1 at t >= to, linear between (the default,
+// from 0 to 1, is the proportional load path). constant: 1 for t > 0.
+// table: linear interpolation of (t, s) pairs, clamped outside.
+struct Schedule
+{
+  enum class Kind { Ramp, Constant, Table };
+  Kind kind = Kind::Ramp;
+  double from = 0.0;
+  double to = 1.0;
+  std::vector<double> t;
+  std::vector<double> s;
+
+  double Eval(double time) const;
+  static Schedule Ramp(double from = 0.0, double to = 1.0);
+  static Schedule Constant();
+  static Schedule Table(const std::vector<double> &t, const std::vector<double> &s);
+};
+
 // Boundary attributes by number (attr) and/or by physical-group name
-// (attr_names, resolved against the mesh when the physics is built); value,
-// plus an optional gradient: the data is value + gradient X in the reference
-// coordinates X (affine, for homogeneous deformation tests).
+// (attr_names, resolved against the mesh when the physics is built). The
+// data is either value + gradient X in the reference coordinates X (gradient
+// optional; affine, for homogeneous deformation tests) or `expression`, one
+// string f(x, y, z, t) per component (base/expression.hpp; a single string
+// for the scalar pressure types). Dirichlet entries may restrict the
+// prescribed components (empty = all). Every entry carries a schedule; its
+// data is schedule(t) * data (an expression entry defaults to the constant
+// schedule, t entering through the function). Traction types: vector
+// (nominal traction per reference area), pressure (dead, T = -p N),
+// follower_pressure (T = -p J F^{-T} N per current area).
 struct BoundaryCondition
 {
   std::vector<int> attr;
   std::vector<std::string> attr_names;
   std::vector<double> value;
   std::vector<std::vector<double>> gradient;
+  std::vector<std::string> expression;
+  std::vector<int> components;   // Dirichlet only; 0-based, empty = all
+  Schedule schedule;
+  std::string type = "vector";   // traction only: vector | pressure | follower_pressure
+  bool IsPressure() const { return type != "vector"; }
 };
 
 struct BCConfig
 {
   std::vector<BoundaryCondition> dirichlet;
   std::vector<BoundaryCondition> traction;
+};
+
+// Body force per unit mass (rho0 b enters the weak form): value or
+// expression (one string per component), with a schedule.
+struct BodyForceConfig
+{
+  std::vector<double> value;
+  std::vector<std::string> expression;
+  Schedule schedule;
+  bool Empty() const { return value.empty() && expression.empty(); }
 };
 
 struct NewtonConfig
@@ -123,9 +164,25 @@ struct LinearSolverConfig
   double augmentation = 1.0;
 };
 
+// Recovery from a load step whose Newton solve fails: restore the last
+// converged state, halve the increment (at most max_bisections times, never
+// below min_dt) and retry; after a converged reduced step the stepper aims at
+// the planned breakpoint again (no growth beyond the planned grid).
+struct SubstepConfig
+{
+  bool on_failure = false;
+  int max_bisections = 4;
+  double min_dt = 1e-4;
+};
+
+// The pseudo-time path: `breakpoints` are the targets t_1 < ... < t_n = 1 of
+// the load steps (from `load_steps` equal increments or the `steps`
+// segments); empty means load_steps equal increments (programmatic use).
 struct SolverConfig
 {
   int load_steps = 1;
+  std::vector<double> breakpoints;
+  SubstepConfig substep;
   NewtonConfig newton;
   LinearSolverConfig linear;
 };
@@ -165,7 +222,7 @@ struct AppConfig
   MeshConfig mesh;
   MaterialConfig material;
   BCConfig bcs;
-  std::vector<double> body_force;
+  BodyForceConfig body_force;
   SolverConfig solver;
   OutputConfig output;
 };
@@ -184,6 +241,8 @@ void ValidateMaterialConfig(const MaterialConfig &cfg, const std::string &path =
 MeshConfig ParseMeshConfig(const YAML::Node &node, const std::string &path);
 MaterialConfig ParseMaterialConfig(const YAML::Node &node, const std::string &path);
 BCConfig ParseBCConfig(const YAML::Node &node, const std::string &path);
+BodyForceConfig ParseBodyForceConfig(const YAML::Node &node, const std::string &path);
+Schedule ParseSchedule(const YAML::Node &node, const std::string &path);
 SolverConfig ParseSolverConfig(const YAML::Node &node, const std::string &path);
 OutputConfig ParseOutputConfig(const YAML::Node &node, const std::string &path);
 

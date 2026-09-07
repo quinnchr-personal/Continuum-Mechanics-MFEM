@@ -5,24 +5,12 @@
 
 #include <cmath>
 
+#include "kernels/follower_pressure.hpp"
 #include "kernels/total_lagrangian.hpp"
-#include "physics/mixed_solid_mechanics_tl.hpp"
 #include "solvers/linear_solver.hpp"
 
 namespace cmf
 {
-
-namespace
-{
-
-mfem::Vector ToVector(const std::vector<double> &v)
-{
-  mfem::Vector out(int(v.size()));
-  for (std::size_t i = 0; i < v.size(); i++) { out(int(i)) = v[i]; }
-  return out;
-}
-
-} // namespace
 
 SolidMechanicsTL::SolidMechanicsTL(mfem::ParMesh &mesh, const YAML::Node &root,
                                    const Material &material)
@@ -35,7 +23,7 @@ SolidMechanicsTL::SolidMechanicsTL(mfem::ParMesh &mesh, const AppConfig &cfg,
     rho0_(cfg.material.rho0), material_(material),
     fec_(cfg.mesh.order, mesh.Dimension()),
     fes_(&mesh, &fec_, mesh.Dimension(), mfem::Ordering::byVDIM),
-    nlf_(&fes_)
+    loads_(fes_)
 {
   height = width = fes_.GetTrueVSize();
   output_cfg_ = cfg.output;
@@ -45,185 +33,110 @@ SolidMechanicsTL::SolidMechanicsTL(mfem::ParMesh &mesh, const AppConfig &cfg,
     throw ConfigError("plane: stress needs a 2D mesh (got dimension " +
                       std::to_string(dim_) + ")");
   }
+  ResetForm();
   Build(cfg);
 }
 
-void SolidMechanicsTL::Build(const AppConfig &cfg)
+void SolidMechanicsTL::ResetForm()
 {
+  nlf_ = std::make_unique<mfem::ParNonlinearForm>(&fes_);
   // One integrator instantiation per material type, chosen once here.
   std::visit([this](const auto &mat)
   {
     using M = std::decay_t<decltype(mat)>;
-    nlf_.AddDomainIntegrator(new TotalLagrangianIntegrator<M>(mat));
+    nlf_->AddDomainIntegrator(new TotalLagrangianIntegrator<M>(mat));
   }, material_);
-
-  for (std::size_t i = 0; i < cfg.bcs.dirichlet.size(); i++)
-  {
-    const BoundaryCondition &bc = cfg.bcs.dirichlet[i];
-    const std::string what = "bcs.dirichlet[" + std::to_string(i) + "]";
-    owned_coefs_.push_back(MakeBCCoefficient(bc, dim_, what));
-    AddDirichlet(ResolveBoundaryAttributes(mesh_, bc, what), *owned_coefs_.back());
-  }
-  for (std::size_t i = 0; i < cfg.bcs.traction.size(); i++)
-  {
-    const BoundaryCondition &bc = cfg.bcs.traction[i];
-    const std::string what = "bcs.traction[" + std::to_string(i) + "]";
-    owned_coefs_.push_back(MakeBCCoefficient(bc, dim_, what));
-    AddTraction(ResolveBoundaryAttributes(mesh_, bc, what), *owned_coefs_.back());
-  }
-  if (!cfg.body_force.empty())
-  {
-    CheckVectorSize(cfg.body_force, "body_force");
-    const mfem::Vector v = ToVector(cfg.body_force);
-    owned_coefs_.push_back(std::make_unique<mfem::VectorConstantCoefficient>(v));
-    SetBodyForce(*owned_coefs_.back());
-  }
+  follower_markers_.clear();
+  finalized_ = false;
 }
 
-void SolidMechanicsTL::CheckVectorSize(const std::vector<double> &v,
-                                       const std::string &what) const
+void SolidMechanicsTL::Build(const AppConfig &cfg)
 {
-  if (int(v.size()) != dim_)
-  {
-    throw ConfigError(what + " has " + std::to_string(v.size()) +
-                      " entries, expected " + std::to_string(dim_));
-  }
-}
-
-mfem::Array<int> SolidMechanicsTL::Marker(const std::vector<int> &attrs) const
-{
-  const int max_attr = mesh_.bdr_attributes.Size() ? mesh_.bdr_attributes.Max() : 0;
-  mfem::Array<int> marker(max_attr);
-  marker = 0;
-  for (int a : attrs)
-  {
-    if (a < 1 || a > max_attr)
-    {
-      throw ConfigError("boundary attribute " + std::to_string(a) +
-                        " is not in the mesh (max " + std::to_string(max_attr) + ")");
-    }
-    marker[a - 1] = 1;
-  }
-  return marker;
-}
-
-void SolidMechanicsTL::CheckCoefficient(mfem::VectorCoefficient &c,
-                                        const std::string &what) const
-{
-  if (c.GetVDim() != dim_)
-  {
-    throw ConfigError(what + ": coefficient has " + std::to_string(c.GetVDim()) +
-                      " components, expected " + std::to_string(dim_));
-  }
+  InstallYamlLoads(*this, mesh_, cfg, dim_, owned_coefs_, owned_scalars_);
 }
 
 void SolidMechanicsTL::AddDirichlet(const std::vector<int> &attrs,
-                                    mfem::VectorCoefficient &u_bar)
+                                    mfem::VectorCoefficient &u_bar, const BCOptions &opt)
 {
-  CheckCoefficient(u_bar, "AddDirichlet");
-  dirichlet_.push_back({Marker(attrs), &u_bar});
+  loads_.AddDirichlet(attrs, u_bar, opt);
   finalized_ = false;
 }
 
 void SolidMechanicsTL::AddTraction(const std::vector<int> &attrs,
-                                   mfem::VectorCoefficient &T_bar)
+                                   mfem::VectorCoefficient &T_bar, const BCOptions &opt)
 {
-  CheckCoefficient(T_bar, "AddTraction");
-  traction_.push_back({Marker(attrs), &T_bar});
+  loads_.AddTraction(attrs, T_bar, opt);
   finalized_ = false;
 }
 
-void SolidMechanicsTL::SetBodyForce(mfem::VectorCoefficient &b)
+void SolidMechanicsTL::AddPressure(const std::vector<int> &attrs, mfem::Coefficient &p,
+                                   bool follower, const BCOptions &opt)
 {
-  CheckCoefficient(b, "SetBodyForce");
-  body_force_ = &b;
+  if (!follower)
+  {
+    loads_.AddPressure(attrs, p, opt);
+  }
+  else
+  {
+    const double *scale = loads_.AddFollowerPressure(attrs, p, opt);
+    follower_markers_.push_back(loads_.Marker(attrs));
+    nlf_->AddBdrFaceIntegrator(new FollowerPressureIntegrator(p, scale),
+                               follower_markers_.back());
+  }
+  finalized_ = false;
+}
+
+void SolidMechanicsTL::SetBodyForce(mfem::VectorCoefficient &b, const BCOptions &opt)
+{
+  loads_.SetBodyForce(b, rho0_, opt);
   finalized_ = false;
 }
 
 void SolidMechanicsTL::ClearBoundaryConditions()
 {
-  dirichlet_.clear();
-  traction_.clear();
-  body_force_ = nullptr;
+  const bool had_followers = loads_.HasFollowerPressure();
+  loads_.Clear();
+  if (had_followers) { ResetForm(); }
   finalized_ = false;
 }
 
 void SolidMechanicsTL::Finalize()
 {
-  // Essential true dofs: union of all Dirichlet markers, all components.
-  mfem::Array<int> ess_bdr(mesh_.bdr_attributes.Size() ? mesh_.bdr_attributes.Max() : 0);
-  ess_bdr = 0;
-  for (const BCEntry &bc : dirichlet_)
-  {
-    for (int i = 0; i < ess_bdr.Size(); i++) { ess_bdr[i] |= bc.marker[i]; }
-  }
-  fes_.GetEssentialTrueDofs(ess_bdr, ess_tdof_list_);
-  nlf_.SetEssentialTrueDofs(ess_tdof_list_);
-
-  // Dead loads: rho0 b in the volume, nominal traction on the boundary.
-  mfem::ParLinearForm load(&fes_);
-  if (body_force_)
-  {
-    rho0_body_force_ = std::make_unique<mfem::ScalarVectorProductCoefficient>(
-      rho0_, *body_force_);
-    load.AddDomainIntegrator(new mfem::VectorDomainLFIntegrator(*rho0_body_force_));
-  }
-  // TODO(follower loads): a pressure per unit current area becomes
-  // T = -p J F^{-T} N, which depends on u; it would leave this dead-load
-  // linear form and enter the ParNonlinearForm as a boundary integrator with
-  // its own tangent (plan section 3.5, out of scope here).
-  for (BCEntry &bc : traction_)
-  {
-    load.AddBoundaryIntegrator(new mfem::VectorBoundaryLFIntegrator(*bc.coef),
-                               bc.marker);
-  }
-  load.Assemble();
-  load_true_.SetSize(fes_.GetTrueVSize());
-  load.ParallelAssemble(load_true_);
+  loads_.Finalize();
+  nlf_->SetEssentialTrueDofs(loads_.EssentialTrueDofs());
   finalized_ = true;
 }
 
-void SolidMechanicsTL::SetLoadFactor(double lambda)
+void SolidMechanicsTL::SetLoadFactor(double t)
 {
   if (!finalized_) { Finalize(); }
-  load_factor_ = lambda;
+  loads_.SetTime(t);
 }
 
 void SolidMechanicsTL::ApplyDirichlet(mfem::Vector &x) const
 {
   MFEM_VERIFY(finalized_, "SolidMechanicsTL: call Finalize() first");
-  // ParGridFunction takes a non-const space pointer; nothing is modified.
-  mfem::ParGridFunction g(const_cast<mfem::ParFiniteElementSpace *>(&fes_));
-  g = 0.0;
-  for (const BCEntry &bc : dirichlet_)
-  {
-    g.ProjectBdrCoefficient(*bc.coef, bc.marker);
-  }
-  mfem::Vector g_true(fes_.GetTrueVSize());
-  g.GetTrueDofs(g_true);
-  for (int i = 0; i < ess_tdof_list_.Size(); i++)
-  {
-    x(ess_tdof_list_[i]) = load_factor_ * g_true(ess_tdof_list_[i]);
-  }
+  loads_.ApplyDirichlet(x);
 }
 
 void SolidMechanicsTL::Mult(const mfem::Vector &x, mfem::Vector &y) const
 {
   MFEM_VERIFY(finalized_, "SolidMechanicsTL: call Finalize() first");
-  nlf_.Mult(x, y);
-  y.Add(-load_factor_, load_true_);
-  for (int i = 0; i < ess_tdof_list_.Size(); i++) { y(ess_tdof_list_[i]) = 0.0; }
+  nlf_->Mult(x, y);
+  y -= loads_.ExternalLoad();
+  const mfem::Array<int> &ess = loads_.EssentialTrueDofs();
+  for (int i = 0; i < ess.Size(); i++) { y(ess[i]) = 0.0; }
 }
 
 mfem::Operator &SolidMechanicsTL::GetGradient(const mfem::Vector &x) const
 {
   MFEM_VERIFY(finalized_, "SolidMechanicsTL: call Finalize() first");
-  return nlf_.GetGradient(x);
+  return nlf_->GetGradient(x);
 }
 
 double SolidMechanicsTL::InternalEnergy(const mfem::Vector &x) const
 {
-  return nlf_.GetEnergy(x);
+  return nlf_->GetEnergy(x);
 }
 
 HYPRE_BigInt SolidMechanicsTL::GlobalTrueVSize() const
@@ -240,15 +153,6 @@ std::unique_ptr<mfem::Solver>
 SolidMechanicsTL::MakeLinearSolver(const LinearSolverConfig &cfg)
 {
   return cmf::MakeLinearSolver(cfg, fes_);
-}
-
-std::unique_ptr<SolidProblem> MakeSolidProblem(mfem::ParMesh &mesh, const AppConfig &cfg)
-{
-  if (cfg.formulation == "mixed")
-  {
-    return std::make_unique<MixedSolidMechanicsTL>(mesh, cfg, MakeMixedMaterial(cfg.material));
-  }
-  return std::make_unique<SolidMechanicsTL>(mesh, cfg, MakeMaterial(cfg.material, cfg.plane == "stress"));
 }
 
 void SolidMechanicsTL::EnsureFields()

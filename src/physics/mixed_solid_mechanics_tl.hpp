@@ -1,11 +1,14 @@
 // Mixed displacement-pressure total Lagrangian solid mechanics (Taylor-Hood:
 // displacement H1 order p, pressure H1 order p - 1) for near- and fully
 // incompressible decoupled materials.
-//   R_u(u, p).w = int [P_iso(F) + p J F^{-T}] : Grad w dV - lambda [ext. loads]
+//   R_u(u, p).w = int [P_iso(F) + p J F^{-T}] : Grad w dV + [follower pressures]
+//                 - sum_i s_i(t) [ext. loads_i]
 //   R_p(u, p).q = int q (J - 1 - p/kappa) dV       (kappa = inf: q (J - 1))
 // The unknown is the block true-dof vector [u; p]; Mult/GetGradient act on it.
+// Loads and essential dofs live in a LoadSet on the displacement space.
 #pragma once
 
+#include <deque>
 #include <memory>
 #include <string>
 #include <vector>
@@ -27,17 +30,22 @@ public:
                         const MixedMaterial &material);
   ~MixedSolidMechanicsTL() override = default;
 
-  void AddDirichlet(const std::vector<int> &attrs, mfem::VectorCoefficient &u_bar) override;
-  void AddTraction(const std::vector<int> &attrs, mfem::VectorCoefficient &T_bar) override;
-  void SetBodyForce(mfem::VectorCoefficient &b) override;
+  void AddDirichlet(const std::vector<int> &attrs, mfem::VectorCoefficient &u_bar,
+                    const BCOptions &opt = BCOptions()) override;
+  void AddTraction(const std::vector<int> &attrs, mfem::VectorCoefficient &T_bar,
+                   const BCOptions &opt = BCOptions()) override;
+  void AddPressure(const std::vector<int> &attrs, mfem::Coefficient &p, bool follower,
+                   const BCOptions &opt = BCOptions()) override;
+  void SetBodyForce(mfem::VectorCoefficient &b, const BCOptions &opt = BCOptions()) override;
   void ClearBoundaryConditions() override;
   void Finalize() override;
+  const LoadSet &Loads() const override { return loads_; }
 
   void Mult(const mfem::Vector &x, mfem::Vector &y) const override;
   mfem::Operator &GetGradient(const mfem::Vector &x) const override;
 
-  void SetLoadFactor(double lambda) override;
-  double LoadFactor() const override { return load_factor_; }
+  void SetLoadFactor(double t) override;
+  double LoadFactor() const override { return loads_.Time(); }
   void ApplyDirichlet(mfem::Vector &x) const override;
   MPI_Comm Comm() const override { return fes_u_.GetComm(); }
 
@@ -45,7 +53,7 @@ public:
   mfem::ParFiniteElementSpace &DisplacementSpace() override { return fes_u_; }
   mfem::ParFiniteElementSpace &PressureSpace() { return fes_p_; }
   const mfem::Array<int> &BlockOffsets() const { return offsets_; }
-  const mfem::Array<int> &EssentialTrueDofs() const override { return ess_tdof_list_; }
+  const mfem::Array<int> &EssentialTrueDofs() const override { return loads_.EssentialTrueDofs(); }
   HYPRE_BigInt GlobalTrueVSize() const override;
   std::string Description() const override;
   const MixedMaterial &GetMaterial() const { return material_; }
@@ -64,16 +72,20 @@ public:
   std::unique_ptr<mfem::Solver> MakeLinearSolver(const LinearSolverConfig &cfg) override;
 
 private:
-  struct BCEntry
+  // ParBlockNonlinearForm marks essential dofs by attribute (all
+  // components); this exposes the true-dof lists for component-wise data.
+  class BlockForm : public mfem::ParBlockNonlinearForm
   {
-    mfem::Array<int> marker;
-    mfem::VectorCoefficient *coef;
+  public:
+    using mfem::ParBlockNonlinearForm::ParBlockNonlinearForm;
+    void SetEssentialTrueDofs(int block, const mfem::Array<int> &list)
+    {
+      list.Copy(*ess_tdofs[block]);
+    }
   };
 
   void Build(const AppConfig &cfg);
-  mfem::Array<int> Marker(const std::vector<int> &attrs) const;
-  void CheckVectorSize(const std::vector<double> &v, const std::string &what) const;
-  void CheckCoefficient(mfem::VectorCoefficient &c, const std::string &what) const;
+  void ResetForm();
   void EnsureFields();
 
   mfem::ParMesh &mesh_;
@@ -90,20 +102,15 @@ private:
   mfem::ParFiniteElementSpace fes_p_;
   mfem::Array<mfem::ParFiniteElementSpace *> spaces_;
   mfem::Array<int> offsets_;
-  std::unique_ptr<mfem::ParBlockNonlinearForm> nlf_;
+  std::unique_ptr<BlockForm> nlf_;
 
   std::vector<std::unique_ptr<mfem::VectorCoefficient>> owned_coefs_;
-  std::vector<BCEntry> dirichlet_;
-  std::vector<BCEntry> traction_;
-  mfem::VectorCoefficient *body_force_ = nullptr;
-  std::unique_ptr<mfem::VectorCoefficient> rho0_body_force_;
+  std::vector<std::unique_ptr<mfem::Coefficient>> owned_scalars_;
+  LoadSet loads_;
+  std::deque<mfem::Array<int>> follower_markers_;
+  mfem::Array<int> ess_p_empty_;
 
   bool finalized_ = false;
-  double load_factor_ = 1.0;
-  mfem::Array<int> ess_u_marker_;
-  mfem::Array<int> ess_p_marker_;
-  mfem::Array<int> ess_tdof_list_;
-  mfem::Vector load_true_; // displacement block
   std::unique_ptr<mfem::HypreParMatrix> pressure_mass_;
 
   std::unique_ptr<mfem::ParGridFunction> displacement_;

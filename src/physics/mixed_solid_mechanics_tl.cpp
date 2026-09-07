@@ -2,25 +2,12 @@
 
 #include <cmath>
 
-#include "base/coefficients.hpp"
-#include "base/mesh_input.hpp"
+#include "kernels/follower_pressure.hpp"
 #include "kernels/mixed_total_lagrangian.hpp"
 #include "solvers/saddle_point_solver.hpp"
 
 namespace cmf
 {
-
-namespace
-{
-
-mfem::Vector ToVector(const std::vector<double> &v)
-{
-  mfem::Vector out(int(v.size()));
-  for (std::size_t i = 0; i < v.size(); i++) { out(int(i)) = v[i]; }
-  return out;
-}
-
-} // namespace
 
 MixedSolidMechanicsTL::MixedSolidMechanicsTL(mfem::ParMesh &mesh, const AppConfig &cfg,
                                              const MixedMaterial &material)
@@ -30,7 +17,8 @@ MixedSolidMechanicsTL::MixedSolidMechanicsTL(mfem::ParMesh &mesh, const AppConfi
     fec_u_(cfg.mesh.order, mesh.Dimension()),
     fes_u_(&mesh, &fec_u_, mesh.Dimension(), mfem::Ordering::byVDIM),
     fec_p_(cfg.mesh.order > 1 ? cfg.mesh.order - 1 : 1, mesh.Dimension()),
-    fes_p_(&mesh, &fec_p_)
+    fes_p_(&mesh, &fec_p_),
+    loads_(fes_u_)
 {
   if (cfg.mesh.order < 2)
   {
@@ -50,146 +38,80 @@ MixedSolidMechanicsTL::MixedSolidMechanicsTL(mfem::ParMesh &mesh, const AppConfi
   offsets_[1] = fes_u_.GetTrueVSize();
   offsets_[2] = offsets_[1] + fes_p_.GetTrueVSize();
   height = width = offsets_[2];
-  nlf_ = std::make_unique<mfem::ParBlockNonlinearForm>(spaces_);
   output_cfg_ = cfg.output;
+  ResetForm();
   Build(cfg);
 }
 
-void MixedSolidMechanicsTL::Build(const AppConfig &cfg)
+void MixedSolidMechanicsTL::ResetForm()
 {
+  nlf_ = std::make_unique<BlockForm>(spaces_);
   std::visit([this](const auto &mat)
   {
     using M = std::decay_t<decltype(mat)>;
     nlf_->AddDomainIntegrator(new MixedTotalLagrangianIntegrator<M>(mat));
   }, material_);
-
-  for (std::size_t i = 0; i < cfg.bcs.dirichlet.size(); i++)
-  {
-    const BoundaryCondition &bc = cfg.bcs.dirichlet[i];
-    const std::string what = "bcs.dirichlet[" + std::to_string(i) + "]";
-    owned_coefs_.push_back(MakeBCCoefficient(bc, dim_, what));
-    AddDirichlet(ResolveBoundaryAttributes(mesh_, bc, what), *owned_coefs_.back());
-  }
-  for (std::size_t i = 0; i < cfg.bcs.traction.size(); i++)
-  {
-    const BoundaryCondition &bc = cfg.bcs.traction[i];
-    const std::string what = "bcs.traction[" + std::to_string(i) + "]";
-    owned_coefs_.push_back(MakeBCCoefficient(bc, dim_, what));
-    AddTraction(ResolveBoundaryAttributes(mesh_, bc, what), *owned_coefs_.back());
-  }
-  if (!cfg.body_force.empty())
-  {
-    CheckVectorSize(cfg.body_force, "body_force");
-    const mfem::Vector v = ToVector(cfg.body_force);
-    owned_coefs_.push_back(std::make_unique<mfem::VectorConstantCoefficient>(v));
-    SetBodyForce(*owned_coefs_.back());
-  }
+  follower_markers_.clear();
+  finalized_ = false;
 }
 
-void MixedSolidMechanicsTL::CheckVectorSize(const std::vector<double> &v,
-                                            const std::string &what) const
+void MixedSolidMechanicsTL::Build(const AppConfig &cfg)
 {
-  if (int(v.size()) != dim_)
-  {
-    throw ConfigError(what + " has " + std::to_string(v.size()) +
-                      " entries, expected " + std::to_string(dim_));
-  }
-}
-
-void MixedSolidMechanicsTL::CheckCoefficient(mfem::VectorCoefficient &c,
-                                             const std::string &what) const
-{
-  if (c.GetVDim() != dim_)
-  {
-    throw ConfigError(what + ": coefficient has " + std::to_string(c.GetVDim()) +
-                      " components, expected " + std::to_string(dim_));
-  }
-}
-
-mfem::Array<int> MixedSolidMechanicsTL::Marker(const std::vector<int> &attrs) const
-{
-  const int max_attr = mesh_.bdr_attributes.Size() ? mesh_.bdr_attributes.Max() : 0;
-  mfem::Array<int> marker(max_attr);
-  marker = 0;
-  for (int a : attrs)
-  {
-    if (a < 1 || a > max_attr)
-    {
-      throw ConfigError("boundary attribute " + std::to_string(a) +
-                        " is not in the mesh (max " + std::to_string(max_attr) + ")");
-    }
-    marker[a - 1] = 1;
-  }
-  return marker;
+  InstallYamlLoads(*this, mesh_, cfg, dim_, owned_coefs_, owned_scalars_);
 }
 
 void MixedSolidMechanicsTL::AddDirichlet(const std::vector<int> &attrs,
-                                         mfem::VectorCoefficient &u_bar)
+                                         mfem::VectorCoefficient &u_bar, const BCOptions &opt)
 {
-  CheckCoefficient(u_bar, "AddDirichlet");
-  dirichlet_.push_back({Marker(attrs), &u_bar});
+  loads_.AddDirichlet(attrs, u_bar, opt);
   finalized_ = false;
 }
 
 void MixedSolidMechanicsTL::AddTraction(const std::vector<int> &attrs,
-                                        mfem::VectorCoefficient &T_bar)
+                                        mfem::VectorCoefficient &T_bar, const BCOptions &opt)
 {
-  CheckCoefficient(T_bar, "AddTraction");
-  traction_.push_back({Marker(attrs), &T_bar});
+  loads_.AddTraction(attrs, T_bar, opt);
   finalized_ = false;
 }
 
-void MixedSolidMechanicsTL::SetBodyForce(mfem::VectorCoefficient &b)
+void MixedSolidMechanicsTL::AddPressure(const std::vector<int> &attrs, mfem::Coefficient &p,
+                                        bool follower, const BCOptions &opt)
 {
-  CheckCoefficient(b, "SetBodyForce");
-  body_force_ = &b;
+  if (!follower)
+  {
+    loads_.AddPressure(attrs, p, opt);
+  }
+  else
+  {
+    const double *scale = loads_.AddFollowerPressure(attrs, p, opt);
+    follower_markers_.push_back(loads_.Marker(attrs));
+    nlf_->AddBdrFaceIntegrator(new BlockFollowerPressureIntegrator(p, scale),
+                               follower_markers_.back());
+  }
+  finalized_ = false;
+}
+
+void MixedSolidMechanicsTL::SetBodyForce(mfem::VectorCoefficient &b, const BCOptions &opt)
+{
+  loads_.SetBodyForce(b, rho0_, opt);
   finalized_ = false;
 }
 
 void MixedSolidMechanicsTL::ClearBoundaryConditions()
 {
-  dirichlet_.clear();
-  traction_.clear();
-  body_force_ = nullptr;
+  const bool had_followers = loads_.HasFollowerPressure();
+  loads_.Clear();
+  if (had_followers) { ResetForm(); }
   finalized_ = false;
 }
 
 void MixedSolidMechanicsTL::Finalize()
 {
-  const int max_attr = mesh_.bdr_attributes.Size() ? mesh_.bdr_attributes.Max() : 0;
-  ess_u_marker_.SetSize(max_attr);
-  ess_u_marker_ = 0;
-  for (const BCEntry &bc : dirichlet_)
-  {
-    for (int i = 0; i < max_attr; i++) { ess_u_marker_[i] |= bc.marker[i]; }
-  }
-  ess_p_marker_.SetSize(max_attr);
-  ess_p_marker_ = 0; // the pressure carries no essential conditions
-  fes_u_.GetEssentialTrueDofs(ess_u_marker_, ess_tdof_list_);
-  mfem::Array<mfem::Array<int> *> ess_bdr(2);
-  ess_bdr[0] = &ess_u_marker_;
-  ess_bdr[1] = &ess_p_marker_;
-  mfem::Array<mfem::Vector *> rhs(2);
-  rhs = nullptr;
-  nlf_->SetEssentialBC(ess_bdr, rhs);
-
-  // Dead loads on the displacement block (follower loads: see the
-  // displacement formulation's TODO seam).
-  mfem::ParLinearForm load(&fes_u_);
-  if (body_force_)
-  {
-    rho0_body_force_ = std::make_unique<mfem::ScalarVectorProductCoefficient>(
-      rho0_, *body_force_);
-    load.AddDomainIntegrator(new mfem::VectorDomainLFIntegrator(*rho0_body_force_));
-  }
-  for (BCEntry &bc : traction_)
-  {
-    load.AddBoundaryIntegrator(new mfem::VectorBoundaryLFIntegrator(*bc.coef),
-                               bc.marker);
-  }
-  load.Assemble();
-  load_true_.SetSize(fes_u_.GetTrueVSize());
-  load.ParallelAssemble(load_true_);
+  loads_.Finalize();
+  // The pressure carries no essential conditions.
+  ess_p_empty_.SetSize(0);
+  nlf_->SetEssentialTrueDofs(0, loads_.EssentialTrueDofs());
+  nlf_->SetEssentialTrueDofs(1, ess_p_empty_);
 
   // Pressure mass matrix for the Schur complement approximation.
   mfem::ParBilinearForm mass(&fes_p_);
@@ -201,27 +123,16 @@ void MixedSolidMechanicsTL::Finalize()
   finalized_ = true;
 }
 
-void MixedSolidMechanicsTL::SetLoadFactor(double lambda)
+void MixedSolidMechanicsTL::SetLoadFactor(double t)
 {
   if (!finalized_) { Finalize(); }
-  load_factor_ = lambda;
+  loads_.SetTime(t);
 }
 
 void MixedSolidMechanicsTL::ApplyDirichlet(mfem::Vector &x) const
 {
   MFEM_VERIFY(finalized_, "MixedSolidMechanicsTL: call Finalize() first");
-  mfem::ParGridFunction g(const_cast<mfem::ParFiniteElementSpace *>(&fes_u_));
-  g = 0.0;
-  for (const BCEntry &bc : dirichlet_)
-  {
-    g.ProjectBdrCoefficient(*bc.coef, bc.marker);
-  }
-  mfem::Vector g_true(fes_u_.GetTrueVSize());
-  g.GetTrueDofs(g_true);
-  for (int i = 0; i < ess_tdof_list_.Size(); i++)
-  {
-    x(ess_tdof_list_[i]) = load_factor_ * g_true(ess_tdof_list_[i]);
-  }
+  loads_.ApplyDirichlet(x); // the displacement block leads the block vector
 }
 
 void MixedSolidMechanicsTL::Mult(const mfem::Vector &x, mfem::Vector &y) const
@@ -229,8 +140,10 @@ void MixedSolidMechanicsTL::Mult(const mfem::Vector &x, mfem::Vector &y) const
   MFEM_VERIFY(finalized_, "MixedSolidMechanicsTL: call Finalize() first");
   nlf_->Mult(x, y);
   const int n_u = offsets_[1];
-  for (int i = 0; i < n_u; i++) { y(i) -= load_factor_ * load_true_(i); }
-  for (int i = 0; i < ess_tdof_list_.Size(); i++) { y(ess_tdof_list_[i]) = 0.0; }
+  const mfem::Vector &L = loads_.ExternalLoad();
+  for (int i = 0; i < n_u; i++) { y(i) -= L(i); }
+  const mfem::Array<int> &ess = loads_.EssentialTrueDofs();
+  for (int i = 0; i < ess.Size(); i++) { y(ess[i]) = 0.0; }
 }
 
 mfem::Operator &MixedSolidMechanicsTL::GetGradient(const mfem::Vector &x) const

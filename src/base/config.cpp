@@ -1,5 +1,7 @@
 #include "base/config.hpp"
 
+#include "base/expression.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <fstream>
@@ -108,7 +110,7 @@ private:
 };
 
 std::vector<BoundaryCondition> ParseBCList(const YAML::Node &node,
-                                           const std::string &path)
+                                           const std::string &path, bool dirichlet)
 {
   std::vector<BoundaryCondition> list;
   if (!node.IsDefined() || node.IsNull()) { return list; }
@@ -139,7 +141,78 @@ std::vector<BoundaryCondition> ParseBCList(const YAML::Node &node,
       try { bc.attr.push_back(attr[k].as<int>()); }
       catch (const YAML::Exception &) { bc.attr_names.push_back(attr[k].as<std::string>()); }
     }
-    bc.value = item.Require<std::vector<double>>("value");
+    if (!dirichlet)
+    {
+      bc.type = item.Optional<std::string>("type", "vector");
+      if (bc.type != "vector" && bc.type != "pressure" && bc.type != "follower_pressure")
+      {
+        throw ConfigError("key '" + item_path + ".type': unknown type '" + bc.type +
+                          "' (expected vector, pressure, or follower_pressure)");
+      }
+    }
+    // Data: value (+ gradient) or expression, never both.
+    const bool has_value = item.Has("value");
+    const bool has_expression = item.Has("expression");
+    if (has_value && has_expression)
+    {
+      throw ConfigError("keys '" + item_path + ".value' and '" + item_path +
+                        ".expression': give one, not both");
+    }
+    if (!has_value && !has_expression)
+    {
+      throw ConfigError("missing key '" + item_path + ".value' (or '" + item_path + ".expression')");
+    }
+    if (has_value)
+    {
+      if (bc.IsPressure())
+      {
+        double p = 0.0;
+        try { p = item.Raw("value").as<double>(); }
+        catch (const YAML::Exception &)
+        {
+          throw ConfigError("key '" + item_path + ".value' expected a number (a pressure), got " +
+                            Describe(item.Raw("value")));
+        }
+        bc.value = {p};
+      }
+      else { bc.value = item.Require<std::vector<double>>("value"); }
+    }
+    else
+    {
+      item.Optional<int>("value", 0);
+      YAML::Node ex = item.Raw("expression");
+      if (ex.IsScalar())
+      {
+        if (!bc.IsPressure())
+        {
+          throw ConfigError("key '" + item_path + ".expression' must be a list of one string per "
+                            "component (a single string only for the pressure types)");
+        }
+        bc.expression = {ex.Scalar()};
+      }
+      else
+      {
+        try { bc.expression = ex.as<std::vector<std::string>>(); }
+        catch (const YAML::Exception &) { bc.expression.clear(); }
+        if (bc.expression.empty() || (bc.IsPressure() && bc.expression.size() != 1))
+        {
+          throw ConfigError("key '" + item_path + ".expression' must be " +
+                            (bc.IsPressure() ? "a string" : "a list of strings, one per component"));
+        }
+      }
+      for (std::size_t k = 0; k < bc.expression.size(); k++)
+      {
+        try { Expression::Parse(bc.expression[k]); }
+        catch (const ConfigError &e)
+        {
+          throw ConfigError("key '" + item_path + ".expression[" + std::to_string(k) + "]': " + e.what());
+        }
+      }
+    }
+    if (item.Has("gradient") && (has_expression || bc.IsPressure()))
+    {
+      throw ConfigError("key '" + item_path + ".gradient' needs a vector 'value'");
+    }
     if (item.Has("gradient"))
     {
       const std::string gpath = item_path + ".gradient";
@@ -162,6 +235,47 @@ std::vector<BoundaryCondition> ParseBCList(const YAML::Node &node,
       }
     }
     else { item.Optional<int>("gradient", 0); }
+    if (item.Has("components"))
+    {
+      const std::string cpath = item_path + ".components";
+      if (!dirichlet)
+      {
+        throw ConfigError("key '" + cpath + "' applies to Dirichlet entries only");
+      }
+      YAML::Node comps = item.Raw("components");
+      if (!comps.IsSequence() || comps.size() == 0)
+      {
+        throw ConfigError("key '" + cpath + "' must be a non-empty list of x, y, z or 0, 1, 2");
+      }
+      for (std::size_t k = 0; k < comps.size(); k++)
+      {
+        int c = -1;
+        if (comps[k].IsScalar())
+        {
+          const std::string name = comps[k].Scalar();
+          if (name == "x" || name == "0") { c = 0; }
+          else if (name == "y" || name == "1") { c = 1; }
+          else if (name == "z" || name == "2") { c = 2; }
+        }
+        if (c < 0)
+        {
+          throw ConfigError("key '" + cpath + "[" + std::to_string(k) +
+                            "]' must be x, y, z or 0, 1, 2, got " + Describe(comps[k]));
+        }
+        if (std::find(bc.components.begin(), bc.components.end(), c) != bc.components.end())
+        {
+          throw ConfigError("key '" + cpath + "' lists component " + std::to_string(c) + " twice");
+        }
+        bc.components.push_back(c);
+      }
+    }
+    else { item.Optional<int>("components", 0); }
+    if (item.Has("schedule")) { bc.schedule = ParseSchedule(item.Raw("schedule"), item_path + ".schedule"); }
+    else
+    {
+      item.Optional<int>("schedule", 0);
+      if (has_expression) { bc.schedule = Schedule::Constant(); }
+    }
     for (int a : bc.attr)
     {
       if (a < 1)
@@ -195,6 +309,97 @@ void CheckNonNegative(int v, const std::string &path)
 }
 
 } // namespace
+
+double Schedule::Eval(double time) const
+{
+  switch (kind)
+  {
+    case Kind::Ramp:
+      if (time <= from) { return 0.0; }
+      if (time >= to) { return 1.0; }
+      return (time - from) / (to - from);
+    case Kind::Constant:
+      return time > 0.0 ? 1.0 : 0.0;
+    case Kind::Table:
+      if (time <= t.front()) { return s.front(); }
+      if (time >= t.back()) { return s.back(); }
+      for (std::size_t i = 1; i < t.size(); i++)
+      {
+        if (time <= t[i])
+        {
+          const double w = (time - t[i - 1]) / (t[i] - t[i - 1]);
+          return s[i - 1] + w * (s[i] - s[i - 1]);
+        }
+      }
+      return s.back();
+  }
+  return 0.0;
+}
+
+Schedule Schedule::Ramp(double from, double to)
+{
+  Schedule sch;
+  sch.kind = Kind::Ramp;
+  sch.from = from;
+  sch.to = to;
+  return sch;
+}
+
+Schedule Schedule::Constant()
+{
+  Schedule sch;
+  sch.kind = Kind::Constant;
+  return sch;
+}
+
+Schedule Schedule::Table(const std::vector<double> &t, const std::vector<double> &s)
+{
+  Schedule sch;
+  sch.kind = Kind::Table;
+  sch.t = t;
+  sch.s = s;
+  return sch;
+}
+
+// schedule: { type: ramp, from: 0.0, to: 1.0 } | { type: constant }
+//         | { type: table, t: [..], s: [..] }
+Schedule ParseSchedule(const YAML::Node &node, const std::string &path)
+{
+  NodeReader r(node, path);
+  Schedule sch;
+  const std::string type = r.Require<std::string>("type");
+  if (type == "ramp")
+  {
+    sch = Schedule::Ramp(r.Optional<double>("from", 0.0), r.Optional<double>("to", 1.0));
+    if (!(sch.from >= 0.0 && sch.to <= 1.0 && sch.from < sch.to))
+    {
+      throw ConfigError("keys '" + r.Path("from") + "'/'to' must satisfy 0 <= from < to <= 1");
+    }
+  }
+  else if (type == "constant") { sch = Schedule::Constant(); }
+  else if (type == "table")
+  {
+    sch = Schedule::Table(r.Require<std::vector<double>>("t"), r.Require<std::vector<double>>("s"));
+    if (sch.t.size() < 2 || sch.t.size() != sch.s.size())
+    {
+      throw ConfigError("keys '" + r.Path("t") + "'/'s' must be lists of equal length >= 2");
+    }
+    for (std::size_t i = 0; i < sch.t.size(); i++)
+    {
+      if (sch.t[i] < 0.0 || sch.t[i] > 1.0 || (i > 0 && !(sch.t[i] > sch.t[i - 1])))
+      {
+        throw ConfigError("key '" + r.Path("t") + "' must increase strictly within [0, 1]");
+      }
+    }
+  }
+  else
+  {
+    throw ConfigError("key '" + r.Path("type") + "': unknown schedule '" + type +
+                      "' (expected ramp, constant, or table)");
+  }
+  r.Finish();
+  return sch;
+}
 
 MeshConfig ParseMeshConfig(const YAML::Node &node, const std::string &path)
 {
@@ -425,8 +630,57 @@ BCConfig ParseBCConfig(const YAML::Node &node, const std::string &path)
   BCConfig cfg;
   if (!node.IsDefined() || node.IsNull()) { return cfg; }
   NodeReader r(node, path);
-  cfg.dirichlet = ParseBCList(r.Raw("dirichlet"), r.Path("dirichlet"));
-  cfg.traction = ParseBCList(r.Raw("traction"), r.Path("traction"));
+  cfg.dirichlet = ParseBCList(r.Raw("dirichlet"), r.Path("dirichlet"), true);
+  cfg.traction = ParseBCList(r.Raw("traction"), r.Path("traction"), false);
+  r.Finish();
+  return cfg;
+}
+
+// body_force: [bx, by, bz] (ramp schedule) or { value: [..], schedule: {..} }.
+BodyForceConfig ParseBodyForceConfig(const YAML::Node &node, const std::string &path)
+{
+  BodyForceConfig cfg;
+  if (!node.IsDefined() || node.IsNull()) { return cfg; }
+  if (node.IsSequence())
+  {
+    try { cfg.value = node.as<std::vector<double>>(); }
+    catch (const YAML::Exception &)
+    {
+      throw ConfigError("key '" + path + "' expected a list of numbers");
+    }
+    return cfg;
+  }
+  NodeReader r(node, path);
+  const bool has_value = r.Has("value");
+  const bool has_expression = r.Has("expression");
+  if (has_value && has_expression)
+  {
+    throw ConfigError("keys '" + path + ".value' and '" + path + ".expression': give one, not both");
+  }
+  if (!has_value && !has_expression)
+  {
+    throw ConfigError("missing key '" + path + ".value' (or '" + path + ".expression')");
+  }
+  if (has_value) { cfg.value = r.Require<std::vector<double>>("value"); r.Optional<int>("expression", 0); }
+  else
+  {
+    r.Optional<int>("value", 0);
+    cfg.expression = r.Require<std::vector<std::string>>("expression");
+    for (std::size_t k = 0; k < cfg.expression.size(); k++)
+    {
+      try { Expression::Parse(cfg.expression[k]); }
+      catch (const ConfigError &e)
+      {
+        throw ConfigError("key '" + path + ".expression[" + std::to_string(k) + "]': " + e.what());
+      }
+    }
+  }
+  if (r.Has("schedule")) { cfg.schedule = ParseSchedule(r.Raw("schedule"), r.Path("schedule")); }
+  else
+  {
+    r.Optional<int>("schedule", 0);
+    if (has_expression) { cfg.schedule = Schedule::Constant(); }
+  }
   r.Finish();
   return cfg;
 }
@@ -441,6 +695,63 @@ SolverConfig ParseSolverConfig(const YAML::Node &node, const std::string &path)
   {
     throw ConfigError("key '" + r.Path("load_steps") + "' must be >= 1");
   }
+  if (r.Has("steps"))
+  {
+    // steps: [ { to: t_1, n: n_1 }, ... ], t_k increasing, last t = 1.
+    if (r.Has("load_steps"))
+    {
+      throw ConfigError("keys '" + r.Path("load_steps") + "' and '" + r.Path("steps") +
+                        "': give one, not both");
+    }
+    YAML::Node steps = r.Raw("steps");
+    const std::string spath = r.Path("steps");
+    if (!steps.IsSequence() || steps.size() == 0)
+    {
+      throw ConfigError("'" + spath + "' must be a non-empty list of {to, n} maps");
+    }
+    double t_prev = 0.0;
+    for (std::size_t i = 0; i < steps.size(); i++)
+    {
+      NodeReader seg(steps[i], spath + "[" + std::to_string(i) + "]");
+      const double to = seg.Require<double>("to");
+      const int n = seg.Require<int>("n");
+      if (!(to > t_prev) || to > 1.0 + 1e-12)
+      {
+        throw ConfigError("key '" + seg.Path("to") + "' must increase and end at 1");
+      }
+      if (n < 1) { throw ConfigError("key '" + seg.Path("n") + "' must be >= 1"); }
+      for (int k = 1; k <= n; k++)
+      {
+        cfg.breakpoints.push_back(t_prev + (to - t_prev) * double(k) / double(n));
+      }
+      t_prev = to;
+      seg.Finish();
+    }
+    if (std::abs(t_prev - 1.0) > 1e-12)
+    {
+      throw ConfigError("'" + spath + "': the last segment must end at to: 1.0");
+    }
+    cfg.breakpoints.back() = 1.0;
+    cfg.load_steps = int(cfg.breakpoints.size());
+  }
+  if (r.Has("substep"))
+  {
+    NodeReader ss(r.Raw("substep"), r.Path("substep"));
+    SubstepConfig &sc = cfg.substep;
+    sc.on_failure = ss.Optional<bool>("on_failure", true);
+    sc.max_bisections = ss.Optional<int>("max_bisections", sc.max_bisections);
+    sc.min_dt = ss.Optional<double>("min_dt", sc.min_dt);
+    if (sc.max_bisections < 1)
+    {
+      throw ConfigError("key '" + ss.Path("max_bisections") + "' must be >= 1");
+    }
+    if (!(sc.min_dt > 0.0 && sc.min_dt <= 1.0))
+    {
+      throw ConfigError("key '" + ss.Path("min_dt") + "' must lie in (0, 1]");
+    }
+    ss.Finish();
+  }
+  else { r.Optional<int>("substep", 0); }
   if (r.Has("newton"))
   {
     NodeReader n(r.Raw("newton"), r.Path("newton"));
@@ -611,7 +922,7 @@ AppConfig ParseConfig(const YAML::Node &root)
   cfg.mesh = ParseMeshConfig(r.Raw("mesh"), "mesh");
   cfg.material = ParseMaterialConfig(r.Raw("material"), "material");
   cfg.bcs = ParseBCConfig(r.Raw("bcs"), "bcs");
-  cfg.body_force = r.Optional<std::vector<double>>("body_force", {});
+  cfg.body_force = ParseBodyForceConfig(r.Raw("body_force"), "body_force");
   cfg.solver = ParseSolverConfig(r.Raw("solver"), "solver");
   cfg.output = ParseOutputConfig(r.Raw("output"), "output");
   r.Finish();

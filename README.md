@@ -134,9 +134,15 @@ bcs:
                                                         # unit reference area (dead load)
   # Either entry may add gradient: [[..],[..]] (dim x dim): the data is then value + gradient X in the
   # reference coordinates (affine, e.g. the exact displacement of a homogeneous deformation).
-body_force: [0.0, 0.0]            # per unit mass; rho0 * b enters the weak form
+  # Dirichlet entries may add components: [x, z] (or 0-based indices) to prescribe a subset (rollers,
+  # symmetry planes). Every entry may add schedule: { type: ramp, from: 0.0, to: 1.0 } (default) |
+  # { type: constant } | { type: table, t: [..], s: [..] }: its data is schedule(t) * data over the
+  # pseudo-time t in [0, 1]. See "Boundary conditions and loading" below.
+body_force: [0.0, 0.0]            # per unit mass; rho0 * b enters the weak form; or
+                                  # { value: [..], schedule: {..} }
 solver:
-  load_steps: 1                   # loads and prescribed displacements scaled by k/load_steps
+  load_steps: 1                   # equal increments of t; or steps: [ { to: 0.5, n: 2 }, { to: 1.0, n: 4 } ]
+  substep: { on_failure: false, max_bisections: 4, min_dt: 1e-4 }   # halve a failed increment and retry
   newton:  { rtol: 1e-10, atol: 1e-12, max_it: 25, armijo_c: 1e-4, max_halvings: 8, print_level: 1 }
   linear:  { type: gmres_amg, amg: elasticity, rtol: 1e-12, atol: 0.0, max_it: 500, krylov_dim: 50, print_level: 0,
              inner_rtol: 1e-3, inner_max_it: 50, augmentation: 1.0 }
