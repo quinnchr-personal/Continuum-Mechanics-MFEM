@@ -22,6 +22,7 @@ output:
   paraview: out/anand_coupled_theories/finite_elasticity/06_sphere_inflation
   fields: [displacement, pressure, jacobian, vonmises, pk1_stress, cauchy_stress]
   probe_every_step: true            # the curves of the reference: probe values vs t
+  reactions: true
   probes:
     - { name: inner, point: [10.0, 0.0, 0.0] }
     - { name: outer, point: [11.0, 0.0, 0.0] }

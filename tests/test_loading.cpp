@@ -853,6 +853,71 @@ void MaterialRegionsTest()
   }
 }
 
+// ------------------------------------------------------------------ reactions
+
+// The reaction of a Dirichlet entry is the residual on its essential dofs:
+// on the uniaxial cube it equals the nominal stress times the face area with
+// the moment of a uniform load at the deformed face centroid; on Cook's
+// membrane the clamped edge balances the applied resultant.
+void ReactionsTest()
+{
+  {
+    cmf::AppConfig cfg = cmf::LoadConfig(
+      "apps/input/finite_elasticity/verification/homogeneous_deformations/compressible_uniaxial_neo_hookean.yaml");
+    cfg.output.paraview.clear();
+    cfg.output.fields = {"displacement", "pk1_stress"};
+    cfg.solver.newton.print_level = 0;
+    std::unique_ptr<mfem::ParMesh> mesh = cmf::BuildParMesh(MPI_COMM_WORLD, cfg.mesh);
+    std::unique_ptr<cmf::SolidProblem> problem = cmf::MakeSolidProblem(*mesh, cfg);
+    problem->Finalize();
+    std::unique_ptr<mfem::Solver> linear = problem->MakeLinearSolver(cfg.solver.linear);
+    mfem::Vector x(problem->Height());
+    x = 0.0;
+    const cmf::QuasiStaticReport report = cmf::SolveQuasiStatic(*problem, *linear, cfg.solver, x);
+    CHECK_MSG(report.converged, "uniaxial cube converged");
+    problem->UpdateFields(x);
+    cmf::FieldRegistry fields;
+    problem->RegisterFields(fields);
+    const double P11 = cmf::ProbeVector(fields.Get("pk1_stress"), {0.5, 0.5, 0.5})[0];
+    const double lam2 = 1.0 + cmf::ProbeVector(problem->Displacement(), {1.0, 1.0, 1.0})[1];
+    const std::vector<cmf::Reaction> rx = problem->Reactions(x);
+    CHECK(rx.size() == 4 && rx[3].name == "dirichlet[3]" && rx[0].name == "dirichlet[0]");
+    // Entry 3 pulls the face X = 1 (reference area 1): force P_11 in x, no other component;
+    // moment of a uniform load at the deformed centroid (1.5, lam2/2, lam2/2).
+    std::printf("  reactions: right face force (%.6f, %.1e, %.1e) vs P_11 %.6f; moment (%.1e, %.6f, %.6f) "
+                "vs (0, %.6f, %.6f)\n", rx[3].force[0], rx[3].force[1], rx[3].force[2], P11,
+                rx[3].moment[0], rx[3].moment[1], rx[3].moment[2], P11 * 0.5 * lam2, -P11 * 0.5 * lam2);
+    CHECK_MSG(std::abs(rx[3].force[0] - P11) <= 1e-8 * P11, "reaction on the pulled face = P_11 A");
+    CHECK_MSG(std::abs(rx[3].force[1]) + std::abs(rx[3].force[2]) <= 1e-8 * P11, "no lateral reaction");
+    CHECK_MSG(std::abs(rx[3].moment[1] - 0.5 * lam2 * P11) <= 1e-8 * P11, "reaction moment y");
+    CHECK_MSG(std::abs(rx[3].moment[2] + 0.5 * lam2 * P11) <= 1e-8 * P11, "reaction moment z");
+    // The roller X = 0 (entry 0, x only) carries -P_11; the rollers Y = 0 and Z = 0 carry nothing.
+    CHECK_MSG(std::abs(rx[0].force[0] + P11) <= 1e-8 * P11, "roller X = 0 balances the pull");
+    CHECK_MSG(std::abs(rx[1].force[1]) + std::abs(rx[2].force[2]) <= 1e-8 * P11, "free lateral faces: no roller force");
+  }
+  {
+    cmf::AppConfig cfg = CookConfig();
+    cfg.solver.load_steps = 1;
+    std::unique_ptr<mfem::ParMesh> mesh = cmf::BuildParMesh(MPI_COMM_WORLD, cfg.mesh);
+    mfem::Vector t(2);
+    t(0) = 0.0; t(1) = 3.75;
+    mfem::VectorConstantCoefficient traction(t);
+    std::unique_ptr<cmf::SolidProblem> problem = cmf::MakeSolidProblem(*mesh, cfg);
+    problem->AddTraction({2}, traction);
+    problem->Finalize();
+    std::unique_ptr<mfem::Solver> linear = problem->MakeLinearSolver(cfg.solver.linear);
+    mfem::Vector x(problem->Height());
+    x = 0.0;
+    const cmf::QuasiStaticReport report = cmf::SolveQuasiStatic(*problem, *linear, cfg.solver, x);
+    CHECK_MSG(report.converged, "Cook converged");
+    const std::vector<cmf::Reaction> rx = problem->Reactions(x);
+    std::printf("  reactions: Cook clamped edge force (%.6e, %.6f) vs applied resultant (0, 60)\n",
+                rx[0].force[0], rx[0].force[1]);
+    CHECK_MSG(std::abs(rx[0].force[1] + 60.0) <= 1e-8 * 60.0, "clamped edge carries -60 in y");
+    CHECK_MSG(std::abs(rx[0].force[0]) <= 1e-8 * 60.0, "clamped edge carries no net x force");
+  }
+}
+
 } // namespace
 
 int main(int argc, char *argv[])
@@ -872,5 +937,6 @@ int main(int argc, char *argv[])
   FollowerVsDeadTest();
   CylinderInflationTest();
   MaterialRegionsTest();
+  ReactionsTest();
   return cmf_test::Report("test_loading");
 }

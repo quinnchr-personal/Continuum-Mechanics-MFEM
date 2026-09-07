@@ -11,7 +11,7 @@ material: { model: arruda_boyce, mu: 280.0, N: 26.2144, kappa: 280000.0 }   # kP
 bcs:
   dirichlet:
     - { attr: [bottom], expression: ["0", "0", "0"] }
-    - { attr: [top],    expression: ["0", "0", "-2.5*t"] }
+    - { attr: [top], name: top,    expression: ["0", "0", "-2.5*t"] }
 solver:
   load_steps: 100
   substep: { on_failure: true, max_bisections: 6, min_dt: 1e-4 }
@@ -21,6 +21,7 @@ output:
   paraview: out/anand_coupled_theories/finite_elasticity/08_column_buckling
   fields: [displacement, pressure, jacobian, vonmises, pk1_stress, cauchy_stress]
   probe_every_step: true            # the curves of the reference: probe values vs t
+  reactions: true                   # force and moment of every Dirichlet entry per step (the loaded face)
   probes:
     - { name: mid_height, point: [0.5, 0.5, 10.0] }
     - { name: top_center, point: [0.5, 0.5, 20.0] }

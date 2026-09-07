@@ -133,6 +133,8 @@ std::vector<BoundaryCondition> ParseBCList(const YAML::Node &node,
     const std::string item_path = path + "[" + std::to_string(i) + "]";
     NodeReader item(node[i], item_path);
     BoundaryCondition bc;
+    bc.name = item.Optional<std::string>("name", (dirichlet ? "dirichlet[" : "traction[") +
+                                                   std::to_string(i) + "]");
     // attr: a list of attribute numbers and/or physical-group names.
     if (!item.Has("attr")) { throw ConfigError("missing key '" + item_path + ".attr'"); }
     YAML::Node attr = item.Raw("attr");
@@ -904,6 +906,7 @@ OutputConfig ParseOutputConfig(const YAML::Node &node, const std::string &path)
   }
   else { r.Optional<int>("probes", 0); }
   cfg.probe_every_step = r.Optional<bool>("probe_every_step", false);
+  cfg.reactions = r.Optional<bool>("reactions", false);
   r.Finish();
   return cfg;
 }

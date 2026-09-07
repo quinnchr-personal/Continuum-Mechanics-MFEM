@@ -179,6 +179,7 @@ output:
   high_order: true
   probes: [ { name: top_right_corner, point: [48.0, 60.0] } ]   # every registered field printed at these points
   probe_every_step: false         # also after every load step, on lines prefixed "step k t = ..."
+  reactions: false                # force and moment of every Dirichlet entry (bcs.*.name labels them)
 ```
 
 Unknown keys, missing required keys, and wrong types raise an error naming
@@ -238,6 +239,18 @@ boundary face term with its own (non-symmetric) tangent by dual numbers;
 at `F = I` and differ at second order in `p`. `rivlin_cylinder_inflation.yaml`
 reproduces the closed-form inflation of a thick-walled incompressible
 cylinder (Rivlin) to 1e-6 on the 4 x 8 mesh with one refinement.
+
+**Reactions.** `output.reactions: true` prints, after every step and at the
+end, the resultant force and the moment about the origin (at the current
+positions) that each Dirichlet entry exerts on the body, on lines
+`reaction <name>: force = fx fy fz moment = mx my mz` (`name` is the
+optional label of the entry, default `dirichlet[i]`). The reaction is the
+residual on the entry's essential degrees of freedom, internal minus external
+nodal forces, which is the exact discrete counterpart of the traction
+integral over the constrained face: on the uniaxial cube it equals P_11 times
+the area to round-off and on Cook's membrane the clamped edge carries the
+applied resultant to 1e-14. Two entries sharing nodes both count the shared
+nodal forces.
 
 **Steps and recovery.** `solver.load_steps: N` takes N equal increments of
 `t`; `solver.steps: [ { to: 0.5, n: 2 }, { to: 1.0, n: 4 } ]` takes 2
@@ -322,6 +335,18 @@ pressure vs displacement) can be read from the log.
 | `08_column_buckling` | 3D08 | 1 x 1 x 20 column, imperfection by `perturb_column.py`, shortened by 2.5 mm |
 | `09_spherical_inclusion` | 3D09 | octant of a cube with a ten times stiffer spherical inclusion (`material.regions`), stretch 2, `inclusion.geo` |
 | `10_column_twist` | 3D10 | 1 x 1 x 3 column, top face turned through 2 pi |
+
+`apps/anand_plots.py` reproduces the result plots of the reference pages
+from the logs of these runs (the inputs print the probes and the reactions
+after every step; save the stdout as `out/anand_coupled_theories/
+finite_elasticity/logs/<case>.log`, or pass `--logs`). The reference
+overlays no analytical curves; the script adds one where a reference
+exists: the homogeneous incompressible Arruda-Boyce response for the
+uniaxial and shear blocks (with both this code's series form and the
+reference's Pade form of the model), Rivlin's universal torsion for torque
+and axial force, the incompressible thick-walled cylinder and sphere
+inflation by quadrature, the Euler load for the column, and the matrix-only
+curve for the inclusion. `pip`-level dependencies: numpy and matplotlib.
 
 Differences from the reference that change the numbers: the Arruda-Boyce
 model here is the five-term series in I1/N (`N = lambda_L^2`) rather than the

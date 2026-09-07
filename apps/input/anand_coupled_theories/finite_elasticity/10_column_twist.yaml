@@ -10,7 +10,7 @@ material: { model: arruda_boyce, mu: 280.0, N: 26.2144, kappa: 280000.0 }   # kP
 bcs:
   dirichlet:
     - { attr: [bottom], expression: ["0", "0", "0"] }
-    - { attr: [top], expression: ["(x-0.5)*cos(2*pi*t) + (y-0.5)*sin(2*pi*t) - (x-0.5)", "-(x-0.5)*sin(2*pi*t) + (y-0.5)*cos(2*pi*t) - (y-0.5)", "0"] }
+    - { attr: [top], name: top, expression: ["(x-0.5)*cos(2*pi*t) + (y-0.5)*sin(2*pi*t) - (x-0.5)", "-(x-0.5)*sin(2*pi*t) + (y-0.5)*cos(2*pi*t) - (y-0.5)", "0"] }
 solver:
   load_steps: 50
   substep: { on_failure: true, max_bisections: 6, min_dt: 1e-4 }
@@ -20,6 +20,7 @@ output:
   paraview: out/anand_coupled_theories/finite_elasticity/10_column_twist
   fields: [displacement, pressure, jacobian, vonmises, pk1_stress, cauchy_stress]
   probe_every_step: true            # the curves of the reference: probe values vs t
+  reactions: true                   # force and moment of every Dirichlet entry per step (the loaded face)
   probes:
     - { name: edge_mid, point: [1.0, 0.5, 1.5] }
     - { name: corner_mid, point: [1.0, 1.0, 1.5] }

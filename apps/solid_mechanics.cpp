@@ -90,6 +90,23 @@ int main(int argc, char *argv[])
       }
     };
 
+    // Resultant force and moment of every Dirichlet entry (output.reactions).
+    auto print_reactions = [&](const std::string &prefix, const mfem::Vector &x)
+    {
+      if (!cfg.output.reactions) { return; }
+      for (const cmf::Reaction &rx : physics.Reactions(x))
+      {
+        if (root)
+        {
+          std::printf("%sreaction %s: force =", prefix.c_str(), rx.name.c_str());
+          for (int d = 0; d < pmesh->Dimension(); d++) { std::printf(" %.12e", rx.force[d]); }
+          std::printf(" moment =");
+          for (int d = 0; d < 3; d++) { std::printf(" %.12e", rx.moment[d]); }
+          std::printf("\n");
+        }
+      }
+    };
+
     const cmf::QuasiStaticReport report = cmf::SolveQuasiStatic(
       physics, *linear, cfg.solver, u,
       [&](const cmf::LoadStepReport &step, const mfem::Vector &x)
@@ -97,12 +114,10 @@ int main(int argc, char *argv[])
         if (!step.newton.converged) { return; }
         if (writer || cfg.output.probe_every_step) { physics.UpdateFields(x); }
         if (writer) { writer->Save(step.step, step.load_factor); }
-        if (cfg.output.probe_every_step)
-        {
-          char prefix[64];
-          std::snprintf(prefix, sizeof(prefix), "step %d t = %.6f ", step.step, step.load_factor);
-          print_probes(prefix);
-        }
+        char prefix[64];
+        std::snprintf(prefix, sizeof(prefix), "step %d t = %.6f ", step.step, step.load_factor);
+        if (cfg.output.probe_every_step) { print_probes(prefix); }
+        print_reactions(prefix, x);
       });
 
     physics.UpdateFields(u);
@@ -118,6 +133,7 @@ int main(int argc, char *argv[])
                   report.converged ? "yes" : "no", report.steps.size(), u_l2, energy);
     }
     print_probes("");
+    print_reactions("", u);
     if (root && writer) { std::cout << "wrote " << cfg.output.paraview << std::endl; }
     return report.converged ? 0 : 2;
   }

@@ -23,6 +23,7 @@ output:
   paraview: out/anand_coupled_theories/finite_elasticity/07_cube_footing
   fields: [displacement, pressure, jacobian, vonmises, pk1_stress, cauchy_stress]
   probe_every_step: true            # the curves of the reference: probe values vs t
+  reactions: true
   probes:
     - { name: footing_center, point: [0.0, 0.0, 50.0] }
     - { name: patch_corner, point: [25.0, 25.0, 50.0] }

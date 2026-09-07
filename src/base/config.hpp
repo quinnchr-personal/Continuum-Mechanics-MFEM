@@ -117,6 +117,7 @@ struct Schedule
 // current area).
 struct BoundaryCondition
 {
+  std::string name;              // optional label (reactions output); default "dirichlet[i]"
   std::vector<int> attr;
   std::vector<std::string> attr_names;
   std::vector<std::string> expression;
@@ -216,6 +217,9 @@ struct OutputConfig
   bool high_order = true;
   std::vector<ProbeConfig> probes;   // every registered field printed at these points
   bool probe_every_step = false;     // also after every load step, prefixed by "step k t = ..."
+  // Resultant force and moment (about the origin, current positions) that
+  // each Dirichlet entry exerts on the body, after every step and at the end.
+  bool reactions = false;
 };
 
 struct AppConfig

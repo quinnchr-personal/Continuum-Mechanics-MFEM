@@ -70,6 +70,7 @@ BCOptions OptionsOf(const BoundaryCondition &bc)
   opt.components = bc.components;
   opt.schedule = bc.schedule;
   opt.time_dependent = ExpressionsUseTime(bc.expression);
+  opt.name = bc.name;
   return opt;
 }
 

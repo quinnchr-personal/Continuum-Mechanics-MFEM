@@ -10,7 +10,7 @@ bcs:
   dirichlet:
     - { attr: [xbot], expression: ["0", "0", "0"], components: [x] }
     - { attr: [ybot], expression: ["0", "0", "0"], components: [y] }
-    - { attr: [xtop], expression: ["30*t", "0", "0"] }
+    - { attr: [xtop], name: loaded, expression: ["30*t", "0", "0"] }
 solver:
   load_steps: 100
   substep: { on_failure: true, max_bisections: 6, min_dt: 1e-4 }
@@ -20,6 +20,7 @@ output:
   paraview: out/anand_coupled_theories/finite_elasticity/04_plate_with_hole
   fields: [displacement, pressure, jacobian, vonmises, pk1_stress, cauchy_stress]
   probe_every_step: true            # the curves of the reference: probe values vs t
+  reactions: true                   # force and moment of every Dirichlet entry per step (the loaded face)
   probes:
     - { name: end_corner, point: [15.0, 10.0, 0.0] }
     - { name: hole_top, point: [0.0, 3.0, 0.0] }

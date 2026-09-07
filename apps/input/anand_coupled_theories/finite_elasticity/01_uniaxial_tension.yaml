@@ -13,7 +13,7 @@ bcs:
     - { attr: [left],   expression: ["0", "0", "0"], components: [x] }
     - { attr: [front],  expression: ["0", "0", "0"], components: [y] }
     - { attr: [bottom], expression: ["0", "0", "0"], components: [z] }
-    - { attr: [back],   expression: ["0", "67.5*t", "0"], components: [y] }   # stretch 7.75
+    - { attr: [back], name: loaded,   expression: ["0", "67.5*t", "0"], components: [y] }   # stretch 7.75
 solver:
   load_steps: 100
   substep: { on_failure: true, max_bisections: 6, min_dt: 1e-4 }
@@ -23,6 +23,7 @@ output:
   paraview: out/anand_coupled_theories/finite_elasticity/01_uniaxial_tension
   fields: [displacement, pressure, jacobian, vonmises, pk1_stress, cauchy_stress]
   probe_every_step: true            # the curves of the reference: probe values vs t
+  reactions: true                   # force and moment of every Dirichlet entry per step (the loaded face)
   probes:
     - { name: corner, point: [10.0, 10.0, 10.0] }
     - { name: center, point: [5.0, 5.0, 5.0] }

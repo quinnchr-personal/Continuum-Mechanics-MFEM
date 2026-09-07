@@ -25,6 +25,17 @@ struct BCOptions
   // Reassemble the dead-load vector every time the pseudo-time changes
   // (coefficients that depend on t). Dirichlet data is always re-projected.
   bool time_dependent = false;
+  std::string name;             // label of the entry (reactions output)
+};
+
+// Resultant of the nodal forces a Dirichlet entry exerts on the body through
+// its essential dofs (the residual there: internal minus external forces),
+// and their moment about the origin at the current positions X + u.
+struct Reaction
+{
+  std::string name;
+  double force[3] = {0.0, 0.0, 0.0};
+  double moment[3] = {0.0, 0.0, 0.0};
 };
 
 class LoadSet
@@ -65,6 +76,9 @@ public:
 
   // Overwrite the essential true dofs of x with schedule(t) * projected data.
   void ApplyDirichlet(mfem::Vector &x) const;
+  // Reactions of every Dirichlet entry from the full residual r (essential
+  // rows not zeroed) and the displacement x (true dofs); collective.
+  std::vector<Reaction> Reactions(const mfem::Vector &r, const mfem::Vector &x) const;
   // The scheduled external load sum_i s_i(t) L_i at the current t (true dofs).
   const mfem::Vector &ExternalLoad() const { return external_; }
 
@@ -119,6 +133,7 @@ private:
   mfem::Array<int> ess_marker_;
   mfem::Array<int> ess_tdof_list_;
   mfem::Vector external_;
+  mutable mfem::Vector coords_true_; // reference node coordinates (true dofs), lazily
 };
 
 } // namespace cmf

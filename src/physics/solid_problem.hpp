@@ -35,6 +35,8 @@ public:
   virtual void ClearBoundaryConditions() = 0;
   virtual void Finalize() = 0;
   virtual const LoadSet &Loads() const = 0;
+  // Reactions of the Dirichlet entries at the state x (see loads.hpp).
+  virtual std::vector<Reaction> Reactions(const mfem::Vector &x) const = 0;
 
   virtual mfem::ParFiniteElementSpace &DisplacementSpace() = 0;
   virtual const mfem::Array<int> &EssentialTrueDofs() const = 0;

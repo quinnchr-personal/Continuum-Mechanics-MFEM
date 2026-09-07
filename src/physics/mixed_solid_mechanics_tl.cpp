@@ -162,6 +162,20 @@ void MixedSolidMechanicsTL::Mult(const mfem::Vector &x, mfem::Vector &y) const
   for (int i = 0; i < ess.Size(); i++) { y(ess[i]) = 0.0; }
 }
 
+std::vector<Reaction> MixedSolidMechanicsTL::Reactions(const mfem::Vector &x) const
+{
+  MFEM_VERIFY(finalized_, "MixedSolidMechanicsTL: call Finalize() first");
+  mfem::Array<int> none;
+  nlf_->SetEssentialTrueDofs(0, none);
+  mfem::Vector r(x.Size());
+  nlf_->Mult(x, r);
+  nlf_->SetEssentialTrueDofs(0, loads_.EssentialTrueDofs());
+  const int n_u = offsets_[1];
+  mfem::Vector r_u(r.GetData(), n_u), x_u(const_cast<double *>(x.GetData()), n_u);
+  r_u -= loads_.ExternalLoad();
+  return loads_.Reactions(r_u, x_u);
+}
+
 mfem::Operator &MixedSolidMechanicsTL::GetGradient(const mfem::Vector &x) const
 {
   MFEM_VERIFY(finalized_, "MixedSolidMechanicsTL: call Finalize() first");

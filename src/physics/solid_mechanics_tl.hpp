@@ -52,6 +52,7 @@ public:
   // called lazily by SetLoadFactor/ApplyDirichlet, and required before Mult.
   void Finalize() override;
   const LoadSet &Loads() const override { return loads_; }
+  std::vector<Reaction> Reactions(const mfem::Vector &x) const override;
 
   // mfem::Operator on true dofs.
   void Mult(const mfem::Vector &x, mfem::Vector &y) const override;

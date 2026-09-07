@@ -136,6 +136,20 @@ void SolidMechanicsTL::Mult(const mfem::Vector &x, mfem::Vector &y) const
   for (int i = 0; i < ess.Size(); i++) { y(ess[i]) = 0.0; }
 }
 
+std::vector<Reaction> SolidMechanicsTL::Reactions(const mfem::Vector &x) const
+{
+  MFEM_VERIFY(finalized_, "SolidMechanicsTL: call Finalize() first");
+  // The full residual: the form zeroes its essential rows in Mult, so they
+  // are lifted for this evaluation and restored afterwards.
+  mfem::Array<int> none;
+  nlf_->SetEssentialTrueDofs(none);
+  mfem::Vector r(x.Size());
+  nlf_->Mult(x, r);
+  nlf_->SetEssentialTrueDofs(loads_.EssentialTrueDofs());
+  r -= loads_.ExternalLoad();
+  return loads_.Reactions(r, x);
+}
+
 mfem::Operator &SolidMechanicsTL::GetGradient(const mfem::Vector &x) const
 {
   MFEM_VERIFY(finalized_, "SolidMechanicsTL: call Finalize() first");

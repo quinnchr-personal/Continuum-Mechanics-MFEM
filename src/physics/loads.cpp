@@ -58,6 +58,7 @@ void LoadSet::AddDirichlet(const std::vector<int> &attrs, mfem::VectorCoefficien
   e.marker = Marker(attrs);
   e.coef = &u_bar;
   e.opt = opt;
+  if (e.opt.name.empty()) { e.opt.name = "dirichlet[" + std::to_string(dirichlet_.size()) + "]"; }
   dirichlet_.push_back(std::move(e));
   finalized_ = false;
 }
@@ -252,6 +253,46 @@ void LoadSet::ApplyDirichlet(mfem::Vector &x) const
     g.GetTrueDofs(g_true);
     for (int i = 0; i < e.tdofs.Size(); i++) { x(e.tdofs[i]) = s * g_true(e.tdofs[i]); }
   }
+}
+
+std::vector<Reaction> LoadSet::Reactions(const mfem::Vector &r, const mfem::Vector &x) const
+{
+  MFEM_VERIFY(finalized_, "LoadSet: call Finalize() first");
+  if (coords_true_.Size() == 0)
+  {
+    // The reference coordinates as a vector field on the displacement space.
+    mfem::VectorFunctionCoefficient X(dim_, [](const mfem::Vector &p, mfem::Vector &v) { v = p; });
+    mfem::ParGridFunction g(&fes_);
+    g.ProjectCoefficient(X);
+    coords_true_.SetSize(fes_.GetTrueVSize());
+    g.GetTrueDofs(coords_true_);
+  }
+  // True dofs are ordered by vdim (all components of a node consecutive).
+  std::vector<Reaction> out;
+  for (const DirichletEntry &e : dirichlet_)
+  {
+    double local[6] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+    for (int k = 0; k < e.tdofs.Size(); k++)
+    {
+      const int i = e.tdofs[k];
+      const int node = i / dim_, c = i % dim_;
+      const double f = r(i);
+      double pos[3] = {0.0, 0.0, 0.0}, force[3] = {0.0, 0.0, 0.0};
+      for (int d = 0; d < dim_; d++) { pos[d] = coords_true_(node * dim_ + d) + x(node * dim_ + d); }
+      force[c] = f;
+      local[c] += f;
+      local[3] += pos[1] * force[2] - pos[2] * force[1];
+      local[4] += pos[2] * force[0] - pos[0] * force[2];
+      local[5] += pos[0] * force[1] - pos[1] * force[0];
+    }
+    double global[6];
+    MPI_Allreduce(local, global, 6, MPI_DOUBLE, MPI_SUM, fes_.GetComm());
+    Reaction rx;
+    rx.name = e.opt.name;
+    for (int d = 0; d < 3; d++) { rx.force[d] = global[d]; rx.moment[d] = global[3 + d]; }
+    out.push_back(rx);
+  }
+  return out;
 }
 
 } // namespace cmf

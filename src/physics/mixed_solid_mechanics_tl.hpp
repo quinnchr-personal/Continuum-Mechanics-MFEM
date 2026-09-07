@@ -44,6 +44,7 @@ public:
   void ClearBoundaryConditions() override;
   void Finalize() override;
   const LoadSet &Loads() const override { return loads_; }
+  std::vector<Reaction> Reactions(const mfem::Vector &x) const override;
 
   void Mult(const mfem::Vector &x, mfem::Vector &y) const override;
   mfem::Operator &GetGradient(const mfem::Vector &x) const override;

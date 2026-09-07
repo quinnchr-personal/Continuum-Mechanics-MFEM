@@ -9,7 +9,7 @@ material: { model: arruda_boyce, mu: 280.0, N: 26.2144, kappa: 280000.0 }   # kP
 bcs:
   dirichlet:
     - { attr: [bottom], expression: ["0", "0", "0"] }
-    - { attr: [top], expression: ["x*cos(2.5*t) - y*sin(2.5*t) - x", "x*sin(2.5*t) + y*cos(2.5*t) - y", "0"] }
+    - { attr: [top], name: top, expression: ["x*cos(2.5*t) - y*sin(2.5*t) - x", "x*sin(2.5*t) + y*cos(2.5*t) - y", "0"] }
 solver:
   load_steps: 20
   substep: { on_failure: true, max_bisections: 6, min_dt: 1e-4 }
@@ -19,6 +19,7 @@ output:
   paraview: out/anand_coupled_theories/finite_elasticity/03_cylinder_torsion
   fields: [displacement, pressure, jacobian, vonmises, pk1_stress, cauchy_stress]
   probe_every_step: true            # the curves of the reference: probe values vs t
+  reactions: true                   # force and moment of every Dirichlet entry per step (the loaded face)
   probes:
     - { name: rim_mid, point: [12.7, 0.0, 12.7] }
     - { name: axis_mid, point: [0.0, 0.0, 12.7] }
