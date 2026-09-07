@@ -10,6 +10,7 @@
 
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 #include "base/tensor.hpp"
 #include "materials/material_tangent.hpp"
@@ -91,12 +92,16 @@ inline double VonMises(const tensor<double, 3, 3> &sigma)
 }
 
 // Consumes any material with the PK1<T>(F) signature (template, not virtual).
+// One material for every element, or a table indexed by element attribute
+// (size max attribute + 1; entry 0 unused).
 template <typename Material>
 class TotalLagrangianIntegrator : public mfem::NonlinearFormIntegrator
 {
 public:
   explicit TotalLagrangianIntegrator(const Material &material)
-    : material_(material) {}
+    : materials_(1, material) {}
+  explicit TotalLagrangianIntegrator(const std::vector<Material> &by_attribute)
+    : materials_(by_attribute) {}
 
   mfem::real_t GetElementEnergy(const mfem::FiniteElement &el,
                                 mfem::ElementTransformation &Tr,
@@ -124,7 +129,11 @@ public:
     else { Tangent<3>(el, Tr, elfun, elmat); }
   }
 
-  const Material &GetMaterial() const { return material_; }
+  const Material &GetMaterial() const { return materials_[0]; }
+  const Material &MaterialOf(const mfem::ElementTransformation &Tr) const
+  {
+    return materials_.size() == 1 ? materials_[0] : materials_[std::size_t(Tr.Attribute)];
+  }
 
 private:
   const mfem::IntegrationRule &Rule(const mfem::FiniteElement &el,
@@ -172,6 +181,7 @@ private:
     else
     {
       Prepare<dim>(el, elfun);
+      const Material &material = MaterialOf(Tr);
       const mfem::IntegrationRule &ir = Rule(el, Tr);
       double energy = 0.0;
       tensor<double, dim, dim> H;
@@ -180,7 +190,7 @@ private:
         const mfem::IntegrationPoint &ip = ir.IntPoint(q);
         PointSetup<dim>(el, Tr, ip, H);
         energy += ip.weight * Tr.Weight() *
-                  material_.Energy(DeformationGradient<dim>(H));
+                  material.Energy(DeformationGradient<dim>(H));
       }
       return energy;
     }
@@ -195,13 +205,14 @@ private:
     elvect.SetSize(dof * dim);
     elvect = 0.0;
     mfem::DenseMatrix PMatO(elvect.GetData(), dof, dim);
+    const Material &material = MaterialOf(Tr);
     const mfem::IntegrationRule &ir = Rule(el, Tr);
     tensor<double, dim, dim> H;
     for (int q = 0; q < ir.GetNPoints(); q++)
     {
       const mfem::IntegrationPoint &ip = ir.IntPoint(q);
       PointSetup<dim>(el, Tr, ip, H);
-      const tensor<double, dim, dim> P = QPointStress<Material, dim>(material_, H);
+      const tensor<double, dim, dim> P = QPointStress<Material, dim>(material, H);
       const double w = ip.weight * Tr.Weight();
       // r(a, i) += w P_ij DS(a, j)
       for (int a = 0; a < dof; a++)
@@ -222,13 +233,14 @@ private:
     Prepare<dim>(el, elfun);
     elmat.SetSize(dof * dim);
     elmat = 0.0;
+    const Material &material = MaterialOf(Tr);
     const mfem::IntegrationRule &ir = Rule(el, Tr);
     tensor<double, dim, dim> H;
     for (int q = 0; q < ir.GetNPoints(); q++)
     {
       const mfem::IntegrationPoint &ip = ir.IntPoint(q);
       PointSetup<dim>(el, Tr, ip, H);
-      const tensor<double, 3, 3, 3, 3> A = QPointTangent<Material, dim>(material_, H);
+      const tensor<double, 3, 3, 3, 3> A = QPointTangent<Material, dim>(material, H);
       const double w = ip.weight * Tr.Weight();
       // K(a i, b k) += w DS(a, j) A_ijkl DS(b, l)
       for (int a = 0; a < dof; a++)
@@ -248,7 +260,7 @@ private:
     }
   }
 
-  Material material_;
+  std::vector<Material> materials_;
   mfem::DenseMatrix DSh_, DS_, Jrt_, Hmat_, PMatI_;
 };
 

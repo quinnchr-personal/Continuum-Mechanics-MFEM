@@ -28,6 +28,10 @@ class MixedSolidMechanicsTL : public SolidProblem
 public:
   MixedSolidMechanicsTL(mfem::ParMesh &mesh, const AppConfig &cfg,
                         const MixedMaterial &material);
+  // Materials by element attribute (materials.hpp; all the same model and
+  // all incompressible or none; the solver scales with the base entry).
+  MixedSolidMechanicsTL(mfem::ParMesh &mesh, const AppConfig &cfg,
+                        const std::vector<MixedMaterial> &materials);
   ~MixedSolidMechanicsTL() override = default;
 
   void AddDirichlet(const std::vector<int> &attrs, mfem::VectorCoefficient &u_bar,
@@ -56,7 +60,8 @@ public:
   const mfem::Array<int> &EssentialTrueDofs() const override { return loads_.EssentialTrueDofs(); }
   HYPRE_BigInt GlobalTrueVSize() const override;
   std::string Description() const override;
-  const MixedMaterial &GetMaterial() const { return material_; }
+  const MixedMaterial &GetMaterial() const { return materials_[0]; }
+  const std::vector<MixedMaterial> &Materials() const { return materials_; }
   double ShearModulus() const { return mu_; }
   double BulkModulus() const { return kappa_; } // inf when incompressible
   bool Incompressible() const { return incompressible_; }
@@ -92,7 +97,7 @@ private:
   int dim_;
   int order_;
   double rho0_;
-  MixedMaterial material_;
+  std::vector<MixedMaterial> materials_;
   double mu_;
   double kappa_;
   bool incompressible_;

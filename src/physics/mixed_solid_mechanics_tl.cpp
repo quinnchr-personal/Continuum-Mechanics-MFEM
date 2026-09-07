@@ -11,9 +11,13 @@ namespace cmf
 
 MixedSolidMechanicsTL::MixedSolidMechanicsTL(mfem::ParMesh &mesh, const AppConfig &cfg,
                                              const MixedMaterial &material)
+  : MixedSolidMechanicsTL(mesh, cfg, std::vector<MixedMaterial>(1, material)) {}
+
+MixedSolidMechanicsTL::MixedSolidMechanicsTL(mfem::ParMesh &mesh, const AppConfig &cfg,
+                                             const std::vector<MixedMaterial> &materials)
   : SolidProblem(0),
     mesh_(mesh), dim_(mesh.Dimension()), order_(cfg.mesh.order),
-    rho0_(cfg.material.rho0), material_(material),
+    rho0_(cfg.material.rho0), materials_(materials),
     fec_u_(cfg.mesh.order, mesh.Dimension()),
     fes_u_(&mesh, &fec_u_, mesh.Dimension(), mfem::Ordering::byVDIM),
     fec_p_(cfg.mesh.order > 1 ? cfg.mesh.order - 1 : 1, mesh.Dimension()),
@@ -24,12 +28,21 @@ MixedSolidMechanicsTL::MixedSolidMechanicsTL(mfem::ParMesh &mesh, const AppConfi
   {
     throw ConfigError("formulation: mixed needs mesh.order >= 2 (Taylor-Hood pair)");
   }
+  MFEM_VERIFY(!materials_.empty(), "MixedSolidMechanicsTL: no material");
   std::visit([this](const auto &mat)
   {
     mu_ = mat.ShearModulus();
     kappa_ = mat.kappa;
     incompressible_ = mat.Incompressible();
-  }, material_);
+  }, materials_[0]);
+  for (const MixedMaterial &m : materials_)
+  {
+    const bool inc = std::visit([](const auto &mat) { return mat.Incompressible(); }, m);
+    if (inc != incompressible_)
+    {
+      throw ConfigError("material.regions: every region must be incompressible or none");
+    }
+  }
   spaces_.SetSize(2);
   spaces_[0] = &fes_u_;
   spaces_[1] = &fes_p_;
@@ -50,9 +63,10 @@ void MixedSolidMechanicsTL::ResetForm()
   std::visit([this](const auto &mat)
   {
     using M = std::decay_t<decltype(mat)>;
-    nlf_->AddDomainIntegrator(new MixedTotalLagrangianIntegrator<M>(mat));
-    energy_form_->AddDomainIntegrator(new MixedTotalLagrangianIntegrator<M>(mat));
-  }, material_);
+    const std::vector<M> table = UnpackMaterials<M>(materials_);
+    nlf_->AddDomainIntegrator(new MixedTotalLagrangianIntegrator<M>(table));
+    energy_form_->AddDomainIntegrator(new MixedTotalLagrangianIntegrator<M>(table));
+  }, materials_[0]);
   follower_markers_.clear();
   finalized_ = false;
 }
@@ -168,7 +182,8 @@ HYPRE_BigInt MixedSolidMechanicsTL::GlobalTrueVSize() const
 
 std::string MixedSolidMechanicsTL::Description() const
 {
-  return "mixed u-p formulation, " + MaterialName(material_) +
+  return "mixed u-p formulation, " + MaterialName(materials_[0]) +
+         (materials_.size() > 1 ? " (regions)" : "") +
          (incompressible_ ? " (incompressible)" : " (kappa " + std::to_string(kappa_) + ")");
 }
 
@@ -196,13 +211,16 @@ void MixedSolidMechanicsTL::UpdateFields(const mfem::Vector &x)
   displacement_->SetFromTrueDofs(xu);
   pressure_->SetFromTrueDofs(xp);
   if (qfields_->Empty()) { return; }
-  const double inv_kappa = incompressible_ ? 0.0 : 1.0 / kappa_;
-  std::visit([&](const auto &mat)
+  std::visit([&](const auto &first)
   {
+    using M = std::decay_t<decltype(first)>;
+    const std::vector<M> table = UnpackMaterials<M>(materials_);
     mfem::DenseMatrix grad;
     qfields_->Update([&](mfem::ElementTransformation &T, const mfem::IntegrationPoint &ip,
                          QPointState &s)
     {
+      const M &mat = MaterialAt(table, T.Attribute);
+      const double inv_kappa = mat.Incompressible() ? 0.0 : 1.0 / mat.kappa;
       T.SetIntPoint(&ip);
       displacement_->GetVectorGradient(T, grad);
       const double p = pressure_->GetValue(T, ip);
@@ -211,7 +229,7 @@ void MixedSolidMechanicsTL::UpdateFields(const mfem::Vector &x)
       // The mixed functional's integrand, consistent with InternalEnergy.
       s.energy = mat.EnergyIso(s.F) + p * (det(s.F) - 1.0) - 0.5 * inv_kappa * p * p;
     });
-  }, material_);
+  }, materials_[0]);
 }
 
 void MixedSolidMechanicsTL::RegisterFields(FieldRegistry &registry)

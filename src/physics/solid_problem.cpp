@@ -8,13 +8,60 @@
 namespace cmf
 {
 
+namespace
+{
+
+template <typename V, typename Make>
+std::vector<V> TableByAttribute(const MaterialConfig &cfg, mfem::Mesh &mesh, const Make &make)
+{
+  std::vector<V> table(1, make(cfg));
+  if (cfg.regions.empty()) { return table; }
+  const int max_attr = mesh.attributes.Size() ? mesh.attributes.Max() : 0;
+  table.assign(std::size_t(max_attr) + 1, table[0]);
+  std::vector<int> owner(std::size_t(max_attr) + 1, -1);
+  for (std::size_t i = 0; i < cfg.regions.size(); i++)
+  {
+    const MaterialConfig &region = cfg.regions[i];
+    const std::string what = "material.regions[" + std::to_string(i) + "]";
+    const V material = make(region);
+    for (int a : ResolveElementAttributes(mesh, region.attr, region.attr_names, what))
+    {
+      if (owner[std::size_t(a)] >= 0)
+      {
+        throw ConfigError(what + ": element attribute " + std::to_string(a) +
+                          " is already covered by material.regions[" +
+                          std::to_string(owner[std::size_t(a)]) + "]");
+      }
+      owner[std::size_t(a)] = int(i);
+      table[std::size_t(a)] = material;
+    }
+  }
+  return table;
+}
+
+} // namespace
+
+std::vector<Material> MakeMaterialTable(const MaterialConfig &cfg, mfem::Mesh &mesh,
+                                        bool plane_stress)
+{
+  return TableByAttribute<Material>(cfg, mesh, [plane_stress](const MaterialConfig &c)
+  { return MakeMaterial(c, plane_stress); });
+}
+
+std::vector<MixedMaterial> MakeMixedMaterialTable(const MaterialConfig &cfg, mfem::Mesh &mesh)
+{
+  return TableByAttribute<MixedMaterial>(cfg, mesh, [](const MaterialConfig &c)
+  { return MakeMixedMaterial(c); });
+}
+
 std::unique_ptr<SolidProblem> MakeSolidProblem(mfem::ParMesh &mesh, const AppConfig &cfg)
 {
   if (cfg.formulation == "mixed")
   {
-    return std::make_unique<MixedSolidMechanicsTL>(mesh, cfg, MakeMixedMaterial(cfg.material));
+    return std::make_unique<MixedSolidMechanicsTL>(mesh, cfg, MakeMixedMaterialTable(cfg.material, mesh));
   }
-  return std::make_unique<SolidMechanicsTL>(mesh, cfg, MakeMaterial(cfg.material, cfg.plane == "stress"));
+  return std::make_unique<SolidMechanicsTL>(
+    mesh, cfg, MakeMaterialTable(cfg.material, mesh, cfg.plane == "stress"));
 }
 
 BCOptions OptionsOf(const BoundaryCondition &bc)

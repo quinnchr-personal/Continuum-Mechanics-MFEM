@@ -565,6 +565,61 @@ void TestExpression()
     cmf::ConfigError, "body_force.expression[1]");
 }
 
+// Material regions: inheritance from the base, bulk-key replacement, errors.
+void TestMaterialRegions()
+{
+  const std::string head = "mesh: { file: square.msh }\n";
+  {
+    const cmf::AppConfig c = cmf::ParseConfig(YAML::Load(head +
+      "material:\n"
+      "  model: arruda_boyce\n"
+      "  mu: 280.0\n"
+      "  N: 26.2144\n"
+      "  kappa: 280000.0\n"
+      "  regions:\n"
+      "    - { attr: [inclusion, 3], mu: 2800.0, kappa: 2800000.0 }\n"
+      "    - { attr: [2], N: 9.0 }\n"));
+    CHECK(c.material.regions.size() == 2);
+    const cmf::MaterialConfig &r0 = c.material.regions[0];
+    CHECK(r0.model == "arruda_boyce" && r0.attr_names == std::vector<std::string>({"inclusion"}) &&
+          r0.attr == std::vector<int>({3}));
+    CHECK_CLOSE(r0.mu, 2800.0, 0.0);
+    CHECK_CLOSE(r0.N, 26.2144, 0.0);       // inherited
+    CHECK_CLOSE(r0.kappa, 2800000.0, 0.0);
+    CHECK(r0.regions.empty());
+    const cmf::MaterialConfig &r1 = c.material.regions[1];
+    CHECK_CLOSE(r1.mu, 280.0, 0.0);        // inherited
+    CHECK_CLOSE(r1.N, 9.0, 0.0);
+    CHECK_CLOSE(r1.kappa, 280000.0, 0.0);  // inherited
+    CHECK(c.material.attr.empty() && c.material.attr_names.empty());
+  }
+  // A region may switch the bulk specification (nu instead of kappa).
+  {
+    const cmf::AppConfig c = cmf::ParseConfig(YAML::Load(head +
+      "material: { model: iso_neo_hookean, mu: 1.0, kappa: 100.0, regions: [ { attr: [2], nu: 0.3 } ] }\n"));
+    CHECK(std::isnan(c.material.regions[0].kappa));
+    CHECK_CLOSE(c.material.regions[0].nu, 0.3, 0.0);
+  }
+  CHECK_THROWS(cmf::ParseConfig(YAML::Load(head +
+    "material: { model: iso_neo_hookean, mu: 1.0, kappa: 100.0, regions: [ { attr: [2], model: gent, Jm: 3 } ] }\n")),
+    cmf::ConfigError, "must use the base model");
+  CHECK_THROWS(cmf::ParseConfig(YAML::Load(head +
+    "material: { model: iso_neo_hookean, mu: 1.0, kappa: 100.0, regions: [ { mu: 2.0 } ] }\n")),
+    cmf::ConfigError, "material.regions[0].attr");
+  CHECK_THROWS(cmf::ParseConfig(YAML::Load(head +
+    "material: { model: iso_neo_hookean, mu: 1.0, kappa: 100.0, regions: [ { attr: [2], incompressible: true } ] }\n")),
+    cmf::ConfigError, "incompressible or none");
+  CHECK_THROWS(cmf::ParseConfig(YAML::Load(head +
+    "material: { model: iso_neo_hookean, mu: 1.0, kappa: 100.0, regions: [ { attr: [2], mu: -2.0 } ] }\n")),
+    cmf::ConfigError, "material.regions[0].mu");
+  CHECK_THROWS(cmf::ParseConfig(YAML::Load(head +
+    "material: { model: neo_hookean, E: 1.0, nu: 0.3, regions: [ { attr: [2], kappa: 3.0 } ] }\n")),
+    cmf::ConfigError, "material.regions[0].nu");
+  CHECK_THROWS(cmf::ParseConfig(YAML::Load(head +
+    "material: { model: iso_neo_hookean, mu: 1.0, kappa: 100.0, regions: [ { attr: [2], mu: 2.0, colour: red } ] }\n")),
+    cmf::ConfigError, "unknown key 'material.regions[0].colour'");
+}
+
 int main()
 {
   TestTensor2x2();
@@ -574,5 +629,6 @@ int main()
   TestYaml();
   TestLoading();
   TestExpression();
+  TestMaterialRegions();
   return cmf_test::Report("test_base");
 }

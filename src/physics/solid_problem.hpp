@@ -7,6 +7,7 @@
 
 #include "base/config.hpp"
 #include "base/fields.hpp"
+#include "materials/materials.hpp"
 #include "mfem.hpp"
 #include "physics/loads.hpp"
 #include "solvers/quasi_static.hpp"
@@ -52,6 +53,14 @@ public:
 // Builds the problem selected by cfg.formulation with the YAML boundary
 // conditions installed (Finalize() still has to be called).
 std::unique_ptr<SolidProblem> MakeSolidProblem(mfem::ParMesh &mesh, const AppConfig &cfg);
+
+// Materials by element attribute from cfg.material and its regions (see
+// materials.hpp for the table convention): the base everywhere, each region
+// on its attributes (numbers checked against the mesh, physical-volume names
+// resolved through the element attribute sets).
+std::vector<Material> MakeMaterialTable(const MaterialConfig &cfg, mfem::Mesh &mesh,
+                                        bool plane_stress);
+std::vector<MixedMaterial> MakeMixedMaterialTable(const MaterialConfig &cfg, mfem::Mesh &mesh);
 
 // Installs cfg.bcs and cfg.body_force into problem: attributes resolved
 // against mesh, coefficients built by base/coefficients.hpp and kept alive in

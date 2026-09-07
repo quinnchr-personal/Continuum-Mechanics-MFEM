@@ -137,6 +137,11 @@ material: { model: neo_hookean, E: 250.0, nu: 0.3, rho0: 1.0 }
   #   incompressible: true; finite kappa works in either formulation (penalty U = kappa/2 (J - 1)^2
   #   in the displacement formulation), kappa = inf needs formulation: mixed.
   #   Closed forms and homogeneous solutions: doc/incompressible_hyperelasticity.tex.
+  # regions: [ { attr: [inclusion, 3], mu: 2800.0, kappa: 2800000.0 } ]
+  #   Other parameters of the same model by element attribute (physical-volume names and/or
+  #   numbers); keys not given are inherited from the base, a region giving any of kappa | nu |
+  #   incompressible replaces the base's bulk specification, every region must be incompressible
+  #   or none, and no attribute may be covered twice. The base applies everywhere else.
 bcs:
   dirichlet: [ { attr: [left], expression: ["0", "0"] } ]      # attr: physical-group names and/or numbers;
   traction:  [ { attr: [right], expression: ["0", "3.75"] } ]  # expression: one string f(x, y, z, t) per
@@ -265,7 +270,7 @@ a pseudo-time), automatic step growth after a bisection.
 
 The ten "Finite Elasticity" examples of the FEniCSx companion to *Introduction
 to coupled theories in solid mechanics* (solidmechanicscoupledtheories.github.io,
-section 1) as inputs of this code, nine of them: Arruda-Boyce with
+section 1) as inputs of this code: Arruda-Boyce with
 G0 = 280 kPa, lambda_L = 5.12 and K = 1000 G0 in kPa and mm, mixed Q2-Q1 or
 P2-P1, the same geometry, boundary conditions, load histories and step counts.
 Meshes come from `apps/mesh/*.geo` (`make meshes`); the curved ones are
@@ -283,11 +288,10 @@ pressure vs displacement) can be read from the log.
 | `06_sphere_inflation` | 3D06 | octant shell 10/11 mm, follower pressure to 35 kPa, `sphere_octant.geo` |
 | `07_cube_footing` | 3D07 | 50 mm cube, follower pressure 1500 kPa on a quarter of the top, `footing.geo` |
 | `08_column_buckling` | 3D08 | 1 x 1 x 20 column, imperfection by `perturb_column.py`, shortened by 2.5 mm |
+| `09_spherical_inclusion` | 3D09 | octant of a cube with a ten times stiffer spherical inclusion (`material.regions`), stretch 2, `inclusion.geo` |
 | `10_column_twist` | 3D10 | 1 x 1 x 3 column, top face turned through 2 pi |
 
-Not reproduced: 3D09 (cube with a stiffer spherical inclusion) needs two
-materials by element attribute, which the `material` section cannot express
-yet. Differences from the reference that change the numbers: the Arruda-Boyce
+Differences from the reference that change the numbers: the Arruda-Boyce
 model here is the five-term series in I1/N (`N = lambda_L^2`) rather than the
 Pade inverse Langevin, so it is softer near the locking stretch (visible in
 01 above a stretch of about 3); the volumetric law is p = K (J - 1) instead of
@@ -572,7 +576,9 @@ For the next physics the following will have to generalize:
   interface (`QuasiStaticProblem` is the current minimal one: residual,
   Jacobian, pseudo-time, Dirichlet application) plus field exchange by name
   through `FieldRegistry`.
-- Materials are stateless. Internal variables (`QuadratureFunction` state),
+- Materials are stateless and, per element attribute, one model with
+  region-wise parameters (`material.regions`; the integrators hold a table
+  indexed by attribute). Internal variables (`QuadratureFunction` state),
   temperature dependence, and hand-coded tangents are absent by design.
 - All kernels are CPU host code written as plain callables without
   allocation or virtual calls in the qpoint loops, so `MFEM_HOST_DEVICE` and

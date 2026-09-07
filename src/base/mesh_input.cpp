@@ -195,6 +195,36 @@ std::vector<int> ResolveBoundaryAttributes(mfem::Mesh &mesh, const BoundaryCondi
   return out;
 }
 
+std::vector<int> ResolveElementAttributes(mfem::Mesh &mesh, const std::vector<int> &attr,
+                                          const std::vector<std::string> &attr_names,
+                                          const std::string &what)
+{
+  std::vector<int> out;
+  for (int a : attr)
+  {
+    if (mesh.attributes.Find(a) < 0)
+    {
+      throw ConfigError(what + ": element attribute " + std::to_string(a) +
+                        " is not in the mesh (element attributes: " +
+                        DescribeAttributes(mesh, false) + ")");
+    }
+    out.push_back(a);
+  }
+  for (const std::string &name : attr_names)
+  {
+    if (!mesh.attribute_sets.AttributeSetExists(name))
+    {
+      throw ConfigError(what + ": the mesh has no physical volume named '" + name +
+                        "' (element attributes: " + DescribeAttributes(mesh, false) + ")");
+    }
+    const mfem::Array<int> &attrs = mesh.attribute_sets.GetAttributeSet(name);
+    for (int i = 0; i < attrs.Size(); i++) { out.push_back(attrs[i]); }
+  }
+  std::sort(out.begin(), out.end());
+  out.erase(std::unique(out.begin(), out.end()), out.end());
+  return out;
+}
+
 std::unique_ptr<mfem::ParMesh> BuildParMesh(MPI_Comm comm, const MeshConfig &cfg)
 {
   std::unique_ptr<mfem::Mesh> serial = BuildSerialMesh(cfg);

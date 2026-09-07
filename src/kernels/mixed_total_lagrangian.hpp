@@ -12,6 +12,7 @@
 #include <cmath>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 #include "base/dual.hpp"
 #include "base/tensor.hpp"
@@ -92,8 +93,10 @@ class MixedTotalLagrangianIntegrator : public mfem::BlockNonlinearFormIntegrator
 {
 public:
   explicit MixedTotalLagrangianIntegrator(const Material &material)
-    : material_(material),
-      inv_kappa_(material.Incompressible() ? 0.0 : 1.0 / material.kappa) {}
+    : materials_(1, material) {}
+  // One material per element attribute (size max attribute + 1, entry 0 unused).
+  explicit MixedTotalLagrangianIntegrator(const std::vector<Material> &by_attribute)
+    : materials_(by_attribute) {}
 
   // Mixed functional int Psi_iso(F) + p (J - 1) - p^2 / (2 kappa) dV.
   mfem::real_t GetElementEnergy(const mfem::Array<const mfem::FiniteElement *> &el,
@@ -121,9 +124,15 @@ public:
     else { Tangent<3>(el, Tr, elfun, elmats); }
   }
 
-  const Material &GetMaterial() const { return material_; }
+  const Material &GetMaterial() const { return materials_[0]; }
+  const Material &MaterialOf(const mfem::ElementTransformation &Tr) const
+  {
+    return materials_.size() == 1 ? materials_[0] : materials_[std::size_t(Tr.Attribute)];
+  }
 
 private:
+  static double InvKappa(const Material &m) { return m.Incompressible() ? 0.0 : 1.0 / m.kappa; }
+
   const mfem::IntegrationRule &Rule(const mfem::FiniteElement &el) const
   {
     return mfem::IntRules.Get(el.GetGeomType(), 2 * el.GetOrder() + 3);
@@ -166,6 +175,8 @@ private:
                 const mfem::Array<const mfem::Vector *> &elfun)
   {
     Prepare<dim>(el, elfun);
+    const Material &material = MaterialOf(Tr);
+    const double inv_kappa = InvKappa(material);
     const mfem::IntegrationRule &ir = Rule(*el[0]);
     tensor<double, dim, dim> H;
     double p = 0.0, energy = 0.0;
@@ -176,7 +187,7 @@ private:
       const double w = ip.weight * Tr.Weight();
       const tensor<double, 3, 3> F = DeformationGradient<dim>(H);
       const double J = det(F);
-      energy += w * (material_.EnergyIso(F) + p * (J - 1.0) - 0.5 * inv_kappa_ * p * p);
+      energy += w * (material.EnergyIso(F) + p * (J - 1.0) - 0.5 * inv_kappa * p * p);
     }
     return energy;
   }
@@ -195,6 +206,8 @@ private:
     *elvec[0] = 0.0;
     *elvec[1] = 0.0;
     mfem::DenseMatrix PMatO(elvec[0]->GetData(), dof_u, dim);
+    const Material &material = MaterialOf(Tr);
+    const double inv_kappa = InvKappa(material);
     const mfem::IntegrationRule &ir = Rule(*el[0]);
     tensor<double, dim, dim> H;
     double p = 0.0;
@@ -203,7 +216,7 @@ private:
       const mfem::IntegrationPoint &ip = ir.IntPoint(q);
       PointSetup<dim>(el, Tr, ip, *elfun[1], H, p);
       const double w = ip.weight * Tr.Weight();
-      const tensor<double, dim, dim> P = QPointMixedStress<Material, dim>(material_, H, p);
+      const tensor<double, dim, dim> P = QPointMixedStress<Material, dim>(material, H, p);
       for (int a = 0; a < dof_u; a++)
         for (int i = 0; i < dim; i++)
         {
@@ -213,7 +226,7 @@ private:
         }
       double J = 1.0;
       QPointVolumeGradient<dim>(H, J);
-      const double constraint = J - 1.0 - inv_kappa_ * p;
+      const double constraint = J - 1.0 - inv_kappa * p;
       for (int b = 0; b < dof_p; b++) { (*elvec[1])(b) += w * constraint * Sh_(b); }
     }
   }
@@ -239,6 +252,8 @@ private:
     Kup = 0.0;
     Kpu = 0.0;
     Kpp = 0.0;
+    const Material &material = MaterialOf(Tr);
+    const double inv_kappa = InvKappa(material);
     const mfem::IntegrationRule &ir = Rule(*el[0]);
     tensor<double, dim, dim> H;
     double p = 0.0;
@@ -248,7 +263,7 @@ private:
       PointSetup<dim>(el, Tr, ip, *elfun[1], H, p);
       const double w = ip.weight * Tr.Weight();
       const tensor<double, 3, 3, 3, 3> A =
-        QPointMixedTangent<Material, dim>(material_, H, p);
+        QPointMixedTangent<Material, dim>(material, H, p);
       for (int a = 0; a < dof_u; a++)
         for (int i = 0; i < dim; i++)
           for (int k = 0; k < dim; k++)
@@ -278,19 +293,18 @@ private:
             Kpu(b, a + i * dof_u) += v;
           }
         }
-      if (inv_kappa_ > 0.0)
+      if (inv_kappa > 0.0)
       {
         for (int a = 0; a < dof_p; a++)
           for (int b = 0; b < dof_p; b++)
           {
-            Kpp(a, b) -= w * inv_kappa_ * Sh_(a) * Sh_(b);
+            Kpp(a, b) -= w * inv_kappa * Sh_(a) * Sh_(b);
           }
       }
     }
   }
 
-  Material material_;
-  double inv_kappa_;
+  std::vector<Material> materials_;
   mfem::DenseMatrix DSh_, DS_, Jrt_, Hmat_, PMatI_;
   mfem::Vector Sh_;
 };

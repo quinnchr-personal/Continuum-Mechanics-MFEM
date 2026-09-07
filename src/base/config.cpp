@@ -536,28 +536,51 @@ void ValidateMaterialConfig(const MaterialConfig &cfg, const std::string &path)
   }
 }
 
-MaterialConfig ParseMaterialConfig(const YAML::Node &node,
-                                   const std::string &path)
+namespace
 {
-  NodeReader r(node, path);
-  MaterialConfig cfg;
+
+// The parameter keys of a material map, read over `base` (a region inherits
+// what it does not give; the base starts from an empty config).
+MaterialConfig ReadMaterialKeys(NodeReader &r, const std::string &path, const MaterialConfig &base,
+                                bool region)
+{
+  MaterialConfig cfg = base;
+  cfg.regions.clear();
+  cfg.attr.clear();
+  cfg.attr_names.clear();
   const double unset = std::numeric_limits<double>::quiet_NaN();
-  cfg.model = r.Require<std::string>("model");
-  cfg.E = r.Optional<double>("E", unset);
-  cfg.nu = r.Optional<double>("nu", unset);
-  cfg.mu = r.Optional<double>("mu", unset);
-  cfg.kappa = r.Optional<double>("kappa", unset);
-  cfg.c1 = r.Optional<double>("c1", unset);
-  cfg.c2 = r.Optional<double>("c2", unset);
-  cfg.c10 = r.Optional<double>("c10", unset);
-  cfg.c20 = r.Optional<double>("c20", unset);
-  cfg.c30 = r.Optional<double>("c30", unset);
-  cfg.Jm = r.Optional<double>("Jm", unset);
-  cfg.N = r.Optional<double>("N", unset);
-  cfg.mu_r = r.Optional<std::vector<double>>("mu_r", {});
-  cfg.alpha_r = r.Optional<std::vector<double>>("alpha_r", {});
-  cfg.incompressible = r.Optional<bool>("incompressible", false);
-  cfg.rho0 = r.Optional<double>("rho0", 1.0);
+  if (region)
+  {
+    const std::string model = r.Optional<std::string>("model", base.model);
+    if (model != base.model)
+    {
+      throw ConfigError("key '" + r.Path("model") + "': a region must use the base model '" +
+                        base.model + "' (got '" + model + "')");
+    }
+    // A region choosing its own bulk-modulus specification replaces the base's.
+    if (r.Has("kappa") || r.Has("nu") || r.Has("incompressible"))
+    {
+      cfg.kappa = unset;
+      cfg.nu = unset;
+      cfg.incompressible = false;
+    }
+  }
+  else { cfg.model = r.Require<std::string>("model"); }
+  cfg.E = r.Optional<double>("E", cfg.E);
+  cfg.nu = r.Optional<double>("nu", cfg.nu);
+  cfg.mu = r.Optional<double>("mu", cfg.mu);
+  cfg.kappa = r.Optional<double>("kappa", cfg.kappa);
+  cfg.c1 = r.Optional<double>("c1", cfg.c1);
+  cfg.c2 = r.Optional<double>("c2", cfg.c2);
+  cfg.c10 = r.Optional<double>("c10", cfg.c10);
+  cfg.c20 = r.Optional<double>("c20", cfg.c20);
+  cfg.c30 = r.Optional<double>("c30", cfg.c30);
+  cfg.Jm = r.Optional<double>("Jm", cfg.Jm);
+  cfg.N = r.Optional<double>("N", cfg.N);
+  cfg.mu_r = r.Optional<std::vector<double>>("mu_r", cfg.mu_r);
+  cfg.alpha_r = r.Optional<std::vector<double>>("alpha_r", cfg.alpha_r);
+  cfg.incompressible = r.Optional<bool>("incompressible", cfg.incompressible);
+  cfg.rho0 = r.Optional<double>("rho0", cfg.rho0);
   static const char *models[] = {"neo_hookean", "st_venant_kirchhoff", "iso_neo_hookean",
                                  "mooney_rivlin", "yeoh", "gent", "arruda_boyce", "ogden"};
   bool known = false;
@@ -581,6 +604,56 @@ MaterialConfig ParseMaterialConfig(const YAML::Node &node,
                       std::to_string(cfg.nu));
   }
   ValidateMaterialConfig(cfg, path);
+  return cfg;
+}
+
+} // namespace
+
+MaterialConfig ParseMaterialConfig(const YAML::Node &node,
+                                   const std::string &path)
+{
+  NodeReader r(node, path);
+  MaterialConfig cfg = ReadMaterialKeys(r, path, MaterialConfig(), false);
+  if (r.Has("regions"))
+  {
+    YAML::Node regions = r.Raw("regions");
+    const std::string rpath = r.Path("regions");
+    if (!regions.IsSequence() || regions.size() == 0)
+    {
+      throw ConfigError("'" + rpath + "' must be a non-empty list of {attr, <parameters>} maps");
+    }
+    for (std::size_t i = 0; i < regions.size(); i++)
+    {
+      const std::string item_path = rpath + "[" + std::to_string(i) + "]";
+      NodeReader item(regions[i], item_path);
+      if (!item.Has("attr")) { throw ConfigError("missing key '" + item_path + ".attr'"); }
+      YAML::Node attr = item.Raw("attr");
+      if (!attr.IsSequence() || attr.size() == 0)
+      {
+        throw ConfigError("key '" + item_path + ".attr' must be a non-empty list of "
+                          "element attribute numbers or physical-volume names");
+      }
+      MaterialConfig region = ReadMaterialKeys(item, item_path, cfg, true);
+      for (std::size_t k = 0; k < attr.size(); k++)
+      {
+        if (!attr[k].IsScalar())
+        {
+          throw ConfigError("key '" + item_path + ".attr[" + std::to_string(k) +
+                            "]' must be an attribute number or a physical-volume name");
+        }
+        try { region.attr.push_back(attr[k].as<int>()); }
+        catch (const YAML::Exception &) { region.attr_names.push_back(attr[k].as<std::string>()); }
+      }
+      if (region.incompressible != cfg.incompressible ||
+          (!std::isnan(region.nu) && (region.nu == 0.5) != (!std::isnan(cfg.nu) && cfg.nu == 0.5)))
+      {
+        throw ConfigError("'" + item_path + "': every region must be incompressible or none");
+      }
+      item.Finish();
+      cfg.regions.push_back(region);
+    }
+  }
+  else { r.Optional<int>("regions", 0); }
   r.Finish();
   return cfg;
 }

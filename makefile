@@ -99,7 +99,7 @@ MESH_DIR := apps/mesh
 MESHES := $(MESH_DIR)/square.msh $(MESH_DIR)/cook.msh $(MESH_DIR)/cube.msh $(MESH_DIR)/beam.msh $(MESH_DIR)/annulus.msh \
 	$(MESH_DIR)/cube10.msh $(MESH_DIR)/shear_cube.msh $(MESH_DIR)/column_buckling.msh $(MESH_DIR)/column_twist.msh \
 	$(MESH_DIR)/cylinder_torsion.msh $(MESH_DIR)/plate_hole.msh $(MESH_DIR)/tube_quarter.msh \
-	$(MESH_DIR)/sphere_octant.msh $(MESH_DIR)/footing.msh
+	$(MESH_DIR)/sphere_octant.msh $(MESH_DIR)/footing.msh $(MESH_DIR)/inclusion.msh
 meshes: $(MESHES)
 $(MESH_DIR)/square.msh: $(MESH_DIR)/square.geo
 	$(GMSH) -2 -format msh22 -setnumber n 4 -o $@ $< > /dev/null
@@ -131,6 +131,8 @@ $(MESH_DIR)/tube_quarter.msh: $(MESH_DIR)/tube_quarter.geo
 $(MESH_DIR)/sphere_octant.msh: $(MESH_DIR)/sphere_octant.geo
 	$(GMSH) -3 -order 2 -format msh22 -o $@ $< > /dev/null
 $(MESH_DIR)/footing.msh: $(MESH_DIR)/footing.geo
+	$(GMSH) -3 -format msh22 -o $@ $< > /dev/null
+$(MESH_DIR)/inclusion.msh: $(MESH_DIR)/inclusion.geo
 	$(GMSH) -3 -format msh22 -o $@ $< > /dev/null
 
 # Fast gates (S1-S3 + mixed + homogeneous deformations + loading): serial unit and MMS tests.

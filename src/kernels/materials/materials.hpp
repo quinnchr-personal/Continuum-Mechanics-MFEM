@@ -68,6 +68,32 @@ Material MakeMaterial(const MaterialConfig &cfg, bool plane_stress = false);
 MixedMaterial MakeMixedMaterial(const MaterialConfig &cfg);
 bool IsDecoupledModel(const std::string &model);
 
+// Materials by element attribute: a table of size 1 is one material for
+// every element; otherwise index = attribute (entry 0 unused, filled with
+// the base) and every entry holds the same variant alternative.
+template <typename V>
+inline const V &MaterialAt(const std::vector<V> &table, int attribute)
+{
+  return table.size() == 1 ? table[0] : table[std::size_t(attribute)];
+}
+
+// The concrete materials of a table, all of type M (the alternative of
+// table[0]); throws if a region holds another alternative.
+template <typename M, typename V>
+inline std::vector<M> UnpackMaterials(const std::vector<V> &table)
+{
+  std::vector<M> out;
+  for (const V &v : table)
+  {
+    if (!std::holds_alternative<M>(v))
+    {
+      throw ConfigError("material.regions: every region must use the base model");
+    }
+    out.push_back(std::get<M>(v));
+  }
+  return out;
+}
+
 // The YAML name of a material type (the plane-stress adapter reports its base).
 template <typename M>
 constexpr const char *ModelName()

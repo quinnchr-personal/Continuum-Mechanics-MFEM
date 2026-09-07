@@ -702,6 +702,157 @@ void CylinderInflationTest()
   CHECK_MSG(errors.size() == 2 && errors[1] < errors[0], "the inflation error decreases under refinement");
 }
 
+// ------------------------------------------------- materials by element attribute
+
+// A two-region unit square: elements with x < 0.5 attribute 1 ("soft"),
+// the rest attribute 2 ("stiff"); the names live in the attribute sets.
+std::unique_ptr<mfem::ParMesh> TwoRegionMesh(int n, int order_geom)
+{
+  mfem::Mesh serial = mfem::Mesh::MakeCartesian2D(n, n, mfem::Element::QUADRILATERAL, true);
+  mfem::Vector c;
+  for (int e = 0; e < serial.GetNE(); e++)
+  {
+    serial.GetElementCenter(e, c);
+    serial.SetAttribute(e, c(0) < 0.5 ? 1 : 2);
+  }
+  serial.SetAttributes();
+  mfem::Array<int> soft(1), stiff(1);
+  soft[0] = 1;
+  stiff[0] = 2;
+  serial.attribute_sets.SetAttributeSet("soft", soft);
+  serial.attribute_sets.SetAttributeSet("stiff", stiff);
+  (void)order_geom;
+  return std::make_unique<mfem::ParMesh>(MPI_COMM_WORLD, serial);
+}
+
+// The YAML material of a two-region strip: the base everywhere plus a region.
+cmf::MaterialConfig TwoRegionMaterial(double E_soft, double E_stiff, bool mixed)
+{
+  cmf::MaterialConfig m;
+  if (mixed)
+  {
+    m.model = "iso_neo_hookean";
+    m.mu = E_soft;
+    m.kappa = 50.0 * E_soft;
+    cmf::MaterialConfig r = m;
+    r.mu = E_stiff;
+    r.kappa = 50.0 * E_stiff;
+    r.attr_names = {"stiff"};
+    m.regions.push_back(r);
+  }
+  else
+  {
+    m.model = "neo_hookean";
+    m.E = E_soft;
+    m.nu = 0.3;
+    cmf::MaterialConfig r = m;
+    r.E = E_stiff;
+    r.attr_names = {"stiff"};
+    m.regions.push_back(r);
+  }
+  return m;
+}
+
+// Equal parameters in both regions reproduce the single-material run; the
+// assembled tangent of the two-material problem matches finite differences;
+// and the stiff half deforms less under end tension (both formulations).
+void MaterialRegionsTest()
+{
+  for (const bool mixed : {false, true})
+  {
+    const char *label = mixed ? "mixed" : "displacement";
+    std::unique_ptr<mfem::ParMesh> mesh = TwoRegionMesh(4, 1);
+    cmf::AppConfig cfg;
+    cfg.formulation = mixed ? "mixed" : "displacement";
+    cfg.mesh.order = 2;
+    cfg.solver.newton.print_level = 0;
+    cfg.solver.newton.rtol = 1e-10;
+    cfg.solver.linear.rtol = 1e-13;
+    cfg.solver.load_steps = 2;
+    mfem::Vector zero(2);
+    zero = 0.0;
+    mfem::VectorConstantCoefficient clamp(zero);
+    cmf::ExpressionVectorCoefficient pull(std::vector<std::string>{"0.2", "0"});
+    auto solve = [&](const cmf::MaterialConfig &m, mfem::Vector &x)
+    {
+      cfg.material = m;
+      std::unique_ptr<cmf::SolidProblem> problem = cmf::MakeSolidProblem(*mesh, cfg);
+      problem->AddDirichlet({4}, clamp);
+      problem->AddDirichlet({2}, pull);
+      problem->Finalize();
+      std::unique_ptr<mfem::Solver> linear = problem->MakeLinearSolver(cfg.solver.linear);
+      x.SetSize(problem->Height());
+      x = 0.0;
+      const cmf::QuasiStaticReport report = cmf::SolveQuasiStatic(*problem, *linear, cfg.solver, x);
+      CHECK_MSG(report.converged, std::string(label) + " two-region run converged");
+      problem->UpdateFields(x);
+      return std::vector<double>{cmf::ProbeVector(problem->Displacement(), {0.5, 0.5})[0],
+                                 cmf::ProbeVector(problem->Displacement(), {0.25, 0.5})[0]};
+    };
+    // Equal regions = uniform material.
+    mfem::Vector x_regions, x_uniform;
+    cmf::MaterialConfig equal = TwoRegionMaterial(10.0, 10.0, mixed);
+    solve(equal, x_regions);
+    cmf::MaterialConfig uniform = equal;
+    uniform.regions.clear();
+    solve(uniform, x_uniform);
+    x_regions -= x_uniform;
+    std::printf("  material regions (%s): equal regions vs uniform |dx| = %.3e\n", label,
+                x_regions.Normlinf());
+    CHECK_MSG(x_regions.Normlinf() <= 1e-12 * std::max(1.0, x_uniform.Normlinf()),
+              std::string(label) + " equal regions reproduce the uniform material");
+    // Stiff right half: the interface (x = 0.5) carries most of the end
+    // displacement and the soft quarter point less than half of it.
+    mfem::Vector x_two;
+    const std::vector<double> u = solve(TwoRegionMaterial(10.0, 100.0, mixed), x_two);
+    std::printf("  material regions (%s): u_x at the interface %.4f, at the soft quarter %.4f (end 0.2)\n",
+                label, u[0], u[1]);
+    CHECK_MSG(u[0] > 0.15 && u[0] < 0.2, std::string(label) + " stiff half takes little of the stretch");
+    CHECK_MSG(u[1] > 0.4 * u[0] && u[1] < 0.6 * u[0], std::string(label) + " soft half strains uniformly");
+    // Tangent vs finite differences with two materials.
+    {
+      cfg.material = TwoRegionMaterial(10.0, 100.0, mixed);
+      std::unique_ptr<cmf::SolidProblem> problem = cmf::MakeSolidProblem(*mesh, cfg);
+      problem->AddDirichlet({4}, clamp);
+      problem->Finalize();
+      problem->SetLoadFactor(1.0);
+      const int n = problem->Height();
+      std::mt19937 rng(17u);
+      std::uniform_real_distribution<double> unit(-1.0, 1.0);
+      mfem::Vector x(n), v(n), Jv(n), rp(n), rm(n), xp(n), xm(n);
+      for (int i = 0; i < n; i++) { x(i) = 0.03 * unit(rng); v(i) = unit(rng); }
+      problem->ApplyDirichlet(x);
+      for (int i = 0; i < problem->EssentialTrueDofs().Size(); i++) { v(problem->EssentialTrueDofs()[i]) = 0.0; }
+      problem->GetGradient(x).Mult(v, Jv);
+      const double eps = 1e-6;
+      xp = x; xp.Add(eps, v);
+      xm = x; xm.Add(-eps, v);
+      problem->Mult(xp, rp);
+      problem->Mult(xm, rm);
+      rp -= rm;
+      rp /= 2.0 * eps;
+      rp -= Jv;
+      const double rel = rp.Normlinf() / Jv.Normlinf();
+      std::printf("  material regions (%s): |J v - FD| / |J v| = %.3e\n", label, rel);
+      CHECK_MSG(rel <= 1e-6, std::string(label) + " two-material tangent vs FD");
+      CHECK(problem->Description().find("regions") != std::string::npos);
+    }
+  }
+  // Errors: unknown region name, attribute covered twice, model mismatch at the table.
+  {
+    std::unique_ptr<mfem::ParMesh> mesh = TwoRegionMesh(2, 1);
+    cmf::AppConfig cfg;
+    cfg.mesh.order = 2;
+    cfg.material = TwoRegionMaterial(10.0, 100.0, false);
+    cfg.material.regions[0].attr_names = {"hard"};
+    CHECK_THROWS(cmf::MakeSolidProblem(*mesh, cfg), cmf::ConfigError,
+                 "material.regions[0]: the mesh has no physical volume named 'hard'");
+    cfg.material.regions[0].attr_names = {"stiff"};
+    cfg.material.regions.push_back(cfg.material.regions[0]);
+    CHECK_THROWS(cmf::MakeSolidProblem(*mesh, cfg), cmf::ConfigError, "already covered by material.regions[0]");
+  }
+}
+
 } // namespace
 
 int main(int argc, char *argv[])
@@ -720,5 +871,6 @@ int main(int argc, char *argv[])
   FollowerTangentTests();
   FollowerVsDeadTest();
   CylinderInflationTest();
+  MaterialRegionsTest();
   return cmf_test::Report("test_loading");
 }

@@ -31,6 +31,10 @@ public:
                    const Material &material);
   SolidMechanicsTL(mfem::ParMesh &mesh, const AppConfig &cfg,
                    const Material &material);
+  // Materials by element attribute (materials.hpp: size 1, or index =
+  // attribute with entry 0 unused; all the same model).
+  SolidMechanicsTL(mfem::ParMesh &mesh, const AppConfig &cfg,
+                   const std::vector<Material> &materials);
   ~SolidMechanicsTL() override = default;
 
   // Programmatic boundary conditions and loads. Coefficients are not owned
@@ -69,7 +73,8 @@ public:
   std::string Description() const override;
   // Scheduled dead load at the current pseudo-time.
   const mfem::Vector &ExternalLoad() const { return loads_.ExternalLoad(); }
-  const Material &GetMaterial() const { return material_; }
+  const Material &GetMaterial() const { return materials_[0]; }
+  const std::vector<Material> &Materials() const { return materials_; }
   double Rho0() const { return rho0_; }
   int Order() const { return order_; }
 
@@ -97,7 +102,7 @@ private:
   int dim_;
   int order_;
   double rho0_;
-  Material material_;
+  std::vector<Material> materials_;
   mfem::H1_FECollection fec_;
   mfem::ParFiniteElementSpace fes_;
   std::unique_ptr<mfem::ParNonlinearForm> nlf_;

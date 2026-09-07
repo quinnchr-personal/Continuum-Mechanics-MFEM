@@ -18,9 +18,13 @@ SolidMechanicsTL::SolidMechanicsTL(mfem::ParMesh &mesh, const YAML::Node &root,
 
 SolidMechanicsTL::SolidMechanicsTL(mfem::ParMesh &mesh, const AppConfig &cfg,
                                    const Material &material)
+  : SolidMechanicsTL(mesh, cfg, std::vector<Material>(1, material)) {}
+
+SolidMechanicsTL::SolidMechanicsTL(mfem::ParMesh &mesh, const AppConfig &cfg,
+                                   const std::vector<Material> &materials)
   : SolidProblem(0),
     mesh_(mesh), dim_(mesh.Dimension()), order_(cfg.mesh.order),
-    rho0_(cfg.material.rho0), material_(material),
+    rho0_(cfg.material.rho0), materials_(materials),
     fec_(cfg.mesh.order, mesh.Dimension()),
     fes_(&mesh, &fec_, mesh.Dimension(), mfem::Ordering::byVDIM),
     loads_(fes_)
@@ -42,12 +46,14 @@ void SolidMechanicsTL::ResetForm()
   nlf_ = std::make_unique<mfem::ParNonlinearForm>(&fes_);
   energy_form_ = std::make_unique<mfem::ParNonlinearForm>(&fes_);
   // One integrator instantiation per material type, chosen once here.
+  MFEM_VERIFY(!materials_.empty(), "SolidMechanicsTL: no material");
   std::visit([this](const auto &mat)
   {
     using M = std::decay_t<decltype(mat)>;
-    nlf_->AddDomainIntegrator(new TotalLagrangianIntegrator<M>(mat));
-    energy_form_->AddDomainIntegrator(new TotalLagrangianIntegrator<M>(mat));
-  }, material_);
+    const std::vector<M> table = UnpackMaterials<M>(materials_);
+    nlf_->AddDomainIntegrator(new TotalLagrangianIntegrator<M>(table));
+    energy_form_->AddDomainIntegrator(new TotalLagrangianIntegrator<M>(table));
+  }, materials_[0]);
   follower_markers_.clear();
   finalized_ = false;
 }
@@ -148,7 +154,8 @@ HYPRE_BigInt SolidMechanicsTL::GlobalTrueVSize() const
 
 std::string SolidMechanicsTL::Description() const
 {
-  return "displacement formulation, " + MaterialName(material_);
+  return "displacement formulation, " + MaterialName(materials_[0]) +
+         (materials_.size() > 1 ? " (regions)" : "");
 }
 
 std::unique_ptr<mfem::Solver>
@@ -180,13 +187,15 @@ void SolidMechanicsTL::UpdateFields(const mfem::Vector &x)
   EnsureFields();
   displacement_->SetFromTrueDofs(x);
   if (qfields_->Empty()) { return; }
-  std::visit([this](const auto &mat)
+  std::visit([this](const auto &first)
   {
-    using M = std::decay_t<decltype(mat)>;
+    using M = std::decay_t<decltype(first)>;
+    const std::vector<M> table = UnpackMaterials<M>(materials_);
     mfem::DenseMatrix grad;
     qfields_->Update([&](mfem::ElementTransformation &T, const mfem::IntegrationPoint &ip,
                          QPointState &s)
     {
+      const M &mat = MaterialAt(table, T.Attribute);
       T.SetIntPoint(&ip);
       displacement_->GetVectorGradient(T, grad);
       s.F = CompleteF(mat, DeformationGradientAt(grad, T.GetDimension()));
@@ -194,7 +203,7 @@ void SolidMechanicsTL::UpdateFields(const mfem::Vector &x)
       if constexpr (has_energy<M>::value) { s.energy = mat.Energy(s.F); }
       else { s.energy = 0.0; }
     });
-  }, material_);
+  }, materials_[0]);
 }
 
 void SolidMechanicsTL::RegisterFields(FieldRegistry &registry)

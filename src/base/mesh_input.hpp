@@ -34,6 +34,12 @@ void PerturbInteriorVertices(mfem::Mesh &mesh, double amplitude,
 std::vector<int> ResolveBoundaryAttributes(mfem::Mesh &mesh, const BoundaryCondition &bc,
                                            const std::string &what);
 
+// Element attributes of a material region (numbers checked, physical-volume
+// names resolved through the element attribute sets), like the boundary case.
+std::vector<int> ResolveElementAttributes(mfem::Mesh &mesh, const std::vector<int> &attr,
+                                          const std::vector<std::string> &attr_names,
+                                          const std::string &what);
+
 // "1 (bottom), 2 (right), ..." for the boundary or the element attributes.
 std::string DescribeAttributes(mfem::Mesh &mesh, bool boundary);
 

@@ -57,6 +57,11 @@ struct MeshConfig
 //   ogden: mu_r, alpha_r lists           (mu = 1/2 sum mu_r alpha_r)
 // The decoupled models (all but the first two) take the bulk modulus from
 // exactly one of kappa | nu | incompressible.
+// `regions` override parameters by element attribute (numbers and/or
+// physical-volume names in attr/attr_names): the same model with other
+// values, every key not given inherited from the base (a region that gives
+// any bulk key drops the base's bulk keys first). The base applies to every
+// attribute no region names.
 struct MaterialConfig
 {
   std::string model = "neo_hookean";
@@ -75,6 +80,9 @@ struct MaterialConfig
   std::vector<double> alpha_r;
   bool incompressible = false;
   double rho0 = 1.0;
+  std::vector<int> attr;                 // regions only
+  std::vector<std::string> attr_names;   // regions only
+  std::vector<MaterialConfig> regions;   // base only; parameters already merged
 };
 
 // Scalar load schedule s(t) of the pseudo-time t in [0, 1] (piecewise
