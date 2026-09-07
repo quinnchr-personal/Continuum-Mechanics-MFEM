@@ -1,0 +1,28 @@
+# Uniaxial tension of a 3D cube (solidmechanicscoupledtheories.github.io, 1. Finite Elasticity, 3D01): 10 mm cube, Arruda-Boyce,
+# stretch 7.75 in y over 100 steps. Symmetry rollers on x = 0, y = 0, z = 0; the face
+# y = 10 (back) moves by u_y = 67.5 t (t = time / 67.5 s), free in x and z; the other
+# faces are free. Differences from the reference: hexahedra (4^3, Q2-Q1) instead of
+# 2^3 tetrahedra, the Arruda-Boyce series in I1/N instead of the Pade inverse
+# Langevin (softer near the locking stretch), and the volumetric law
+# p = kappa (J - 1) instead of p = -K ln(J)/J.
+formulation: mixed
+mesh: { file: apps/mesh/cube10.msh, order: 2 }   # box.geo: bottom z=0, front y=0, right x=L, back y=L, left x=0, top z=L
+material: { model: arruda_boyce, mu: 280.0, N: 26.2144, kappa: 280000.0 }   # kPa, mm: G0 = 280 kPa, lambda_L = 5.12 (N = lambda_L^2), K = 1000 G0
+bcs:
+  dirichlet:
+    - { attr: [left],   expression: ["0", "0", "0"], components: [x] }
+    - { attr: [front],  expression: ["0", "0", "0"], components: [y] }
+    - { attr: [bottom], expression: ["0", "0", "0"], components: [z] }
+    - { attr: [back],   expression: ["0", "67.5*t", "0"], components: [y] }   # stretch 7.75
+solver:
+  load_steps: 100
+  substep: { on_failure: true, max_bisections: 6, min_dt: 1e-4 }
+  newton: { rtol: 1e-8, atol: 1e-10, max_it: 30 }
+  linear: { type: gmres_amg, rtol: 1e-10, max_it: 400, krylov_dim: 100, inner_rtol: 1e-4, inner_max_it: 200 }
+output:
+  paraview: out/finite_elasticity/01_uniaxial_tension
+  fields: [displacement, pressure, jacobian, vonmises, pk1_stress, cauchy_stress]
+  probe_every_step: true            # the curves of the reference: probe values vs t
+  probes:
+    - { name: corner, point: [10.0, 10.0, 10.0] }
+    - { name: center, point: [5.0, 5.0, 5.0] }

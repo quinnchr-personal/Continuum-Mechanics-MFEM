@@ -1,0 +1,26 @@
+# Tension of a 3D plate with a hole (solidmechanicscoupledtheories.github.io, 1. Finite Elasticity, 3D04): quarter of a 30 x 20 x 1 mm plate
+# with a hole of radius 3 mm, Arruda-Boyce, stretch 3 in x over 100 steps. Rollers on
+# the symmetry planes x = 0 (xbot) and y = 0 (ybot); the end x = 15 (xtop) moves by
+# u_x = 30 t with u_y = u_z = 0; hole, y = 10 and the z faces free. Tetrahedra with
+# curved second-order geometry (apps/mesh/plate_hole.geo, after 3D_hip_v2.geo).
+formulation: mixed
+mesh: { file: apps/mesh/plate_hole.msh, order: 2 }
+material: { model: arruda_boyce, mu: 280.0, N: 26.2144, kappa: 280000.0 }   # kPa, mm: G0 = 280 kPa, lambda_L = 5.12 (N = lambda_L^2), K = 1000 G0
+bcs:
+  dirichlet:
+    - { attr: [xbot], expression: ["0", "0", "0"], components: [x] }
+    - { attr: [ybot], expression: ["0", "0", "0"], components: [y] }
+    - { attr: [xtop], expression: ["30*t", "0", "0"] }
+solver:
+  load_steps: 100
+  substep: { on_failure: true, max_bisections: 6, min_dt: 1e-4 }
+  newton: { rtol: 1e-8, atol: 1e-10, max_it: 30 }
+  linear: { type: gmres_amg, rtol: 1e-10, max_it: 400, krylov_dim: 100, inner_rtol: 1e-4, inner_max_it: 200 }
+output:
+  paraview: out/finite_elasticity/04_plate_with_hole
+  fields: [displacement, pressure, jacobian, vonmises, pk1_stress, cauchy_stress]
+  probe_every_step: true            # the curves of the reference: probe values vs t
+  probes:
+    - { name: end_corner, point: [15.0, 10.0, 0.0] }
+    - { name: hole_top, point: [0.0, 3.0, 0.0] }
+    - { name: hole_side, point: [3.0, 0.0, 0.0] }

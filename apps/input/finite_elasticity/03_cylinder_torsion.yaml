@@ -1,0 +1,24 @@
+# Fixed-end torsion of a 3D cylinder (solidmechanicscoupledtheories.github.io, 1. Finite Elasticity, 3D03): radius 12.7 mm, length 25.4 mm
+# along z, Arruda-Boyce. The bottom face is clamped; the top face is rotated rigidly
+# about the axis by theta = 2.5 t rad with its axial displacement held (u_z = 0), so
+# u = R(theta) X - X on it. 20 steps as in the reference; tetrahedra with curved
+# second-order geometry (apps/mesh/cylinder_torsion.geo).
+formulation: mixed
+mesh: { file: apps/mesh/cylinder_torsion.msh, order: 2 }
+material: { model: arruda_boyce, mu: 280.0, N: 26.2144, kappa: 280000.0 }   # kPa, mm: G0 = 280 kPa, lambda_L = 5.12 (N = lambda_L^2), K = 1000 G0
+bcs:
+  dirichlet:
+    - { attr: [bottom], expression: ["0", "0", "0"] }
+    - { attr: [top], expression: ["x*cos(2.5*t) - y*sin(2.5*t) - x", "x*sin(2.5*t) + y*cos(2.5*t) - y", "0"] }
+solver:
+  load_steps: 20
+  substep: { on_failure: true, max_bisections: 6, min_dt: 1e-4 }
+  newton: { rtol: 1e-8, atol: 1e-10, max_it: 30 }
+  linear: { type: gmres_amg, rtol: 1e-10, max_it: 400, krylov_dim: 100, inner_rtol: 1e-4, inner_max_it: 200 }
+output:
+  paraview: out/finite_elasticity/03_cylinder_torsion
+  fields: [displacement, pressure, jacobian, vonmises, pk1_stress, cauchy_stress]
+  probe_every_step: true            # the curves of the reference: probe values vs t
+  probes:
+    - { name: rim_mid, point: [12.7, 0.0, 12.7] }
+    - { name: axis_mid, point: [0.0, 0.0, 12.7] }

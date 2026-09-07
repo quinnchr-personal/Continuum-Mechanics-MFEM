@@ -96,7 +96,10 @@ $(BUILD_DIR)/%.o: %.cpp
 # tree so that running the inputs and tests does not need Gmsh.
 GMSH ?= gmsh
 MESH_DIR := apps/mesh
-MESHES := $(MESH_DIR)/square.msh $(MESH_DIR)/cook.msh $(MESH_DIR)/cube.msh $(MESH_DIR)/beam.msh $(MESH_DIR)/annulus.msh
+MESHES := $(MESH_DIR)/square.msh $(MESH_DIR)/cook.msh $(MESH_DIR)/cube.msh $(MESH_DIR)/beam.msh $(MESH_DIR)/annulus.msh \
+	$(MESH_DIR)/cube10.msh $(MESH_DIR)/shear_cube.msh $(MESH_DIR)/column_buckling.msh $(MESH_DIR)/column_twist.msh \
+	$(MESH_DIR)/cylinder_torsion.msh $(MESH_DIR)/plate_hole.msh $(MESH_DIR)/tube_quarter.msh \
+	$(MESH_DIR)/sphere_octant.msh $(MESH_DIR)/footing.msh
 meshes: $(MESHES)
 $(MESH_DIR)/square.msh: $(MESH_DIR)/square.geo
 	$(GMSH) -2 -format msh22 -setnumber n 4 -o $@ $< > /dev/null
@@ -108,6 +111,27 @@ $(MESH_DIR)/beam.msh: $(MESH_DIR)/box.geo
 	$(GMSH) -3 -format msh22 -setnumber Lx 10 -setnumber nx 20 -setnumber ny 2 -setnumber nz 2 -o $@ $< > /dev/null
 $(MESH_DIR)/annulus.msh: $(MESH_DIR)/annulus.geo
 	$(GMSH) -2 -order 2 -format msh22 -o $@ $< > /dev/null
+# Meshes of apps/input/finite_elasticity (the FEniCSx examples of
+# solidmechanicscoupledtheories.github.io, section 1).
+$(MESH_DIR)/cube10.msh: $(MESH_DIR)/box.geo
+	$(GMSH) -3 -format msh22 -setnumber Lx 10 -setnumber Ly 10 -setnumber Lz 10 -setnumber nx 4 -setnumber ny 4 -setnumber nz 4 -o $@ $< > /dev/null
+$(MESH_DIR)/shear_cube.msh: $(MESH_DIR)/box.geo
+	$(GMSH) -3 -format msh22 -setnumber nx 8 -setnumber ny 8 -setnumber nz 4 -o $@ $< > /dev/null
+$(MESH_DIR)/column_buckling.msh: $(MESH_DIR)/box.geo $(MESH_DIR)/perturb_column.py
+	$(GMSH) -3 -format msh22 -setnumber Lz 20 -setnumber nx 4 -setnumber ny 4 -setnumber nz 50 -o $@.straight $< > /dev/null
+	python3 $(MESH_DIR)/perturb_column.py $@.straight $@ 20 0.005 && rm -f $@.straight
+$(MESH_DIR)/column_twist.msh: $(MESH_DIR)/box.geo
+	$(GMSH) -3 -format msh22 -setnumber Lz 3 -setnumber nx 8 -setnumber ny 8 -setnumber nz 32 -o $@ $< > /dev/null
+$(MESH_DIR)/cylinder_torsion.msh: $(MESH_DIR)/cylinder_torsion.geo
+	$(GMSH) -3 -order 2 -format msh22 -o $@ $< > /dev/null
+$(MESH_DIR)/plate_hole.msh: $(MESH_DIR)/plate_hole.geo
+	$(GMSH) -3 -order 2 -format msh22 -o $@ $< > /dev/null
+$(MESH_DIR)/tube_quarter.msh: $(MESH_DIR)/tube_quarter.geo
+	$(GMSH) -3 -order 2 -format msh22 -o $@ $< > /dev/null
+$(MESH_DIR)/sphere_octant.msh: $(MESH_DIR)/sphere_octant.geo
+	$(GMSH) -3 -order 2 -format msh22 -o $@ $< > /dev/null
+$(MESH_DIR)/footing.msh: $(MESH_DIR)/footing.geo
+	$(GMSH) -3 -format msh22 -o $@ $< > /dev/null
 
 # Fast gates (S1-S3 + mixed + homogeneous deformations + loading): serial unit and MMS tests.
 CHECK_TESTS := $(addprefix $(BUILD_DIR)/tests/,test_base test_materials test_solid_mms test_mixed test_homogeneous test_loading)

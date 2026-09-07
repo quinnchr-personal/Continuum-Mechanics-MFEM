@@ -48,7 +48,8 @@ apps/           solid_mechanics.cpp (YAML parsing and wiring only), apps/input/*
                 apps/input/homogeneous/*.yaml (homogeneous deformations of the six incompressible
                 models: plane strain, plane stress, uniaxial / equibiaxial / pure shear in 3D, the
                 uniaxial symmetry model) with apps/homogeneous_compare.py (runs them against the
-                closed forms); apps/input/cylinder_inflation.yaml (follower pressure vs Rivlin)
+                closed forms); apps/input/cylinder_inflation.yaml (follower pressure vs Rivlin);
+                apps/input/finite_elasticity/*.yaml (the FEniCSx finite elasticity examples)
 tests/          test_base, test_materials, test_solid_mms, test_mixed, test_homogeneous, test_loading
                 (make check); test_mixed --full, test_benchmarks, test_parallel, homogeneous compare,
                 test_loading np=4 (make test); tests/input/*.yaml (inputs of the tests)
@@ -259,6 +260,41 @@ inflates as Rivlin says).
 Not supported: point loads and nodal constraints (use a small physical
 group), multi-point or periodic constraints, contact, true dynamics (`t` is
 a pseudo-time), automatic step growth after a bisection.
+
+### Finite elasticity examples (`apps/input/finite_elasticity/`)
+
+The ten "Finite Elasticity" examples of the FEniCSx companion to *Introduction
+to coupled theories in solid mechanics* (solidmechanicscoupledtheories.github.io,
+section 1) as inputs of this code, nine of them: Arruda-Boyce with
+G0 = 280 kPa, lambda_L = 5.12 and K = 1000 G0 in kPa and mm, mixed Q2-Q1 or
+P2-P1, the same geometry, boundary conditions, load histories and step counts.
+Meshes come from `apps/mesh/*.geo` (`make meshes`); the curved ones are
+second-order. Every input probes the points of the reference's plots after
+every step (`probe_every_step`), so the curves (stress or force vs stretch,
+pressure vs displacement) can be read from the log.
+
+| Input | Reference | Notes |
+|-------|-----------|-------|
+| `01_uniaxial_tension` | 3D01 | 10 mm cube, stretch 7.75 in y, rollers on three planes |
+| `02_simple_shear` | 3D02 | 1 mm cube, two sinusoidal cycles of shear strain 1 (`sin(4 pi t)`) |
+| `03_cylinder_torsion` | 3D03 | R = 12.7, L = 25.4, top face rotated by 2.5 rad, `cylinder_torsion.geo` |
+| `04_plate_with_hole` | 3D04 | quarter plate 15 x 10 x 1 with a 3 mm hole, stretch 3, `plate_hole.geo` |
+| `05_cylinder_inflation` | 3D05 | quarter tube 10/11 x 5 mm, follower pressure to 50 kPa, `tube_quarter.geo` |
+| `06_sphere_inflation` | 3D06 | octant shell 10/11 mm, follower pressure to 35 kPa, `sphere_octant.geo` |
+| `07_cube_footing` | 3D07 | 50 mm cube, follower pressure 1500 kPa on a quarter of the top, `footing.geo` |
+| `08_column_buckling` | 3D08 | 1 x 1 x 20 column, imperfection by `perturb_column.py`, shortened by 2.5 mm |
+| `10_column_twist` | 3D10 | 1 x 1 x 3 column, top face turned through 2 pi |
+
+Not reproduced: 3D09 (cube with a stiffer spherical inclusion) needs two
+materials by element attribute, which the `material` section cannot express
+yet. Differences from the reference that change the numbers: the Arruda-Boyce
+model here is the five-term series in I1/N (`N = lambda_L^2`) rather than the
+Pade inverse Langevin, so it is softer near the locking stretch (visible in
+01 above a stretch of about 3); the volumetric law is p = K (J - 1) instead of
+p = -K ln(J)/J; hexahedra replace tetrahedra on the boxes; and a failed
+increment is bisected instead of ending the run (05 and 06 stop early in the
+reference). Reaction forces and torques are not computed; the probes give
+displacements, pressure and stresses at the reference's points.
 
 ### Meshes: the Gmsh workflow
 

@@ -1,0 +1,25 @@
+# Twisting of a column with square cross-section (solidmechanicscoupledtheories.github.io, 1. Finite Elasticity, 3D10): 1 x 1 x 3 mm column
+# of 8 x 8 x 32 hexahedra (the reference's mesh, here with corner at the origin, so
+# the axis is x = y = 0.5), Arruda-Boyce. The base is clamped; the top face is
+# rotated rigidly about the axis by theta = 2 pi t (one full turn) with u_z = 0,
+# u = R(theta) (X - c) - (X - c), R = [[cos, sin], [-sin, cos]] as in the reference.
+# 50 steps; a failed increment is bisected.
+formulation: mixed
+mesh: { file: apps/mesh/column_twist.msh, order: 2 }
+material: { model: arruda_boyce, mu: 280.0, N: 26.2144, kappa: 280000.0 }   # kPa, mm: G0 = 280 kPa, lambda_L = 5.12 (N = lambda_L^2), K = 1000 G0
+bcs:
+  dirichlet:
+    - { attr: [bottom], expression: ["0", "0", "0"] }
+    - { attr: [top], expression: ["(x-0.5)*cos(2*pi*t) + (y-0.5)*sin(2*pi*t) - (x-0.5)", "-(x-0.5)*sin(2*pi*t) + (y-0.5)*cos(2*pi*t) - (y-0.5)", "0"] }
+solver:
+  load_steps: 50
+  substep: { on_failure: true, max_bisections: 6, min_dt: 1e-4 }
+  newton: { rtol: 1e-8, atol: 1e-10, max_it: 30 }
+  linear: { type: gmres_amg, rtol: 1e-10, max_it: 400, krylov_dim: 100, inner_rtol: 1e-4, inner_max_it: 200 }
+output:
+  paraview: out/finite_elasticity/10_column_twist
+  fields: [displacement, pressure, jacobian, vonmises, pk1_stress, cauchy_stress]
+  probe_every_step: true            # the curves of the reference: probe values vs t
+  probes:
+    - { name: edge_mid, point: [1.0, 0.5, 1.5] }
+    - { name: corner_mid, point: [1.0, 1.0, 1.5] }

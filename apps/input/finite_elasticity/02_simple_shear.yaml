@@ -1,0 +1,23 @@
+# Simple shear of a 3D cube (solidmechanicscoupledtheories.github.io, 1. Finite Elasticity, 3D02): 1 mm cube, Arruda-Boyce, two
+# sinusoidal cycles of shear strain amplitude 1 (u_x = sin(2 pi t_phys / 10 s) on the
+# face y = 1, 20 s total, so u_x = sin(4 pi t)), the face y = 0 clamped, the other
+# faces free. 100 steps as in the reference; 8 x 8 x 4 hexahedra instead of tetrahedra.
+formulation: mixed
+mesh: { file: apps/mesh/shear_cube.msh, order: 2 }
+material: { model: arruda_boyce, mu: 280.0, N: 26.2144, kappa: 280000.0 }   # kPa, mm: G0 = 280 kPa, lambda_L = 5.12 (N = lambda_L^2), K = 1000 G0
+bcs:
+  dirichlet:
+    - { attr: [front], expression: ["0", "0", "0"] }
+    - { attr: [back],  expression: ["sin(4*pi*t)", "0", "0"] }
+solver:
+  load_steps: 100
+  substep: { on_failure: true, max_bisections: 6, min_dt: 1e-4 }
+  newton: { rtol: 1e-8, atol: 1e-10, max_it: 30 }
+  linear: { type: gmres_amg, rtol: 1e-10, max_it: 400, krylov_dim: 100, inner_rtol: 1e-4, inner_max_it: 200 }
+output:
+  paraview: out/finite_elasticity/02_simple_shear
+  fields: [displacement, pressure, jacobian, vonmises, pk1_stress, cauchy_stress]
+  probe_every_step: true            # the curves of the reference: probe values vs t
+  probes:
+    - { name: top_corner, point: [1.0, 1.0, 1.0] }
+    - { name: center, point: [0.5, 0.5, 0.5] }
