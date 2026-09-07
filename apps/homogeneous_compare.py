@@ -6,7 +6,7 @@ doc/incompressible_hyperelasticity.tex.
     python3 apps/homogeneous_compare.py [--app build/apps/solid_mechanics]
                                         [--tol 1e-8] [--np N] [inputs.yaml ...]
 
-Without inputs every apps/input/homogeneous/*.yaml is run: plane-strain
+Without inputs every apps/input/finite_elasticity/homogeneous/*.yaml is run: plane-strain
 extension and plane-stress sheet tension in 2D, uniaxial, equibiaxial and
 pure-shear tension in 3D (full affine data on the loaded faces, or the
 symmetry models with rollers through `components`). The quadrature
@@ -170,7 +170,7 @@ def main():
     ap.add_argument("--tol", type=float, default=1e-8)
     ap.add_argument("--np", type=int, default=1, dest="np_")
     args = ap.parse_args()
-    inputs = args.inputs or sorted(glob.glob("apps/input/homogeneous/*.yaml"))
+    inputs = args.inputs or sorted(glob.glob("apps/input/finite_elasticity/homogeneous/*.yaml"))
     if not inputs:
         raise SystemExit("no inputs found (run from the repository root)")
     if not os.path.exists(args.app):

@@ -30,7 +30,7 @@ const double kCookCornerFrozen = 4.905891700497e+00;
 const int kCookFinestRefine = 4;
 
 // Frozen regression oracle of the mixed u-p, fully incompressible Cook's
-// membrane (apps/input/cook_incompressible.yaml, mu = 80.194, resultant 100)
+// membrane (apps/input/finite_elasticity/cook_incompressible.yaml, mu = 80.194, resultant 100)
 // on its finest self-convergence mesh (32x32, Q2-Q1).
 const double kCookIncompressibleCornerFrozen = 6.930412595013e+00;
 const int kCookIncompressibleFinestRefine = 3;
@@ -96,7 +96,7 @@ Run Solve(const cmf::AppConfig &cfg, const std::vector<double> &probe_point)
 // of the corner displacement and a frozen regression value.
 void CookIncompressibleTest()
 {
-  cmf::AppConfig cfg = cmf::LoadConfig("apps/input/cook_incompressible.yaml");
+  cmf::AppConfig cfg = cmf::LoadConfig("apps/input/finite_elasticity/cook_incompressible.yaml");
   cfg.output.paraview.clear();
   cfg.solver.newton.print_level = 0;
   cfg.solver.newton.rtol = 1e-11;
@@ -138,7 +138,7 @@ void CookIncompressibleTest()
 // against the threshold and the remaining Cook checks are asserted.
 void CookTest(bool cook_ratio_gate)
 {
-  cmf::AppConfig cfg = cmf::LoadConfig("apps/input/cook.yaml");
+  cmf::AppConfig cfg = cmf::LoadConfig("apps/input/finite_elasticity/cook.yaml");
   cfg.output.paraview.clear();
   cfg.solver.newton.print_level = 0;
   cfg.solver.newton.rtol = 1e-11;
@@ -196,7 +196,7 @@ void CookTest(bool cook_ratio_gate)
 
 void CantileverTest()
 {
-  cmf::AppConfig cfg = cmf::LoadConfig("apps/input/cantilever3d.yaml");
+  cmf::AppConfig cfg = cmf::LoadConfig("apps/input/finite_elasticity/cantilever3d.yaml");
   cfg.output.paraview.clear();
   cfg.solver.newton.print_level = 0;
   cfg.solver.linear.rtol = 1e-13;

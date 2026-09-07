@@ -31,7 +31,7 @@ namespace
 // the YAML loads removed so each test installs its own.
 cmf::AppConfig CookConfig()
 {
-  cmf::AppConfig cfg = cmf::LoadConfig("apps/input/cook.yaml");
+  cmf::AppConfig cfg = cmf::LoadConfig("apps/input/finite_elasticity/cook.yaml");
   cfg.output.paraview.clear();
   cfg.output.fields = {"displacement"};
   cfg.output.probes.clear();
@@ -339,7 +339,7 @@ void ExpressionReassemblyTest()
 // field and the closed-form pressure of the full-cube input.
 void SymmetryCubeTest()
 {
-  cmf::AppConfig cfg = cmf::LoadConfig("apps/input/homogeneous/symmetry_uniaxial_neo_hookean.yaml");
+  cmf::AppConfig cfg = cmf::LoadConfig("apps/input/finite_elasticity/homogeneous/symmetry_uniaxial_neo_hookean.yaml");
   cfg.output.paraview.clear();
   cfg.output.fields = {"displacement", "pressure"};
   cfg.solver.newton.print_level = 0;
@@ -389,7 +389,7 @@ void SymmetryCubeTest()
 // nontrivial; the normal displacement vanishes on every face.
 void RollerRankTest()
 {
-  cmf::AppConfig cfg = cmf::LoadConfig("apps/input/homogeneous/symmetry_uniaxial_neo_hookean.yaml");
+  cmf::AppConfig cfg = cmf::LoadConfig("apps/input/finite_elasticity/homogeneous/symmetry_uniaxial_neo_hookean.yaml");
   cfg.output.paraview.clear();
   cfg.output.fields = {"displacement"};
   cfg.solver.newton.print_level = 0;
@@ -649,7 +649,7 @@ void FollowerVsDeadTest()
 }
 
 // Thick-walled incompressible cylinder under internal follower pressure
-// (apps/input/cylinder_inflation.yaml) vs the closed-form inflation.
+// (apps/input/finite_elasticity/cylinder_inflation.yaml) vs the closed-form inflation.
 void CylinderInflationTest()
 {
   const double mu = 1.0, A = 1.0, B = 2.0, P = 0.3;
@@ -667,7 +667,7 @@ void CylinderInflationTest()
   const double a_exact = 0.5 * (lo + hi);
   const double b_exact = std::sqrt(B * B - A * A + a_exact * a_exact);
 
-  cmf::AppConfig cfg = cmf::LoadConfig("apps/input/cylinder_inflation.yaml");
+  cmf::AppConfig cfg = cmf::LoadConfig("apps/input/finite_elasticity/cylinder_inflation.yaml");
   cfg.output.paraview.clear();
   cfg.output.fields = {"displacement"};
   cfg.solver.newton.print_level = 0;

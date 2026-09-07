@@ -42,13 +42,14 @@ src/physics/    solid_problem.{hpp,cpp} (common interface, factory by formulatio
 src/solvers/    newton (damped Newton, Armijo backtracking), linear_solver (GMRES/CG + BoomerAMG),
                 saddle_point_solver (augmented Lagrangian FGMRES for the u-p Jacobian),
                 quasi_static (load stepping over the pseudo-time t in (0, 1] with bisection)
-apps/           solid_mechanics.cpp (YAML parsing and wiring only), apps/input/*.yaml,
+apps/           solid_mechanics.cpp (YAML parsing and wiring only), apps/input/<set>/*.yaml
+                (finite_elasticity: the examples of this code; anand_coupled_theories: Anand's book),
                 apps/mesh/*.geo (Gmsh sources of the example meshes, named physical groups) and the
                 generated apps/mesh/*.msh (make meshes),
-                apps/input/homogeneous/*.yaml (homogeneous deformations of the six incompressible
+                apps/input/finite_elasticity/homogeneous/*.yaml (homogeneous deformations of the six incompressible
                 models: plane strain, plane stress, uniaxial / equibiaxial / pure shear in 3D, the
                 uniaxial symmetry model) with apps/homogeneous_compare.py (runs them against the
-                closed forms); apps/input/cylinder_inflation.yaml (follower pressure vs Rivlin);
+                closed forms); apps/input/finite_elasticity/cylinder_inflation.yaml (follower pressure vs Rivlin);
                 apps/input/anand_coupled_theories/<chapter>/*.yaml (the examples of Anand's coupled-theories
                 book, from its FEniCSx companion codes; finite_elasticity so far)
 tests/          test_base, test_materials, test_solid_mms, test_mixed, test_homogeneous, test_loading
@@ -69,7 +70,7 @@ make            # build/libcmf.a, build/apps/solid_mechanics, build/tests/*
 make meshes     # regenerate apps/mesh/*.msh from apps/mesh/*.geo with Gmsh (the .msh files are kept in the tree)
 make check      # serial, ~20 s: tensor/dual/YAML units, materials, patch tests + MMS (both
                 # formulations), homogeneous deformations vs closed forms (all incompressible models)
-make homogeneous # the app on apps/input/homogeneous/*.yaml, compared with the closed forms (python3 + yaml)
+make homogeneous # the app on apps/input/finite_elasticity/homogeneous/*.yaml, compared with the closed forms (python3 + yaml)
 make test       # everything: app runs serial and np=4, np={2,4} consistency, benchmarks, homogeneous
 make clean      # removes build/
 ```
@@ -78,7 +79,7 @@ All build products (objects, `.d` dependency fragments, the library, the
 executables, and test scratch files) go under `build/`, mirroring the source
 tree; set `BUILD_DIR=...` on the command line to put them elsewhere. Run the
 targets from the repository root, since the inputs are referenced as
-`apps/input/*.yaml`.
+`apps/input/<set>/*.yaml`.
 
 `make test` ends with `build/tests/test_benchmarks --cook-ratio-gate`, which asserts
 the plan's requirement that the Cook's membrane corner displacement converge
@@ -91,8 +92,8 @@ final step is green; the threshold is kept as written rather than relaxed.
 ### Running Cook's membrane
 
 ```
-./build/apps/solid_mechanics -i apps/input/cook.yaml
-mpirun -np 4 ./build/apps/solid_mechanics -i apps/input/cook.yaml
+./build/apps/solid_mechanics -i apps/input/finite_elasticity/cook.yaml
+mpirun -np 4 ./build/apps/solid_mechanics -i apps/input/finite_elasticity/cook.yaml
 ```
 
 Plane strain, NeoHookean with E = 250, nu = 0.3, left edge clamped, uniform
@@ -102,11 +103,11 @@ and the probe at the top-right corner (48, 60); the frozen regression value
 on the 64x64 p = 2 mesh is uy = 4.905891700497 (30.7% of the 16 mm edge).
 ParaView output goes to `out/cook` (`displacement` for Warp by Vector,
 `vonmises`, `jacobian`), one cycle per load step. The 3D cantilever of the
-linear-limit test runs the same way from `apps/input/cantilever3d.yaml`.
+linear-limit test runs the same way from `apps/input/finite_elasticity/cantilever3d.yaml`.
 
 The incompressible variant of the same benchmark (mixed u-p formulation,
 isochoric neo-Hookean with mu = 80.194, resultant 100, the pressure a
-Lagrange multiplier) is `apps/input/cook_incompressible.yaml`; its frozen
+Lagrange multiplier) is `apps/input/finite_elasticity/cook_incompressible.yaml`; its frozen
 value on the 32x32 Q2-Q1 mesh is corner uy = 6.930412595013 (43.3% of the
 edge), and `cook_nearly_incompressible.yaml` is the same problem with
 nu = 0.4999 (kappa = 4.0e5). Both add a `pressure` output field.
@@ -221,8 +222,8 @@ reassembled at every step; the others once.
 **Components.** A Dirichlet entry with `components: [y]` (names or 0-based
 indices) prescribes only those components; the others on that boundary are
 free (natural). Rollers and symmetry planes are then one line each, e.g.
-`apps/input/homogeneous/symmetry_uniaxial_neo_hookean.yaml` (an octant of
-the uniaxial cube with three rollers) and `apps/input/cylinder_inflation.yaml`
+`apps/input/finite_elasticity/homogeneous/symmetry_uniaxial_neo_hookean.yaml` (an octant of
+the uniaxial cube with three rollers) and `apps/input/finite_elasticity/cylinder_inflation.yaml`
 (a quarter annulus). The data is still a full vector; the unlisted
 components are simply not applied.
 
@@ -469,7 +470,7 @@ their plane-strain forms) are collected in
 `doc/incompressible_hyperelasticity.tex`. They are used as reference
 solutions in two places:
 
-- `apps/input/homogeneous/plane_strain_<model>.yaml` (unit square
+- `apps/input/finite_elasticity/homogeneous/plane_strain_<model>.yaml` (unit square
   `apps/mesh/square.msh`, plane-strain extension to lambda = 2, affine
   displacement on the faces `left` and `right` as expressions (`["x", "-0.5*y"]`),
   lateral faces free), `plane_stress_<model>.yaml` (the same
