@@ -46,10 +46,11 @@ apps/           solid_mechanics.cpp (YAML parsing and wiring only), apps/input/<
                 (finite_elasticity: the examples of this code; anand_coupled_theories: Anand's book),
                 apps/mesh/*.geo (Gmsh sources of the example meshes, named physical groups) and the
                 generated apps/mesh/*.msh (make meshes),
-                apps/input/finite_elasticity/homogeneous/*.yaml (homogeneous deformations of the six incompressible
-                models: plane strain, plane stress, uniaxial / equibiaxial / pure shear in 3D, the
-                uniaxial symmetry model) with apps/homogeneous_compare.py (runs them against the
-                closed forms); apps/input/finite_elasticity/cylinder_inflation.yaml (follower pressure vs Rivlin);
+                apps/input/finite_elasticity/homogeneous/*.yaml (homogeneous deformations of the incompressible
+                neo-Hookean model: plane strain, plane stress, uniaxial / equibiaxial / pure shear in 3D,
+                the uniaxial symmetry model) with apps/homogeneous_compare.py (runs them against the
+                closed forms; any of the six models works in these inputs, tests/test_homogeneous
+                covers all six); apps/input/finite_elasticity/cylinder_inflation.yaml (follower pressure vs Rivlin);
                 apps/input/anand_coupled_theories/<chapter>/*.yaml (the examples of Anand's coupled-theories
                 book, from its FEniCSx companion codes; finite_elasticity so far)
 tests/          test_base, test_materials, test_solid_mms, test_mixed, test_homogeneous, test_loading
@@ -470,13 +471,16 @@ their plane-strain forms) are collected in
 `doc/incompressible_hyperelasticity.tex`. They are used as reference
 solutions in two places:
 
-- `apps/input/finite_elasticity/homogeneous/plane_strain_<model>.yaml` (unit square
+- `apps/input/finite_elasticity/homogeneous/plane_strain_neo_hookean.yaml` (unit square
   `apps/mesh/square.msh`, plane-strain extension to lambda = 2, affine
   displacement on the faces `left` and `right` as expressions (`["x", "-0.5*y"]`),
-  lateral faces free), `plane_stress_<model>.yaml` (the same
+  lateral faces free), `plane_stress_neo_hookean.yaml` (the same
   sheet in plane stress: uniaxial tension, thickness stretch lambda^-1/2, no
-  pressure unknown) and `uniaxial_<model>.yaml` (unit cube `apps/mesh/cube.msh`, uniaxial
-  tension to lambda = 2) for all six models; `python3 apps/homogeneous_compare.py` runs
+  pressure unknown), `uniaxial_neo_hookean.yaml` (unit cube `apps/mesh/cube.msh`, uniaxial
+  tension to lambda = 2), its symmetry model with rollers, and the equibiaxial and
+  pure-shear cubes, all for the incompressible neo-Hookean model (swap the `material`
+  line for any of the other five: the script's closed forms cover them all);
+  `python3 apps/homogeneous_compare.py` runs
   them and prints the probed displacement, pressure or thickness stretch, von
   Mises stress, J and the stress components, in their nodal and element
   presentations, next to the closed forms (all agree to ~1e-13;

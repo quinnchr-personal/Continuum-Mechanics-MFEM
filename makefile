@@ -140,7 +140,7 @@ CHECK_TESTS := $(addprefix $(BUILD_DIR)/tests/,test_base test_materials test_sol
 check: $(CHECK_TESTS)
 	@for t in $(CHECK_TESTS); do echo "== $$t"; ./$$t || exit 1; done
 
-# The app on the homogeneous-deformation inputs of every incompressible model,
+# The app on the homogeneous-deformation inputs (incompressible neo-Hookean),
 # compared with the closed-form solutions (needs python3 with PyYAML).
 homogeneous: $(APP)
 	python3 apps/homogeneous_compare.py --app $(APP)

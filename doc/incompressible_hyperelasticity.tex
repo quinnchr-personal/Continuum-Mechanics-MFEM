@@ -717,18 +717,20 @@ therefore has $p < 0$.
 \label{sec:verification}
 
 {\sloppy
-The inputs \code{apps/input/finite\_elasticity/homogeneous/plane\_strain\_<model>.yaml} (unit
+The inputs \code{apps/input/finite\_elasticity/homogeneous/plane\_strain\_neo\_hookean.yaml} (unit
 square \code{apps/mesh/square.msh}, plane-strain extension to $\lambda = 2$
 as in Section 5.1),
-\code{plane\_stress\_<model>.yaml} (the same sheet in plane stress: uniaxial
+\code{plane\_stress\_neo\_hookean.yaml} (the same sheet in plane stress: uniaxial
 tension to $\lambda = 2$, thickness stretch $\lambda^{-1/2}$, no pressure
-unknown) and \code{uniaxial\_<model>.yaml} (unit cube \code{apps/mesh/cube.msh},
+unknown) and \code{uniaxial\_neo\_hookean.yaml} (unit cube \code{apps/mesh/cube.msh},
 uniaxial tension to $\lambda = 2$, the affine displacement of Section 4.1
 prescribed on the faces \code{left} and \code{right}, the four lateral faces
-free) exist for all six models, together with equibiaxial and pure-shear
-cubes (\code{equibiaxial\_<model>.yaml}, \code{pure\_shear\_<model>.yaml};
-Sections 4.2 and 4.3, the faces $Z = 0, 1$ free) and the uniaxial symmetry
-model with rollers.  Their Dirichlet entries write the affine data
+free) exist for the neo-Hookean model, together with equibiaxial and
+pure-shear cubes (\code{equibiaxial\_neo\_hookean.yaml},
+\code{pure\_shear\_neo\_hookean.yaml}; Sections 4.2 and 4.3, the faces
+$Z = 0, 1$ free) and the uniaxial symmetry model with rollers; the other five
+models run in the same inputs by changing the \code{material} line, and the
+script's closed forms cover all six.  Their Dirichlet entries write the affine data
 $\bu = \bm{G}\bX$, $\bm{G} = \operatorname{diag}(\lambda_a - 1)$, as
 expression strings (e.g.\ \code{["x", "-0.5*y"]}).
 \code{apps/homogeneous\_compare.py} runs them and prints the probed
