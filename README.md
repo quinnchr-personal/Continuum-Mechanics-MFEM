@@ -347,6 +347,15 @@ reference's Pade form of the model), Rivlin's universal torsion for torque
 and axial force, the incompressible thick-walled cylinder and sphere
 inflation by quadrature, the Euler load for the column, and the matrix-only
 curve for the inclusion. `pip`-level dependencies: numpy and matplotlib.
+What the plots show: the uniaxial cube, the torsion and both inflations lie
+on their reference curves (the uniaxial one on the nearly incompressible
+solution at K = 1000 G, with the incompressible limit a few percent above
+at the largest stretch); the sheared block carries about 17 percent less
+nominal shear stress than homogeneous simple shear at a shear strain of 1,
+because its lateral faces are free where simple shear needs tractions, and
+its two cycles retrace one curve (elastic, no hysteresis); the sphere stops
+at its limit pressure of 34 kPa and the cylinder near 38 kPa, where the
+reference also stopped.
 
 Differences from the reference that change the numbers: the Arruda-Boyce
 model here is the five-term series in I1/N (`N = lambda_L^2`) rather than the
