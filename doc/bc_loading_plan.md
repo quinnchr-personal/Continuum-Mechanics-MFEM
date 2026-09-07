@@ -11,7 +11,7 @@ second. Deviations from the text below: the pressure types and the follower kern
 written with L1 (the shared `LoadSet` carries them) and tested in L4; the cylinder test
 uses a curved second-order Gmsh mesh (`apps/mesh/annulus.geo`) so refinement follows the
 arcs; in addition to L5, equibiaxial and pure-shear cube inputs for every incompressible
-model were added under `apps/input/finite_elasticity/homogeneous/` and the comparison script derives the
+model were added under `apps/input/finite_elasticity/homogeneous_deformations/` and the comparison script derives the
 free axis from the constrained faces. After review the `value`/`gradient` data form
 (and the plain `body_force` list) was removed from the YAML schema at the user's request:
 every entry is an `expression`, the default schedule is the ramp unless the expression
@@ -57,7 +57,7 @@ Every existing input must run unchanged and reproduce its frozen numbers.
   `AddTraction(attrs, coef)`, `SetBodyForce(coef)`; tests use these programmatically
   (`tests/test_homogeneous.cpp:332`, `tests/test_mixed.cpp:227`, `tests/test_solid_mms.cpp:295`).
 - Frozen regressions that must not move: `tests/test_benchmarks.cpp` (Cook corner values),
-  `apps/homogeneous_compare.py` over `apps/input/finite_elasticity/homogeneous/*.yaml`, all `tests/test_*`.
+  `apps/homogeneous_compare.py` over `apps/input/finite_elasticity/homogeneous_deformations/*.yaml`, all `tests/test_*`.
 - Follower loads are an explicit TODO seam at `src/physics/solid_mechanics_tl.cpp:171`.
 
 ## 2. Design decisions — do not re-litigate
@@ -228,7 +228,7 @@ as now.
   - Uniaxial cube by symmetry: eighth-symmetry model of `uniaxial_neo_hookean.yaml`
     (rollers on `X = 0`, `Y = 0`, `Z = 0`, affine stretch on `X = 1`, other faces free)
     reproduces the closed-form stress and `p` to 1e-8 (compare against the existing full-cube
-    run through `homogeneous_compare.py`; add the input under `apps/input/finite_elasticity/homogeneous/`
+    run through `homogeneous_compare.py`; add the input under `apps/input/finite_elasticity/homogeneous_deformations/`
     with a `symmetry_` prefix and teach the script's `load_case` to read `components`).
   - Rank-check: on a mesh with all faces rollered (each face one normal component) the
     tangent at `u = 0` has no null space (CG converges on a zero-traction problem, `|u| = 0`).

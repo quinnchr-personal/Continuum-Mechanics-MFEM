@@ -20,7 +20,7 @@ solver:
   newton: { rtol: 1e-11, atol: 1e-13, max_it: 30 }
   linear: { type: gmres_amg, rtol: 1e-13, max_it: 400, krylov_dim: 100 }
 output:
-  paraview: out/homogeneous/plane_stress_neo_hookean
+  paraview: out/homogeneous_deformations/plane_stress_neo_hookean
   fields: [displacement, vonmises, jacobian, thickness_stretch, cauchy_stress, pk1_stress]
   quadrature_at: [nodes, elements, quadrature_points]   # <name> nodal, <name>_elem element average, <name>_qp point cloud
   nodal_projection: averaged                            # or projected (global L2 projection)

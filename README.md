@@ -46,7 +46,7 @@ apps/           solid_mechanics.cpp (YAML parsing and wiring only), apps/input/<
                 (finite_elasticity: the examples of this code; anand_coupled_theories: Anand's book),
                 apps/mesh/*.geo (Gmsh sources of the example meshes, named physical groups) and the
                 generated apps/mesh/*.msh (make meshes),
-                apps/input/finite_elasticity/homogeneous/*.yaml (homogeneous deformations of the incompressible
+                apps/input/finite_elasticity/homogeneous_deformations/*.yaml (homogeneous deformations of the incompressible
                 neo-Hookean model: plane strain, plane stress, uniaxial / equibiaxial / pure shear in 3D,
                 the uniaxial symmetry model) with apps/homogeneous_compare.py (runs them against the
                 closed forms; any of the six models works in these inputs, tests/test_homogeneous
@@ -71,7 +71,7 @@ make            # build/libcmf.a, build/apps/solid_mechanics, build/tests/*
 make meshes     # regenerate apps/mesh/*.msh from apps/mesh/*.geo with Gmsh (the .msh files are kept in the tree)
 make check      # serial, ~20 s: tensor/dual/YAML units, materials, patch tests + MMS (both
                 # formulations), homogeneous deformations vs closed forms (all incompressible models)
-make homogeneous # the app on apps/input/finite_elasticity/homogeneous/*.yaml, compared with the closed forms (python3 + yaml)
+make homogeneous # the app on apps/input/finite_elasticity/homogeneous_deformations/*.yaml, compared with the closed forms (python3 + yaml)
 make test       # everything: app runs serial and np=4, np={2,4} consistency, benchmarks, homogeneous
 make clean      # removes build/
 ```
@@ -223,7 +223,7 @@ reassembled at every step; the others once.
 **Components.** A Dirichlet entry with `components: [y]` (names or 0-based
 indices) prescribes only those components; the others on that boundary are
 free (natural). Rollers and symmetry planes are then one line each, e.g.
-`apps/input/finite_elasticity/homogeneous/symmetry_uniaxial_neo_hookean.yaml` (an octant of
+`apps/input/finite_elasticity/homogeneous_deformations/symmetry_uniaxial_neo_hookean.yaml` (an octant of
 the uniaxial cube with three rollers) and `apps/input/finite_elasticity/cylinder_inflation.yaml`
 (a quarter annulus). The data is still a full vector; the unlisted
 components are simply not applied.
@@ -471,7 +471,7 @@ their plane-strain forms) are collected in
 `doc/incompressible_hyperelasticity.tex`. They are used as reference
 solutions in two places:
 
-- `apps/input/finite_elasticity/homogeneous/plane_strain_neo_hookean.yaml` (unit square
+- `apps/input/finite_elasticity/homogeneous_deformations/plane_strain_neo_hookean.yaml` (unit square
   `apps/mesh/square.msh`, plane-strain extension to lambda = 2, affine
   displacement on the faces `left` and `right` as expressions (`["x", "-0.5*y"]`),
   lateral faces free), `plane_stress_neo_hookean.yaml` (the same

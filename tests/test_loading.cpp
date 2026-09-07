@@ -339,7 +339,7 @@ void ExpressionReassemblyTest()
 // field and the closed-form pressure of the full-cube input.
 void SymmetryCubeTest()
 {
-  cmf::AppConfig cfg = cmf::LoadConfig("apps/input/finite_elasticity/homogeneous/symmetry_uniaxial_neo_hookean.yaml");
+  cmf::AppConfig cfg = cmf::LoadConfig("apps/input/finite_elasticity/homogeneous_deformations/symmetry_uniaxial_neo_hookean.yaml");
   cfg.output.paraview.clear();
   cfg.output.fields = {"displacement", "pressure"};
   cfg.solver.newton.print_level = 0;
@@ -389,7 +389,7 @@ void SymmetryCubeTest()
 // nontrivial; the normal displacement vanishes on every face.
 void RollerRankTest()
 {
-  cmf::AppConfig cfg = cmf::LoadConfig("apps/input/finite_elasticity/homogeneous/symmetry_uniaxial_neo_hookean.yaml");
+  cmf::AppConfig cfg = cmf::LoadConfig("apps/input/finite_elasticity/homogeneous_deformations/symmetry_uniaxial_neo_hookean.yaml");
   cfg.output.paraview.clear();
   cfg.output.fields = {"displacement"};
   cfg.solver.newton.print_level = 0;
