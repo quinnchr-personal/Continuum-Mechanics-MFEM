@@ -15,11 +15,14 @@ tree is legacy and separate.
 
 ```
 src/base/       tensor.hpp (fixed-size tensors), dual.hpp (forward-mode AD),
-                config.{hpp,cpp} (YAML schema -> structs, key-path errors),
+                config.{hpp,cpp} (YAML schema -> structs, key-path errors, load schedules),
+                expression.{hpp,cpp} (f(x, y, z, t) parser/evaluator for boundary data),
+                coefficients.hpp (constant, affine and expression coefficients of the YAML data),
                 mesh_input (file or Cartesian box, corner map, jitter, refinement),
                 fields.hpp (named field registry), output (ParaView), probes (point values)
 src/kernels/    total_lagrangian.hpp: qpoint free functions + TotalLagrangianIntegrator<Material>;
-                mixed_total_lagrangian.hpp: u-p qpoint functions + MixedTotalLagrangianIntegrator<Material>
+                mixed_total_lagrangian.hpp: u-p qpoint functions + MixedTotalLagrangianIntegrator<Material>;
+                follower_pressure.hpp: boundary face integrator T = -p J F^-T N (both forms)
 src/kernels/materials/
                 neo_hookean.hpp, st_venant_kirchhoff.hpp (coupled, displacement formulation);
                 iso_neo_hookean.hpp, mooney_rivlin.hpp, yeoh.hpp, gent.hpp, arruda_boyce.hpp,
@@ -27,23 +30,28 @@ src/kernels/materials/
                 I1bar pieces, spectral.hpp symmetric 3x3 eigen-solver for Ogden);
                 plane_stress.hpp (adapter: F33 = thickness stretch with P33 = 0, any base model);
                 material_tangent.hpp (dual seeding), materials.{hpp,cpp} (variants, YAML factory, moduli)
-src/physics/    solid_problem.hpp (common interface + factory by formulation);
+src/physics/    solid_problem.{hpp,cpp} (common interface, factory by formulation, YAML load installer);
+                loads.{hpp,cpp}: LoadSet, the boundary conditions and external loads of a
+                displacement space (component masks, schedules of the pseudo-time t, per-entry
+                dead-load vectors, follower-pressure scales), shared by both formulations;
                 quadrature_fields.{hpp,cpp}: quadrature-point quantities and their nodal /
                 element / point-cloud presentations (shared by both formulations);
                 solid_mechanics_tl.{hpp,cpp}: displacement formulation (residual, assembled
-                Jacobian, essential dofs, dead loads, load factor, output fields);
+                Jacobian, output fields);
                 mixed_solid_mechanics_tl.{hpp,cpp}: u-p formulation on a Taylor-Hood pair
 src/solvers/    newton (damped Newton, Armijo backtracking), linear_solver (GMRES/CG + BoomerAMG),
                 saddle_point_solver (augmented Lagrangian FGMRES for the u-p Jacobian),
-                quasi_static (load stepping over lambda in (0, 1])
+                quasi_static (load stepping over the pseudo-time t in (0, 1] with bisection)
 apps/           solid_mechanics.cpp (YAML parsing and wiring only), apps/input/*.yaml,
                 apps/mesh/*.geo (Gmsh sources of the example meshes, named physical groups) and the
                 generated apps/mesh/*.msh (make meshes),
                 apps/input/homogeneous/*.yaml (homogeneous deformations of the six incompressible
-                models: plane strain, plane stress, 3D) with apps/homogeneous_compare.py (runs them
-                against the closed forms)
-tests/          test_base, test_materials, test_solid_mms, test_mixed, test_homogeneous (make check);
-                test_mixed --full, test_benchmarks, test_parallel, homogeneous compare (make test)
+                models: plane strain, plane stress, uniaxial / equibiaxial / pure shear in 3D, the
+                uniaxial symmetry model) with apps/homogeneous_compare.py (runs them against the
+                closed forms); apps/input/cylinder_inflation.yaml (follower pressure vs Rivlin)
+tests/          test_base, test_materials, test_solid_mms, test_mixed, test_homogeneous, test_loading
+                (make check); test_mixed --full, test_benchmarks, test_parallel, homogeneous compare,
+                test_loading np=4 (make test); tests/input/*.yaml (inputs of the tests)
 makefile        out-of-tree build under build/ (BUILD_DIR): build/libcmf.a (LIBNAME) from src/,
                 then build/apps/* and build/tests/* linked against it
 ```
@@ -133,13 +141,15 @@ bcs:
   traction:  [ { attr: [right], value: [0.0, 3.75] } ]  # all components prescribed / nominal traction per
                                                         # unit reference area (dead load)
   # Either entry may add gradient: [[..],[..]] (dim x dim): the data is then value + gradient X in the
-  # reference coordinates (affine, e.g. the exact displacement of a homogeneous deformation).
-  # Dirichlet entries may add components: [x, z] (or 0-based indices) to prescribe a subset (rollers,
-  # symmetry planes). Every entry may add schedule: { type: ramp, from: 0.0, to: 1.0 } (default) |
-  # { type: constant } | { type: table, t: [..], s: [..] }: its data is schedule(t) * data over the
-  # pseudo-time t in [0, 1]. See "Boundary conditions and loading" below.
+  # reference coordinates (affine, e.g. the exact displacement of a homogeneous deformation), or give
+  # expression: ["f_x(x,y,z,t)", "f_y(...)"] instead of value. Dirichlet entries may add
+  # components: [x, z] (or 0-based indices) to prescribe a subset (rollers, symmetry planes). Tractions
+  # may set type: pressure (dead, T = -p N; scalar value/expression) or type: follower_pressure
+  # (T = -p J F^-T N per current area). Every entry may add schedule: { type: ramp, from: 0.0, to: 1.0 }
+  # (default) | { type: constant } | { type: table, t: [..], s: [..] }: its data is schedule(t) * data
+  # over the pseudo-time t in [0, 1]. See "Boundary conditions and loading" below.
 body_force: [0.0, 0.0]            # per unit mass; rho0 * b enters the weak form; or
-                                  # { value: [..], schedule: {..} }
+                                  # { value: [..] | expression: [..], schedule: {..} }
 solver:
   load_steps: 1                   # equal increments of t; or steps: [ { to: 0.5, n: 2 }, { to: 1.0, n: 4 } ]
   substep: { on_failure: false, max_bisections: 4, min_dt: 1e-4 }   # halve a failed increment and retry
@@ -159,11 +169,96 @@ output:
   nodal_projection: averaged      # averaged (element projection, mean at shared nodes) | projected (global L2)
   high_order: true
   probes: [ { name: top_right_corner, point: [48.0, 60.0] } ]   # every registered field printed at these points
+  probe_every_step: false         # also after every load step, on lines prefixed "step k t = ..."
 ```
 
 Unknown keys, missing required keys, and wrong types raise an error naming
 the full key path (for example `key 'material.E' expected a number, got
 'abc'`).
+
+### Boundary conditions and loading
+
+Every boundary condition and the body force is a load entry with its own
+data and its own schedule in a pseudo-time `t` that the stepper advances
+from 0 to 1 (`doc/bc_loading_plan.md` is the design record,
+`doc/solid_mechanics_forms.tex` Section 5 the formulation).
+
+**Data.** An entry gives `value` (a vector; a scalar for the pressure
+types), optionally with `gradient` so that the data is `value + gradient X`
+in the reference coordinates, or `expression`: one string per component,
+`f(x, y, z, t)` in the reference coordinates and the pseudo-time (a single
+string for pressures). The expression grammar is numbers, `x y z t` (`z` is
+0 in 2D), `pi`, the operators `+ - * / ^` (`^` binds tightest and
+associates to the right, so `2^3^2 = 512` and `-x^2 = -(x^2)`),
+parentheses, the functions `sin cos tan exp log sqrt abs pow(a, b) min(a, b)
+max(a, b)`, and `if(cond, a, b)` with the comparisons `< <= > >= == !=`
+(1 or 0; comparisons do not chain). Parse errors name the entry and the
+column. Expressions cannot refer to the solution or to the current
+position; a load that depends on the deformation is a follower load, and
+only the follower pressure below is provided.
+
+**Schedules.** The data of entry `i` enters as `s_i(t) * data`. `schedule:
+{ type: ramp, from: 0, to: 1 }` (the default) is 0 before `from`, 1 after
+`to`, linear between; `{ type: constant }` is 1 for `t > 0`, i.e. the load
+is applied in full at the first step; `{ type: table, t: [..], s: [..] }`
+interpolates linearly and clamps outside. Entries given as expressions
+default to the constant schedule, so `t` enters through the function; if a
+schedule is given as well the two multiply. With the default ramp on every
+entry, `t < 1` solves a proportionally scaled problem and `t = 1` the problem
+of the weak form, which is exactly the former `load_steps` behaviour. A
+prestress-then-stretch path is two entries with ramps over `[0, 0.5]` and
+`[0.5, 1]`; load-unload is a table `s: [0, 1, 0]`. Two Dirichlet entries may
+overlap on shared edges or corners: the later entry wins there, and the
+physics prints a warning when two entries prescribe the same component on
+the same attribute. Dead loads whose expression mentions `t` are
+reassembled at every step; the others once.
+
+**Components.** A Dirichlet entry with `components: [y]` (names or 0-based
+indices) prescribes only those components; the others on that boundary are
+free (natural). Rollers and symmetry planes are then one line each, e.g.
+`apps/input/homogeneous/symmetry_uniaxial_neo_hookean.yaml` (an octant of
+the uniaxial cube with three rollers) and `apps/input/cylinder_inflation.yaml`
+(a quarter annulus). The data is still a full vector; the unlisted
+components are simply not applied.
+
+**Pressures.** `type: pressure` is a dead normal pressure, `T = -p N` per
+unit reference area on the reference outward normal. `type:
+follower_pressure` is a pressure per unit current area, `T = -p J F^-T N`,
+which depends on the displacement and enters the nonlinear form as a
+boundary face term with its own (non-symmetric) tangent by dual numbers;
+`solver.linear.type: cg_amg` is refused for such inputs. The two coincide
+at `F = I` and differ at second order in `p`. `cylinder_inflation.yaml`
+reproduces the closed-form inflation of a thick-walled incompressible
+cylinder (Rivlin) to 1e-6 on the 4 x 8 mesh with one refinement.
+
+**Steps and recovery.** `solver.load_steps: N` takes N equal increments of
+`t`; `solver.steps: [ { to: 0.5, n: 2 }, { to: 1.0, n: 4 } ]` takes 2
+increments to `t = 0.5` and 4 more to 1 (the segments must end at 1).
+`solver.substep: { on_failure: true, max_bisections: 4, min_dt: 1e-4 }`
+restores the last converged state when a Newton solve fails, halves the
+increment and retries (at most `max_bisections` times and never below
+`min_dt`); after a converged reduced increment the stepper aims at the
+planned breakpoint again and never grows beyond the planned grid. The
+report lists the failed attempts and the bisection count; the app prints
+`load step k/n: t = a -> b` per increment and `probe_every_step: true`
+prints every probe after every step with its `t`.
+
+**Programmatic use.** `AddDirichlet`, `AddTraction`, `AddPressure(attrs, p,
+follower)` and `SetBodyForce` take an optional `BCOptions{components,
+schedule, time_dependent}`; MFEM coefficients with a `(X, t)` callback work
+because `SetLoadFactor(t)` calls `SetTime(t)` on every coefficient (set
+`time_dependent` so that a dead load is reassembled per step). All of the
+above lives in `physics/loads.{hpp,cpp}` (`LoadSet`), shared by both
+formulations; `tests/test_loading.cpp` exercises every feature (staged
+loading is path independent, load-unload returns to zero, bisection recovers
+a capped Newton, a manufactured solution written entirely as YAML
+expressions converges at third order, the symmetry cube reproduces the
+closed form, the follower tangent matches finite differences, the cylinder
+inflates as Rivlin says).
+
+Not supported: point loads and nodal constraints (use a small physical
+group), multi-point or periodic constraints, contact, true dynamics (`t` is
+a pseudo-time), automatic step growth after a bisection.
 
 ### Meshes: the Gmsh workflow
 
@@ -429,17 +524,18 @@ For the next physics the following will have to generalize:
 - Sources are not part of the integrator: the body force is a dead load on
   the linear-form side. A reaction or heat source `S(u)` needs a domain
   source term inside the nonlinear form with its own tangent.
-- Boundary terms are stock MFEM linear-form integrators (dead loads only).
-  Follower loads, Robin/flux conditions, and DG/HDG numerical fluxes have no
-  home yet (the follower-load seam is a TODO in `SolidMechanicsTL::Finalize`).
-- Dirichlet conditions prescribe all components of the vector unknown on an
-  attribute; component-wise (symmetry) conditions and scalar unknowns are not
-  expressible in the YAML `bcs` block.
-- The physics module owns its own space, essential dofs, and loads. A
-  coupling layer will need these behind a common interface
-  (`QuasiStaticProblem` is the current minimal one: residual, Jacobian, load
-  factor, Dirichlet application) plus field exchange by name through
-  `FieldRegistry`.
+- Boundary terms are stock MFEM linear-form integrators (dead loads) plus
+  one hand-written boundary face integrator (the follower pressure).
+  Robin/flux conditions and DG/HDG numerical fluxes have no home yet; a
+  general boundary-flux contract would absorb the follower kernel.
+- Dirichlet conditions prescribe all or some components of the vector
+  unknown on an attribute; scalar unknowns are not yet expressible in the
+  YAML `bcs` block (the `LoadSet` is written for one vector H1 space).
+- The physics module owns its own space and, through `LoadSet`, its
+  essential dofs and loads. A coupling layer will need these behind a common
+  interface (`QuasiStaticProblem` is the current minimal one: residual,
+  Jacobian, pseudo-time, Dirichlet application) plus field exchange by name
+  through `FieldRegistry`.
 - Materials are stateless. Internal variables (`QuadratureFunction` state),
   temperature dependence, and hand-coded tangents are absent by design.
 - All kernels are CPU host code written as plain callables without

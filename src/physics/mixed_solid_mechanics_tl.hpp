@@ -103,6 +103,7 @@ private:
   mfem::Array<mfem::ParFiniteElementSpace *> spaces_;
   mfem::Array<int> offsets_;
   std::unique_ptr<BlockForm> nlf_;
+  std::unique_ptr<mfem::ParBlockNonlinearForm> energy_form_; // domain integrator only
 
   std::vector<std::unique_ptr<mfem::VectorCoefficient>> owned_coefs_;
   std::vector<std::unique_ptr<mfem::Coefficient>> owned_scalars_;

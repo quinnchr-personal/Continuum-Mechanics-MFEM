@@ -5,6 +5,15 @@ criteria before moving on, commit once per completed gate. This extends the fram
 `doc/hyperelasticity_implementation_plan.md`; its design decisions (total Lagrangian,
 reference mesh never moves, thin `apps/`, `myapps/` untouched) still hold.
 
+**Status (2026-09-06):** all five gates implemented; L1+L2 in one commit (the load
+bookkeeping they share was written once, as `physics/loads.{hpp,cpp}`), L3+L4+L5 in a
+second. Deviations from the text below: the pressure types and the follower kernel were
+written with L1 (the shared `LoadSet` carries them) and tested in L4; the cylinder test
+uses a curved second-order Gmsh mesh (`apps/mesh/annulus.geo`) so refinement follows the
+arcs; in addition to L5, equibiaxial and pure-shear cube inputs for every incompressible
+model were added under `apps/input/homogeneous/` and the comparison script derives the
+free axis from the constrained faces.
+
 **Goal:** replace the single proportional load path (one `load_factor` scaling every
 Dirichlet value, traction and body force together, in `load_steps` equal increments) with a
 scheme where

@@ -890,6 +890,7 @@ OutputConfig ParseOutputConfig(const YAML::Node &node, const std::string &path)
     }
   }
   else { r.Optional<int>("probes", 0); }
+  cfg.probe_every_step = r.Optional<bool>("probe_every_step", false);
   r.Finish();
   return cfg;
 }

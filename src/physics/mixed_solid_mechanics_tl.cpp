@@ -46,10 +46,12 @@ MixedSolidMechanicsTL::MixedSolidMechanicsTL(mfem::ParMesh &mesh, const AppConfi
 void MixedSolidMechanicsTL::ResetForm()
 {
   nlf_ = std::make_unique<BlockForm>(spaces_);
+  energy_form_ = std::make_unique<mfem::ParBlockNonlinearForm>(spaces_);
   std::visit([this](const auto &mat)
   {
     using M = std::decay_t<decltype(mat)>;
     nlf_->AddDomainIntegrator(new MixedTotalLagrangianIntegrator<M>(mat));
+    energy_form_->AddDomainIntegrator(new MixedTotalLagrangianIntegrator<M>(mat));
   }, material_);
   follower_markers_.clear();
   finalized_ = false;
@@ -154,7 +156,7 @@ mfem::Operator &MixedSolidMechanicsTL::GetGradient(const mfem::Vector &x) const
 
 double MixedSolidMechanicsTL::InternalEnergy(const mfem::Vector &x) const
 {
-  return nlf_->GetEnergy(x);
+  return energy_form_->GetEnergy(x);
 }
 
 HYPRE_BigInt MixedSolidMechanicsTL::GlobalTrueVSize() const

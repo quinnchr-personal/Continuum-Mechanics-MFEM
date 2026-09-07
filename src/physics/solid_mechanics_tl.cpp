@@ -40,11 +40,13 @@ SolidMechanicsTL::SolidMechanicsTL(mfem::ParMesh &mesh, const AppConfig &cfg,
 void SolidMechanicsTL::ResetForm()
 {
   nlf_ = std::make_unique<mfem::ParNonlinearForm>(&fes_);
+  energy_form_ = std::make_unique<mfem::ParNonlinearForm>(&fes_);
   // One integrator instantiation per material type, chosen once here.
   std::visit([this](const auto &mat)
   {
     using M = std::decay_t<decltype(mat)>;
     nlf_->AddDomainIntegrator(new TotalLagrangianIntegrator<M>(mat));
+    energy_form_->AddDomainIntegrator(new TotalLagrangianIntegrator<M>(mat));
   }, material_);
   follower_markers_.clear();
   finalized_ = false;
@@ -136,7 +138,7 @@ mfem::Operator &SolidMechanicsTL::GetGradient(const mfem::Vector &x) const
 
 double SolidMechanicsTL::InternalEnergy(const mfem::Vector &x) const
 {
-  return nlf_->GetEnergy(x);
+  return energy_form_->GetEnergy(x);
 }
 
 HYPRE_BigInt SolidMechanicsTL::GlobalTrueVSize() const
@@ -152,6 +154,11 @@ std::string SolidMechanicsTL::Description() const
 std::unique_ptr<mfem::Solver>
 SolidMechanicsTL::MakeLinearSolver(const LinearSolverConfig &cfg)
 {
+  if (cfg.type == "cg_amg" && loads_.HasFollowerPressure())
+  {
+    throw ConfigError("solver.linear.type: cg_amg needs a symmetric tangent, but a "
+                      "follower_pressure entry makes it non-symmetric; use gmres_amg");
+  }
   return cmf::MakeLinearSolver(cfg, fes_);
 }
 

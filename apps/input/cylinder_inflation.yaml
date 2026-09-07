@@ -1,0 +1,32 @@
+# Thick-walled cylinder (A = 1, B = 2, plane strain) of incompressible
+# neo-Hookean material (mu = 1) under the internal follower pressure P = 0.3
+# per unit current area. Quarter model (apps/mesh/annulus.geo, curved
+# second-order geometry) with rollers on the two symmetry lines through
+# component-wise Dirichlet data; mixed u-p formulation. Closed form (Rivlin;
+# Ogden, Non-linear Elastic Deformations, Sec. 5.3.1): with a, b the deformed
+# radii, b^2 = B^2 - A^2 + a^2 and
+#   P = mu [ ln(B/A) - ln(b/a) + (A^2 - a^2)/2 (1/b^2 - 1/a^2) ],
+# P = 0.3 gives a = 1.28158, b = 2.15463; tests/test_loading.cpp checks the probes.
+formulation: mixed
+mesh:
+  file: apps/mesh/annulus.msh
+  serial_refine: 1
+  order: 2
+material: { model: iso_neo_hookean, mu: 1.0, incompressible: true }
+bcs:
+  dirichlet:
+    - { attr: [bottom], value: [0.0, 0.0], components: [y] }
+    - { attr: [left],   value: [0.0, 0.0], components: [x] }
+  traction:
+    - { attr: [inner], type: follower_pressure, value: 0.3 }
+solver:
+  load_steps: 6
+  newton: { rtol: 1e-10, atol: 1e-12, max_it: 30 }
+  linear: { type: gmres_amg, rtol: 1e-12, max_it: 400, krylov_dim: 100, inner_rtol: 1e-4, inner_max_it: 100 }
+output:
+  paraview: out/cylinder_inflation
+  fields: [displacement, pressure, vonmises, jacobian, cauchy_stress]
+  probes:
+    - { name: inner, point: [1.0, 0.0] }
+    - { name: outer, point: [2.0, 0.0] }
+    - { name: inner_top, point: [0.0, 1.0] }

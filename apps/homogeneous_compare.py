@@ -7,18 +7,22 @@ doc/incompressible_hyperelasticity.tex.
                                         [--tol 1e-8] [--np N] [inputs.yaml ...]
 
 Without inputs every apps/input/homogeneous/*.yaml is run: plane-strain
-extension and plane-stress sheet tension in 2D, uniaxial tension in 3D. The
-quadrature quantities are compared in their nodal presentation and, where
-the input writes it, in their element-average presentation (rows tagged
-elem). The sigma and P
-rows report the largest error over the six Cauchy / nine first
+extension and plane-stress sheet tension in 2D, uniaxial, equibiaxial and
+pure-shear tension in 3D (full affine data on the loaded faces, or the
+symmetry models with rollers through `components`). The quadrature
+quantities are compared in their nodal presentation and, where the input
+writes it, in their element-average presentation (rows tagged elem). The
+sigma and P rows report the largest error over the six Cauchy / nine first
 Piola-Kirchhoff components of the nodal stress fields, with the xx component
-shown. Each input is a
-box whose end faces X = 0, L carry the affine displacement u = gradient X
-(Dirichlet with a `gradient`) and whose lateral faces are free, so the
-principal stretches are the diagonal of I + gradient (2D: plane strain, the
-out-of-plane stretch is 1) and the lateral principal stress vanishes. Exit
-status 1 if a run fails or any relative error exceeds the tolerance.
+shown. Each input is a box whose constrained faces carry the affine
+displacement u = gradient X (exactly one Dirichlet entry has the
+`gradient`; the others are zero rollers) and whose remaining faces are
+free, so the principal stretches are the diagonal of I + gradient (2D plane
+strain: the out-of-plane stretch is 1) and the principal stress of the
+first free axis vanishes (2D plane stress with every edge constrained: the
+thickness). Inputs with `expression` data have no closed form here and are
+refused. Exit status 1 if a run fails or any relative error exceeds the
+tolerance.
 """
 import argparse
 import glob
@@ -70,9 +74,18 @@ def analytic(material, lam, free_axis=1):
     return sigma, p, vm
 
 
+# Faces of apps/mesh/square.geo and box.geo by axis: (name at X_a = 0, name at X_a = L).
+FACES = {2: [("left", "right"), ("bottom", "top")],
+         3: [("left", "right"), ("front", "back"), ("bottom", "top")]}
+
+
 def load_case(path):
     cfg = yaml.safe_load(open(path))
-    grads = [bc for bc in cfg["bcs"]["dirichlet"] if "gradient" in bc]
+    dirichlet = cfg["bcs"]["dirichlet"]
+    for bc in dirichlet + cfg["bcs"].get("traction", []):
+        if "expression" in bc:
+            raise SystemExit(f"{path}: entries with 'expression' have no closed form to compare against")
+    grads = [bc for bc in dirichlet if "gradient" in bc]
     if len(grads) != 1:
         raise SystemExit(f"{path}: expected exactly one Dirichlet entry with a gradient")
     G = grads[0]["gradient"]
@@ -85,7 +98,24 @@ def load_case(path):
         lam.append(1.0 / (lam[0] * lam[1]) if cfg.get("plane", "strain") == "stress" else 1.0)
     if abs(lam[0] * lam[1] * lam[2] - 1.0) > 1e-12:
         raise SystemExit(f"{path}: the prescribed stretches are not isochoric")
-    return cfg, dim, G, value, lam
+    # The free axis: the first axis with a face that is not constrained in the
+    # axis' own component (that face is traction free, so the principal stress
+    # along the axis vanishes; a roller on X = 0 constrains x only). With every
+    # edge of a plane-stress sheet constrained the free axis is the thickness.
+    constrained = set()
+    for bc in dirichlet:
+        comps = bc.get("components")
+        comps = list(range(dim)) if comps is None else [{"x": 0, "y": 1, "z": 2}.get(str(c), c) for c in comps]
+        for name in bc["attr"]:
+            constrained.update((name, int(c)) for c in comps)
+    free = [a for a, faces in enumerate(FACES[dim]) if any((f, a) not in constrained for f in faces)]
+    if free:
+        free_axis = free[0]
+    elif dim == 2 and cfg.get("plane", "strain") == "stress":
+        free_axis = 2
+    else:
+        raise SystemExit(f"{path}: no free axis (every face is constrained in its normal direction)")
+    return cfg, dim, G, value, lam, free_axis
 
 
 PROBE = re.compile(r"probe (\S+) at \((.*?)\): (\w+) =(.*)")
@@ -124,9 +154,9 @@ def main():
     print("-" * len(header))
     failures = 0
     for path in inputs:
-        cfg, dim, G, value, lam = load_case(path)
+        cfg, dim, G, value, lam, free_axis = load_case(path)
         material = cfg["material"]
-        sigma, p, vm = analytic(material, lam)
+        sigma, p, vm = analytic(material, lam, free_axis)
         code, probes, out = run(args.app, path, args.np_)
         label = os.path.basename(path)
         if code != 0 or not probes:
@@ -170,7 +200,7 @@ def main():
                 failures += 1
             print(f"{label:<36} {material['model']:<15} {quantity:<22} {num:>16.10f} {exact:>16.10f} {err:>11.2e}{flag}")
         print(f"{'':<36} {'':<15} principal Cauchy stresses sigma = ({sigma[0]:.6f}, {sigma[1]:.6f}, {sigma[2]:.6f}), "
-              f"stretches ({lam[0]:.4f}, {lam[1]:.4f}, {lam[2]:.4f})")
+              f"stretches ({lam[0]:.4f}, {lam[1]:.4f}, {lam[2]:.4f}), free axis {'xyz'[free_axis]}")
     print("-" * len(header))
     if failures:
         print(f"FAIL: {failures} quantities exceed tol {args.tol:g} or runs failed")

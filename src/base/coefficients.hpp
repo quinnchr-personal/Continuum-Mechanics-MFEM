@@ -19,6 +19,7 @@ class ExpressionCoefficient : public mfem::Coefficient
 {
 public:
   explicit ExpressionCoefficient(const Expression &f) : f_(f) {}
+  explicit ExpressionCoefficient(const std::string &text) : f_(Expression::Parse(text)) {}
 
   mfem::real_t Eval(mfem::ElementTransformation &T, const mfem::IntegrationPoint &ip) override
   {
@@ -39,6 +40,11 @@ class ExpressionVectorCoefficient : public mfem::VectorCoefficient
 public:
   explicit ExpressionVectorCoefficient(const std::vector<Expression> &f)
     : mfem::VectorCoefficient(int(f.size())), f_(f) {}
+  explicit ExpressionVectorCoefficient(const std::vector<std::string> &text)
+    : mfem::VectorCoefficient(int(text.size()))
+  {
+    for (const std::string &e : text) { f_.push_back(Expression::Parse(e)); }
+  }
 
   void Eval(mfem::Vector &v, mfem::ElementTransformation &T,
             const mfem::IntegrationPoint &ip) override

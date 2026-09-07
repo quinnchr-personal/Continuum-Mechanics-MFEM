@@ -101,6 +101,9 @@ private:
   mfem::H1_FECollection fec_;
   mfem::ParFiniteElementSpace fes_;
   std::unique_ptr<mfem::ParNonlinearForm> nlf_;
+  // Domain integrator only, for InternalEnergy (MFEM's GetEnergy has no
+  // boundary face terms; the follower pressure is not conservative anyway).
+  std::unique_ptr<mfem::ParNonlinearForm> energy_form_;
 
   std::vector<std::unique_ptr<mfem::VectorCoefficient>> owned_coefs_;
   std::vector<std::unique_ptr<mfem::Coefficient>> owned_scalars_;

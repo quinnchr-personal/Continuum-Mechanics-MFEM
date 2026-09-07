@@ -210,6 +210,7 @@ struct OutputConfig
   std::string nodal_projection = "averaged";
   bool high_order = true;
   std::vector<ProbeConfig> probes;   // every registered field printed at these points
+  bool probe_every_step = false;     // also after every load step, prefixed by "step k t = ..."
 };
 
 struct AppConfig

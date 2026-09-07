@@ -64,14 +64,44 @@ int main(int argc, char *argv[])
       writer->Save(0, 0.0);
     }
 
+    // Every registered grid function at every probe point: the nodal unknowns
+    // and the nodal (<name>) and element (<name>_elem) presentations of the
+    // quadrature quantities; point clouds cannot be probed. `prefix` marks
+    // the per-step lines ("step k t = ..."); the final lines carry none.
+    auto print_probes = [&](const std::string &prefix)
+    {
+      for (const cmf::ProbeConfig &probe : cfg.output.probes)
+      {
+        for (const std::string &name : fields.Names())
+        {
+          const std::vector<double> value = cmf::ProbeVector(fields.Get(name), probe.point);
+          if (root)
+          {
+            std::printf("%sprobe %s at (", prefix.c_str(), probe.name.c_str());
+            for (std::size_t i = 0; i < probe.point.size(); i++)
+            {
+              std::printf("%s%g", i ? ", " : "", probe.point[i]);
+            }
+            std::printf("): %s =", name.c_str());
+            for (double v : value) { std::printf(" %.12e", v); }
+            std::printf("\n");
+          }
+        }
+      }
+    };
+
     const cmf::QuasiStaticReport report = cmf::SolveQuasiStatic(
       physics, *linear, cfg.solver, u,
       [&](const cmf::LoadStepReport &step, const mfem::Vector &x)
       {
-        if (writer && step.newton.converged)
+        if (!step.newton.converged) { return; }
+        if (writer || cfg.output.probe_every_step) { physics.UpdateFields(x); }
+        if (writer) { writer->Save(step.step, step.load_factor); }
+        if (cfg.output.probe_every_step)
         {
-          physics.UpdateFields(x);
-          writer->Save(step.step, step.load_factor);
+          char prefix[64];
+          std::snprintf(prefix, sizeof(prefix), "step %d t = %.6f ", step.step, step.load_factor);
+          print_probes(prefix);
         }
       });
 
@@ -87,27 +117,7 @@ int main(int argc, char *argv[])
                   "internal energy = %.12e\n",
                   report.converged ? "yes" : "no", report.steps.size(), u_l2, energy);
     }
-    // Every registered grid function at every probe point: the nodal unknowns
-    // and the nodal (<name>) and element (<name>_elem) presentations of the
-    // quadrature quantities; point clouds cannot be probed.
-    for (const cmf::ProbeConfig &probe : cfg.output.probes)
-    {
-      for (const std::string &name : fields.Names())
-      {
-        const std::vector<double> value = cmf::ProbeVector(fields.Get(name), probe.point);
-        if (root)
-        {
-          std::printf("probe %s at (", probe.name.c_str());
-          for (std::size_t i = 0; i < probe.point.size(); i++)
-          {
-            std::printf("%s%g", i ? ", " : "", probe.point[i]);
-          }
-          std::printf("): %s =", name.c_str());
-          for (double v : value) { std::printf(" %.12e", v); }
-          std::printf("\n");
-        }
-      }
-    }
+    print_probes("");
     if (root && writer) { std::cout << "wrote " << cfg.output.paraview << std::endl; }
     return report.converged ? 0 : 2;
   }

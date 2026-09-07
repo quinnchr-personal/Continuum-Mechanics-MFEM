@@ -96,7 +96,7 @@ $(BUILD_DIR)/%.o: %.cpp
 # tree so that running the inputs and tests does not need Gmsh.
 GMSH ?= gmsh
 MESH_DIR := apps/mesh
-MESHES := $(MESH_DIR)/square.msh $(MESH_DIR)/cook.msh $(MESH_DIR)/cube.msh $(MESH_DIR)/beam.msh
+MESHES := $(MESH_DIR)/square.msh $(MESH_DIR)/cook.msh $(MESH_DIR)/cube.msh $(MESH_DIR)/beam.msh $(MESH_DIR)/annulus.msh
 meshes: $(MESHES)
 $(MESH_DIR)/square.msh: $(MESH_DIR)/square.geo
 	$(GMSH) -2 -format msh22 -setnumber n 4 -o $@ $< > /dev/null
@@ -106,6 +106,8 @@ $(MESH_DIR)/cube.msh: $(MESH_DIR)/box.geo
 	$(GMSH) -3 -format msh22 -setnumber nx 2 -setnumber ny 2 -setnumber nz 2 -o $@ $< > /dev/null
 $(MESH_DIR)/beam.msh: $(MESH_DIR)/box.geo
 	$(GMSH) -3 -format msh22 -setnumber Lx 10 -setnumber nx 20 -setnumber ny 2 -setnumber nz 2 -o $@ $< > /dev/null
+$(MESH_DIR)/annulus.msh: $(MESH_DIR)/annulus.geo
+	$(GMSH) -2 -order 2 -format msh22 -o $@ $< > /dev/null
 
 # Fast gates (S1-S3 + mixed + homogeneous deformations + loading): serial unit and MMS tests.
 CHECK_TESTS := $(addprefix $(BUILD_DIR)/tests/,test_base test_materials test_solid_mms test_mixed test_homogeneous test_loading)

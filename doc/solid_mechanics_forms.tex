@@ -224,7 +224,8 @@ This is the form commonly used with $(\bS,\bE)$ constitutive pairs
     \emph{current} area (e.g.\ pressure $\bar\bt = -p\,\bn$) becomes
     configuration-dependent when pulled back:
     $\bar\bT = -p\,J\bF^{-\top}\bN$, and then contributes to the tangent
-    stiffness.  The form above assumes $\bar\bT$ is a dead (nominal) load.
+    stiffness.  The form above assumes $\bar\bT$ is a dead (nominal) load;
+    the follower pressure is treated in Section~\ref{sec:follower}.
   \item \textbf{Relation to the spatial weak form.} Pushing
     \eqref{eq:weak-TL-P} forward with
     $\bP:\Grad\bw = J\,\bsig : \grad\bw$ and $\ud v = J \ud V$ recovers the
@@ -236,5 +237,80 @@ This is the form commonly used with $(\bS,\bE)$ constitutive pairs
     the two statements are identical, differing only in the configuration on
     which integrals are evaluated.
 \end{itemize}
+
+%============================================================================
+\section{Follower Pressure and Load Scheduling}
+\label{sec:follower}
+%============================================================================
+
+\subsection{Follower pressure}
+
+A pressure $p$ acting per unit \emph{current} area on $\Gamma_R^p$ exerts the
+spatial traction $\bar\bt = -p\,\bn$.  Nanson's relation
+$\bn \ud a = J\bF^{-\top}\bN \ud A = \operatorname{cof}\bF\,\bN \ud A$
+pulls it back to the reference configuration,
+\begin{equation}
+  \bar\bT(\bu) = -p\,J\bF^{-\top}\bN = -p\,\operatorname{cof}\bF\,\bN,
+\end{equation}
+so that the external virtual work of the pressure depends on the
+displacement.  Moving it to the internal side, the quasi-static residual of
+\eqref{eq:weak-TL-P} becomes
+\begin{equation}
+  R(\bu;\bw) = \int_{\Omega_R} \bP(\bF) : \Grad\bw \ud V
+  + \int_{\Gamma_R^p} p\,(\operatorname{cof}\bF\,\bN)\cdot\bw \ud A
+  - \int_{\Omega_R} \rho_R\,\bb\cdot\bw \ud V
+  - \int_{\Gamma_R^N} \bar\bT\cdot\bw \ud A .
+  \label{eq:residual-follower}
+\end{equation}
+Its directional derivative in $\Delta\bu$ adds the (in general
+non-symmetric) load stiffness
+\begin{equation}
+  D_{\Delta\bu} \int_{\Gamma_R^p} p\,(\operatorname{cof}\bF\,\bN)\cdot\bw \ud A
+  = \int_{\Gamma_R^p} p\,\bigl[
+      (\bF^{-\top}:\Grad\Delta\bu)\,J\bF^{-\top}\bN
+      - J\bF^{-\top}(\Grad\Delta\bu)^{\top}\bF^{-\top}\bN
+    \bigr]\cdot\bw \ud A,
+  \label{eq:tangent-follower}
+\end{equation}
+using $D J = J\,\bF^{-\top}:\Grad\Delta\bu$ and
+$D\bF^{-\top} = -\bF^{-\top}(\Grad\Delta\bu)^{\top}\bF^{-\top}$.  Because the
+tangent is not symmetric, the linear solver must be a general Krylov method
+(GMRES); the conjugate gradient option is refused for inputs with a follower
+pressure.
+
+In the code (\texttt{kernels/follower\_pressure.hpp}) the term is a boundary
+face integrator of the nonlinear form: on each boundary face of $\Gamma_R^p$
+the displacement gradient of the adjacent element gives $\bF$ at the face
+quadrature points, $\bN \ud A$ is the area-weighted reference normal of the
+face map, and the tangent \eqref{eq:tangent-follower} is obtained by seeding
+$\bF$ with dual numbers in the direction of each element displacement
+degree of freedom, exactly as the material tangent is.  The same face kernel
+serves the displacement block of the mixed $u$--$p$ formulation.  The dead
+normal pressure, $\bar\bT = -p\,\bN$ per unit \emph{reference} area, remains
+a linear-form term; the two coincide at $\bF = \bI$ and differ at $O(p^2)$
+for small loads.  Verification: the tangent against finite differences on
+distorted quadrilateral and hexahedral meshes, and the inflation of a
+thick-walled incompressible cylinder against the closed form
+$P = \mu\,[\ln(B/A) - \ln(b/a) + \tfrac12 (A^2 - a^2)(b^{-2} - a^{-2})]$,
+$b^2 = B^2 - A^2 + a^2$ (plane strain, neo-Hookean).
+
+\subsection{Load scheduling}
+
+Quasi-static loading is parametrised by a pseudo-time $t \in [0,1]$.  Every
+prescribed displacement, traction, pressure and body force $i$ carries its
+own scalar schedule $s_i(t)$ (a ramp over $[t_0, t_1]$, a constant, or a
+piecewise-linear table) and enters the residual as $s_i(t)$ times its data;
+data may in addition depend on $t$ through an expression $f(\bX, t)$.  The
+default ramp $s_i = t$ for every entry recovers the proportional load path,
+in which $t < 1$ solves a scaled problem and $t = 1$ the problem of the weak
+form.  The stepper advances $t$ through user-defined breakpoints and, when a
+Newton solve fails, restores the last converged state and halves the
+increment (bisection), returning to the planned breakpoint afterwards.
+Because the hyperelastic problem without follower loads is conservative,
+the converged state at $t = 1$ does not depend on the path; staged loading
+(one load ramped and held, a second one ramped afterwards) is therefore a
+test of the implementation rather than a different problem.  Follower
+pressures are not conservative, and their solutions can be path dependent
+in the presence of instabilities.
 
 \end{document}
