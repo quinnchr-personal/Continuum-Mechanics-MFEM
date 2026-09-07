@@ -150,15 +150,15 @@ homogeneous: $(APP)
 # frozen Cook's membrane regression values, serial and np=4. Run from the
 # repository root: the inputs are referenced as apps/input/<set>/*.yaml.
 test: check $(APP) $(BUILD_DIR)/tests/test_benchmarks $(BUILD_DIR)/tests/test_parallel
-	$(APP) -i apps/input/finite_elasticity/cook/cook.yaml
-	$(MFEM_MPIEXEC) -np 4 $(APP) -i apps/input/finite_elasticity/cook/cook.yaml
+	$(APP) -i apps/input/finite_elasticity/cooks_membrane/cook.yaml
+	$(MFEM_MPIEXEC) -np 4 $(APP) -i apps/input/finite_elasticity/cooks_membrane/cook.yaml
 	$(APP) -i apps/input/finite_elasticity/cantilever3d.yaml
 	mkdir -p $(TEST_OUT)
 	$(BUILD_DIR)/tests/test_parallel --write $(TEST_OUT)/parallel_reference.txt
 	$(MFEM_MPIEXEC) -np 2 $(BUILD_DIR)/tests/test_parallel --check $(TEST_OUT)/parallel_reference.txt
 	$(MFEM_MPIEXEC) -np 4 $(BUILD_DIR)/tests/test_parallel --check $(TEST_OUT)/parallel_reference.txt
-	$(APP) -i apps/input/finite_elasticity/cook/cook_incompressible.yaml
-	$(MFEM_MPIEXEC) -np 4 $(APP) -i apps/input/finite_elasticity/cook/cook_incompressible.yaml
+	$(APP) -i apps/input/finite_elasticity/cooks_membrane/cook_incompressible.yaml
+	$(MFEM_MPIEXEC) -np 4 $(APP) -i apps/input/finite_elasticity/cooks_membrane/cook_incompressible.yaml
 	python3 apps/homogeneous_compare.py --app $(APP)
 	$(BUILD_DIR)/tests/test_mixed --full
 	$(BUILD_DIR)/tests/test_benchmarks
