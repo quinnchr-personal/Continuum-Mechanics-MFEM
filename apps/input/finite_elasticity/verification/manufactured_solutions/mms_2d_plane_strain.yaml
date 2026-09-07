@@ -1,4 +1,4 @@
-# Manufactured solution driven entirely by YAML expressions (tests/test_loading.cpp):
+# Manufactured solution driven entirely by YAML expressions (tests/test_loading.cpp; the 3D cases in tests/test_verification.cpp):
 # plane strain, St. Venant-Kirchhoff (E = 250, nu = 0.3, rho0 = 2.5) on the unit
 # square, exact displacement u = 0.05 (sin(pi x) sin(pi y), x^2 y (1 - y)) prescribed
 # on the whole boundary, body force b = -(1/rho0) Div P(F(u)) generated with sympy

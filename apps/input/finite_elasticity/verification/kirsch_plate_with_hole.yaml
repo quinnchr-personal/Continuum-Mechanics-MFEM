@@ -1,0 +1,31 @@
+# Kirsch's plate with a circular hole at small strain: quarter of a 40 x 40 square plate
+# with a hole of radius a = 1 (apps/mesh/plate_hole_2d.geo, quadrilaterals of size 0.04
+# at the hole, curved second-order geometry), plane stress, compressible neo-Hookean
+# with E = 1000, nu = 0.3; rollers on the symmetry lines, far-field traction sigma_0 = 0.1
+# on x = 20 (strain 1e-4, linear regime). Kirsch (infinite plate): sigma_xx = 3 sigma_0 at
+# the hole top (0, a), sigma_yy = -sigma_0 at the hole side (a, 0), and along the y axis
+# sigma_xx / sigma_0 = 1 + a^2 / (2 y^2) + 3 a^4 / (2 y^4). The finite plate (W = 20 a)
+# raises the concentration by a few tenths of a percent (Howland); W = 10 a gave 2.5 percent.
+# tests/test_verification.cpp checks the probed Cauchy stresses to 2 percent.
+plane: stress
+mesh: { file: apps/mesh/plate_hole_2d.msh, order: 2 }
+material: { model: neo_hookean, E: 1000.0, nu: 0.3 }
+bcs:
+  dirichlet:
+    - { attr: [left],   expression: ["0", "0"], components: [x] }
+    - { attr: [bottom], expression: ["0", "0"], components: [y] }
+  traction:
+    - { attr: [right], expression: ["0.1", "0"] }
+solver:
+  load_steps: 1
+  newton: { rtol: 1e-10, atol: 1e-14, max_it: 20 }
+  linear: { type: gmres_amg, rtol: 1e-13, max_it: 500 }
+output:
+  paraview: out/kirsch_plate_with_hole
+  fields: [displacement, vonmises, cauchy_stress]
+  nodal_projection: projected
+  probes:
+    - { name: hole_top, point: [0.002, 1.002] }    # just inside the plate; points on curved boundary edges are not found
+    - { name: hole_side, point: [1.002, 0.002] }
+    - { name: axis_2a, point: [0.002, 2.0] }
+    - { name: axis_3a, point: [0.002, 3.0] }

@@ -1,0 +1,25 @@
+# Compressible uniaxial tension of the unit cube: coupled compressible neo-Hookean (E = 250, nu = 0.3),
+# stretch lambda_1 = 1.5 in x. Rollers on X = 0, Y = 0, Z = 0, the face X = 1 moved by
+# 0.5 t in x only, all other faces free, so the state is homogeneous with F =
+# diag(lambda_1, lambda_2, lambda_2) and the lateral stretch lambda_2 fixed by
+# sigma_22 = 0. tests/test_verification.cpp solves P_22(diag(lambda_1, lambda_2, lambda_2)) = 0
+# with the material's own PK1 and compares the probed displacement and P_11.
+formulation: displacement
+mesh: { file: apps/mesh/cube.msh, order: 2 }
+material: { model: neo_hookean, E: 250.0, nu: 0.3 }
+bcs:
+  dirichlet:
+    - { attr: [left],   expression: ["0", "0", "0"], components: [x] }
+    - { attr: [front],  expression: ["0", "0", "0"], components: [y] }
+    - { attr: [bottom], expression: ["0", "0", "0"], components: [z] }
+    - { attr: [right],  expression: ["0.5*t", "0", "0"], components: [x] }
+solver:
+  load_steps: 4
+  newton: { rtol: 1e-11, atol: 1e-13, max_it: 30 }
+  linear: { type: gmres_amg, rtol: 1e-13, max_it: 400, krylov_dim: 100, inner_rtol: 1e-4, inner_max_it: 100 }
+output:
+  paraview: out/homogeneous_deformations/compressible_uniaxial_neo_hookean
+  fields: [displacement, jacobian, vonmises, pk1_stress, cauchy_stress]
+  probes:
+    - { name: corner, point: [1.0, 1.0, 1.0] }
+    - { name: center, point: [0.5, 0.5, 0.5] }

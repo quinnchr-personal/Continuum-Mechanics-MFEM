@@ -1,0 +1,30 @@
+# Inflation of a thick-walled incompressible neo-Hookean sphere (radii A = 10, B = 11,
+# mu = 1; octant with rollers on the three symmetry planes, apps/mesh/sphere_octant.geo,
+# curved second-order tetrahedra), mixed formulation, follower pressure on the inner
+# surface. Closed form (Green and Zerna; Ogden, Non-linear Elastic Deformations): with
+# lambda_a = a/A, lambda_b = b/B and b^3 = B^3 - A^3 + a^3,
+#   P = mu/2 [ (4/lambda_b + 1/lambda_b^4) - (4/lambda_a + 1/lambda_a^4) ].
+# P = 0.100975807337556 gives lambda_a = 1.2 exactly (a = 12, b = 12.72190404365),
+# below the pressure maximum of this shell (near lambda_a = 1.4).
+# tests/test_verification.cpp checks the probed radii.
+formulation: mixed
+mesh: { file: apps/mesh/sphere_octant.msh, order: 2 }
+material: { model: iso_neo_hookean, mu: 1.0, incompressible: true }
+bcs:
+  dirichlet:
+    - { attr: [xplane], expression: ["0", "0", "0"], components: [x] }
+    - { attr: [yplane], expression: ["0", "0", "0"], components: [y] }
+    - { attr: [zplane], expression: ["0", "0", "0"], components: [z] }
+  traction:
+    - { attr: [inner], type: follower_pressure, expression: "0.100975807337556" }
+solver:
+  load_steps: 5
+  newton: { rtol: 1e-10, atol: 1e-12, max_it: 30 }
+  linear: { type: gmres_amg, rtol: 1e-12, max_it: 400, krylov_dim: 100, inner_rtol: 1e-4, inner_max_it: 200 }
+output:
+  paraview: out/green_zerna_sphere_inflation
+  fields: [displacement, pressure, vonmises, cauchy_stress]
+  probes:
+    - { name: inner, point: [10.0, 0.0, 0.0] }
+    - { name: outer, point: [11.0, 0.0, 0.0] }
+    - { name: inner_z, point: [0.0, 0.0, 10.0] }

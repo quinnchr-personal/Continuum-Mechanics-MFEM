@@ -101,6 +101,10 @@ FACES = {2: [("left", "right"), ("bottom", "top")],
          3: [("left", "right"), ("front", "back"), ("bottom", "top")]}
 
 
+def incompressible(material):
+    return bool(material.get("incompressible")) or material.get("nu") == 0.5
+
+
 def load_case(path):
     cfg = yaml.safe_load(open(path))
     dirichlet = cfg["bcs"]["dirichlet"]
@@ -181,6 +185,9 @@ def main():
     print("-" * len(header))
     failures = 0
     for path in inputs:
+        if not incompressible(yaml.safe_load(open(path))["material"]):
+            print(f"{os.path.basename(path):<36} skipped: compressible (checked by tests/test_verification)")
+            continue
         cfg, dim, G, value, lam, free_axis = load_case(path)
         material = cfg["material"]
         sigma, p, vm = analytic(material, lam, free_axis)

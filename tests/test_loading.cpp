@@ -260,11 +260,11 @@ void TimeDependentCoefficientTest()
             "time-dependent load reassembled at t = 0.35");
 }
 
-// The manufactured problem of tests/input/mms_expression.yaml, from string
+// The manufactured problem of apps/input/finite_elasticity/verification/manufactured_solutions/mms_2d_plane_strain.yaml, from string
 // to residual: expression Dirichlet data and body force, p = 2 convergence.
 void ExpressionMMSTest()
 {
-  cmf::AppConfig cfg = cmf::LoadConfig("tests/input/mms_expression.yaml");
+  cmf::AppConfig cfg = cmf::LoadConfig("apps/input/finite_elasticity/verification/manufactured_solutions/mms_2d_plane_strain.yaml");
   mfem::VectorFunctionCoefficient exact(2, [](const mfem::Vector &X, mfem::Vector &u)
   {
     u.SetSize(2);
@@ -437,12 +437,12 @@ void RollerRankTest()
   CHECK_MSG(std::abs(u_face[1]) + std::abs(u_face[2]) > 1e-4, "tangential slip on X = 1");
 }
 
-// The plane-strain MMS of tests/input/mms_expression.yaml with x prescribed
+// The plane-strain MMS of apps/input/finite_elasticity/verification/manufactured_solutions/mms_2d_plane_strain.yaml with x prescribed
 // on bottom and top only; the y component there is natural with the exact
 // traction P N supplied. Same p = 2 rate as with the full Dirichlet data.
 void ComponentMMSTest()
 {
-  cmf::AppConfig cfg = cmf::LoadConfig("tests/input/mms_expression.yaml");
+  cmf::AppConfig cfg = cmf::LoadConfig("apps/input/finite_elasticity/verification/manufactured_solutions/mms_2d_plane_strain.yaml");
   cfg.bcs.dirichlet.clear(); // the body force expression stays
   const double alpha = 0.05;
   mfem::VectorFunctionCoefficient exact(2, [alpha](const mfem::Vector &X, mfem::Vector &u)

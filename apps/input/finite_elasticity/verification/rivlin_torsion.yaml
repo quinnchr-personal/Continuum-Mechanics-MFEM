@@ -1,0 +1,29 @@
+# Fixed-end torsion of a solid incompressible neo-Hookean cylinder (radius a = 12.7,
+# length L = 25.4, mu = 1; apps/mesh/cylinder_torsion.geo, curved second-order tetrahedra),
+# mixed formulation. The bottom face is clamped and the top face rotated rigidly by
+# theta = 1 rad with u_z = 0 (twist psi = theta / L, shear psi a = 0.5 at the rim) in 20
+# steps: a larger first increment leaves the elements under the rotated face inverted.
+# Rivlin's universal solution holds exactly: u = R(psi z) X - X, the lateral surface is
+# traction free by itself, and in cylindrical components (r, theta, z)
+#   sigma_rz = 0, sigma_thetaz = mu psi r, sigma_rr = sigma_zz = -mu psi^2 (a^2 - r^2) / 2,
+#   sigma_thetatheta = sigma_rr + mu psi^2 r^2, p = sigma_rr + mu psi^2 r^2 / 3,
+#   von Mises = mu sqrt(gamma^4 + 3 gamma^2) with gamma = psi r.
+# tests/test_verification.cpp probes the fields on the mid-plane against these.
+formulation: mixed
+mesh: { file: apps/mesh/cylinder_torsion.msh, order: 2 }
+material: { model: iso_neo_hookean, mu: 1.0, incompressible: true }
+bcs:
+  dirichlet:
+    - { attr: [bottom], expression: ["0", "0", "0"] }
+    - { attr: [top], expression: ["x*cos(t) - y*sin(t) - x", "x*sin(t) + y*cos(t) - y", "0"] }   # theta = 1 rad at t = 1
+solver:
+  load_steps: 20
+  substep: { on_failure: true, max_bisections: 4, min_dt: 1e-3 }
+  newton: { rtol: 1e-10, atol: 1e-12, max_it: 30 }
+  linear: { type: gmres_amg, rtol: 1e-12, max_it: 400, krylov_dim: 100, inner_rtol: 1e-4, inner_max_it: 200 }
+output:
+  paraview: out/rivlin_torsion
+  fields: [displacement, pressure, vonmises, cauchy_stress]
+  probes:
+    - { name: mid_half_radius, point: [6.35, 0.0, 12.7] }
+    - { name: mid_near_rim, point: [11.43, 0.0, 12.7] }

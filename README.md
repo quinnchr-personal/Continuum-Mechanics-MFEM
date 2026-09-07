@@ -56,7 +56,7 @@ apps/           solid_mechanics.cpp (YAML parsing and wiring only), apps/mesh/*.
                   book, from its FEniCSx companion codes; finite_elasticity so far)
 tests/          test_base, test_materials, test_solid_mms, test_mixed, test_homogeneous, test_loading
                 (make check); test_mixed --full, test_benchmarks, test_parallel, homogeneous compare,
-                test_loading np=4 (make test); tests/input/*.yaml (inputs of the tests)
+                test_loading np=4, test_verification (make test)
 makefile        out-of-tree build under build/ (BUILD_DIR): build/libcmf.a (LIBNAME) from src/,
                 then build/apps/* and build/tests/* linked against it
 ```
@@ -269,6 +269,32 @@ inflates as Rivlin says).
 Not supported: point loads and nodal constraints (use a small physical
 group), multi-point or periodic constraints, contact, true dynamics (`t` is
 a pseudo-time), automatic step growth after a bisection.
+
+### Verification cases (`apps/input/finite_elasticity/verification/`)
+
+Every input here is compared with an independent reference by a test
+(`tests/test_verification`, part of `make test`, or `tests/test_loading` and
+`tests/test_benchmarks` where noted). The headers of the inputs state the
+references and the formulas.
+
+| Input | Reference | Check |
+|-------|-----------|-------|
+| `rivlin_torsion.yaml` | Rivlin's universal torsion of an incompressible neo-Hookean cylinder | displacement field to 2e-3, Cauchy stresses, pressure and von Mises on the mid-plane to 2-3% (curved P2 tetrahedra) |
+| `rivlin_cylinder_inflation.yaml` | Rivlin's plane-strain inflation of a thick tube (test_loading) | inner and outer radius to 1e-6, error decreasing under refinement |
+| `green_zerna_sphere_inflation.yaml` | Green-Zerna inflation of a thick incompressible sphere | inner and outer radius to 0.5%, spherical symmetry |
+| `euler_bernoulli_cantilever3d.yaml` | Euler-Bernoulli beam in the small-load limit (test_benchmarks) | tip deflection to 0.15% |
+| `euler_column_buckling.yaml` | Euler load of a clamped-clamped column, imperfect geometry | Southwell fit of the mid-height deflection recovers the critical strain to 5% |
+| `kirsch_plate_with_hole.yaml` | Kirsch's stress concentration, small strain, W = 20 a | Cauchy stresses at the hole and on the axis to 2% |
+| `manufactured_solutions/mms_2d_plane_strain.yaml` | manufactured solution, St. Venant-Kirchhoff (test_loading) | third-order L2 convergence for p = 2, body force as YAML expressions |
+| `manufactured_solutions/mms_3d_{hex,tet}.yaml` | manufactured solution in 3D, St. Venant-Kirchhoff | third-order L2 convergence on hexahedra and on tetrahedra |
+| `manufactured_solutions/mms_3d_mixed.yaml` | isochoric manufactured solution of the mixed formulation | third-order L2 convergence, exact pressure zero |
+| `homogeneous_deformations/*_neo_hookean.yaml` | closed forms of doc/incompressible_hyperelasticity.tex (apps/homogeneous_compare.py) | every probed quantity to 1e-8 |
+| `homogeneous_deformations/compressible_uniaxial_*.yaml` | lateral stretch from P_22 = 0 with the material's own PK1 | displacements, P_11, sigma_11 and J to 1e-7 |
+
+The torsion input needs 20 increments: a larger first increment leaves the
+elements under the rotated end face inverted before Newton starts (the
+boundary layer caution of the plane-stress section), which bisection would
+also recover from.
 
 ### Anand's coupled-theories examples (`apps/input/anand_coupled_theories/`)
 

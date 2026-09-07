@@ -1,0 +1,25 @@
+# Euler buckling of a clamped-clamped column: 1 x 1 x 20 hexahedral column (2 x 2 x 40,
+# apps/mesh/column_euler.msh) carrying the geometric imperfection
+# x, y -= 0.0025 (1 - cos(2 pi z / 20)) of the first mode (perturb_column.py),
+# compressible neo-Hookean E = 100, nu = 0.3. The base is clamped, the top held in x, y
+# and shortened by u_z = -0.12 t, i.e. up to an axial strain of 0.6 percent, about 73
+# percent of the Euler strain eps_cr = 4 pi^2 I / (A L^2) = 8.22e-3 of the clamped column
+# (P_cr = 4 pi^2 E I / L^2). Below the limit point the mid-height lateral deflection grows
+# as u = delta_0 (P/P_cr) / (1 - P/P_cr) (Southwell); tests/test_verification.cpp fits
+# 1/u against 1/eps over the steps and recovers eps_cr to a few percent.
+mesh: { file: apps/mesh/column_euler.msh, order: 2 }
+material: { model: neo_hookean, E: 100.0, nu: 0.3 }
+bcs:
+  dirichlet:
+    - { attr: [bottom], expression: ["0", "0", "0"] }
+    - { attr: [top],    expression: ["0", "0", "-0.12*t"] }
+solver:
+  load_steps: 6
+  newton: { rtol: 1e-10, atol: 1e-13, max_it: 30 }
+  linear: { type: gmres_amg, rtol: 1e-13, max_it: 800, krylov_dim: 100 }
+output:
+  paraview: out/euler_column_buckling
+  fields: [displacement, vonmises]
+  probe_every_step: true
+  probes:
+    - { name: mid_height, point: [0.5, 0.5, 10.0] }

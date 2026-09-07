@@ -99,7 +99,8 @@ MESH_DIR := apps/mesh
 MESHES := $(MESH_DIR)/square.msh $(MESH_DIR)/cook.msh $(MESH_DIR)/cube.msh $(MESH_DIR)/beam.msh $(MESH_DIR)/annulus.msh \
 	$(MESH_DIR)/cube10.msh $(MESH_DIR)/shear_cube.msh $(MESH_DIR)/column_buckling.msh $(MESH_DIR)/column_twist.msh \
 	$(MESH_DIR)/cylinder_torsion.msh $(MESH_DIR)/plate_hole.msh $(MESH_DIR)/tube_quarter.msh \
-	$(MESH_DIR)/sphere_octant.msh $(MESH_DIR)/footing.msh $(MESH_DIR)/inclusion.msh
+	$(MESH_DIR)/sphere_octant.msh $(MESH_DIR)/footing.msh $(MESH_DIR)/inclusion.msh \
+	$(MESH_DIR)/cube_tet.msh $(MESH_DIR)/plate_hole_2d.msh $(MESH_DIR)/column_euler.msh
 meshes: $(MESHES)
 $(MESH_DIR)/square.msh: $(MESH_DIR)/square.geo
 	$(GMSH) -2 -format msh22 -setnumber n 4 -o $@ $< > /dev/null
@@ -134,6 +135,14 @@ $(MESH_DIR)/footing.msh: $(MESH_DIR)/footing.geo
 	$(GMSH) -3 -format msh22 -o $@ $< > /dev/null
 $(MESH_DIR)/inclusion.msh: $(MESH_DIR)/inclusion.geo
 	$(GMSH) -3 -format msh22 -o $@ $< > /dev/null
+# Meshes of apps/input/finite_elasticity/verification.
+$(MESH_DIR)/cube_tet.msh: $(MESH_DIR)/cube_tet.geo
+	$(GMSH) -3 -format msh22 -o $@ $< > /dev/null
+$(MESH_DIR)/plate_hole_2d.msh: $(MESH_DIR)/plate_hole_2d.geo
+	$(GMSH) -2 -order 2 -format msh22 -o $@ $< > /dev/null
+$(MESH_DIR)/column_euler.msh: $(MESH_DIR)/box.geo $(MESH_DIR)/perturb_column.py
+	$(GMSH) -3 -format msh22 -setnumber Lz 20 -setnumber nx 2 -setnumber ny 2 -setnumber nz 40 -o $@.straight $< > /dev/null
+	python3 $(MESH_DIR)/perturb_column.py $@.straight $@ 20 0.005 && rm -f $@.straight
 
 # Fast gates (S1-S3 + mixed + homogeneous deformations + loading): serial unit and MMS tests.
 CHECK_TESTS := $(addprefix $(BUILD_DIR)/tests/,test_base test_materials test_solid_mms test_mixed test_homogeneous test_loading)
@@ -149,7 +158,7 @@ homogeneous: $(APP)
 # np={2,4} consistency vs a serial reference, and the benchmarks with the
 # frozen Cook's membrane regression values, serial and np=4. Run from the
 # repository root: the inputs are referenced as apps/input/<set>/*.yaml.
-test: check $(APP) $(BUILD_DIR)/tests/test_benchmarks $(BUILD_DIR)/tests/test_parallel
+test: check $(APP) $(BUILD_DIR)/tests/test_benchmarks $(BUILD_DIR)/tests/test_parallel $(BUILD_DIR)/tests/test_verification
 	$(APP) -i apps/input/finite_elasticity/cooks_membrane/cook.yaml
 	$(MFEM_MPIEXEC) -np 4 $(APP) -i apps/input/finite_elasticity/cooks_membrane/cook.yaml
 	$(APP) -i apps/input/finite_elasticity/verification/euler_bernoulli_cantilever3d.yaml
@@ -164,6 +173,7 @@ test: check $(APP) $(BUILD_DIR)/tests/test_benchmarks $(BUILD_DIR)/tests/test_pa
 	$(BUILD_DIR)/tests/test_benchmarks
 	$(MFEM_MPIEXEC) -np 4 $(BUILD_DIR)/tests/test_benchmarks
 	$(MFEM_MPIEXEC) -np 4 $(BUILD_DIR)/tests/test_loading
+	$(BUILD_DIR)/tests/test_verification
 	$(BUILD_DIR)/tests/test_benchmarks --cook-ratio-gate
 
 clean:
