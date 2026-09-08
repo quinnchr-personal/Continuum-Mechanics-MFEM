@@ -355,7 +355,12 @@ nominal shear stress than homogeneous simple shear at a shear strain of 1,
 because its lateral faces are free where simple shear needs tractions, and
 its two cycles retrace one curve (elastic, no hysteresis); the sphere stops
 at its limit pressure of 34 kPa and the cylinder near 38 kPa, where the
-reference also stopped.
+reference also stopped; the buckling column reaches 7.3 mN at 0.2 mm of
+shortening, 5 percent above the Euler load of the clamped column, and then
+rises slowly to 7.5 mN at 2.5 mm, the hardening post-buckling path of the
+elastica (the Euler value uses E = 3 G and neglects the finite section);
+the twisted column needs a compressive axial force of 78 mN to keep its
+length over a full turn (Poynting effect), as does the torsion cylinder.
 
 Differences from the reference that change the numbers: the Arruda-Boyce
 model here is the five-term series in I1/N (`N = lambda_L^2`) rather than the
