@@ -203,6 +203,126 @@ void BisectionTest()
   CHECK_MSG(rel <= 1e-9, "bisected path reaches the same state");
 }
 
+// Tangent predictor (solver.predictor: tangent): the Dirichlet increment is
+// imposed on a linear solve about the last converged state instead of being
+// written on the boundary of a lagging interior. Same converged states,
+// fewer Newton iterations, no damped steps; a no-op for traction-driven
+// problems. The mixed case uses the logarithmic volumetric law at
+// kappa / mu = 1000, the combination the plain start handles worst.
+int TotalNewtonIterations(const cmf::QuasiStaticReport &report, int *damped = nullptr)
+{
+  int its = 0;
+  for (const cmf::LoadStepReport &s : report.steps)
+  {
+    its += s.newton.iterations;
+    for (const cmf::NewtonIteration &it : s.newton.history)
+    {
+      if (damped && it.iteration > 0 && it.alpha < 1.0) { (*damped)++; }
+    }
+  }
+  return its;
+}
+
+void PredictorTest()
+{
+  // Displacement formulation: Cook's membrane with the right edge moved.
+  {
+    cmf::AppConfig cfg = CookConfig();
+    std::unique_ptr<mfem::ParMesh> mesh = cmf::BuildParMesh(MPI_COMM_WORLD, cfg.mesh);
+    mfem::Vector v(2);
+    v(0) = -2.0; v(1) = 6.0;
+    mfem::VectorConstantCoefficient moved(v);
+    cfg.solver.load_steps = 3;
+    auto install = [&](cmf::SolidProblem &p) { p.AddDirichlet({2}, moved); };
+    const Run plain = SolveCook(cfg, *mesh, install);
+    cfg.solver.predictor = "tangent";
+    const Run predicted = SolveCook(cfg, *mesh, install);
+    CHECK_MSG(plain.report.converged && predicted.report.converged, "predictor: both Cook runs converged");
+    mfem::Vector d(plain.u);
+    d -= predicted.u;
+    const double rel = d.Normlinf() / plain.u.Normlinf();
+    const int its_plain = TotalNewtonIterations(plain.report);
+    const int its_pred = TotalNewtonIterations(predicted.report);
+    const double r0_plain = plain.report.steps.front().newton.initial_residual;
+    const double r0_pred = predicted.report.steps.front().newton.initial_residual;
+    std::printf("  predictor (Cook, prescribed edge): newton its %d -> %d, first |R0| %.3e -> %.3e, "
+                "|du|/|u| = %.2e\n", its_plain, its_pred, r0_plain, r0_pred, rel);
+    CHECK_MSG(rel <= 1e-8, "predictor reaches the same state");
+    CHECK_MSG(its_pred < its_plain, "predictor saves Newton iterations");
+    CHECK_MSG(r0_pred < 0.1 * r0_plain, "predictor starts from a much smaller residual");
+
+    // Traction driven: no Dirichlet increment, the predictor leaves the path unchanged.
+    mfem::Vector t(2);
+    t(0) = 0.0; t(1) = 3.75;
+    mfem::VectorConstantCoefficient traction(t);
+    auto loads = [&](cmf::SolidProblem &p) { p.AddTraction({2}, traction); };
+    const Run with = SolveCook(cfg, *mesh, loads);
+    cfg.solver.predictor = "none";
+    const Run without = SolveCook(cfg, *mesh, loads);
+    mfem::Vector e(with.u);
+    e -= without.u;
+    CHECK_MSG(e.Normlinf() == 0.0 && TotalNewtonIterations(with.report) == TotalNewtonIterations(without.report),
+              "predictor is a no-op without a Dirichlet increment");
+  }
+  // Mixed formulation, logarithmic volumetric law, kappa / mu = 1000: a clamped
+  // unit square sheared by its top edge.
+  {
+    cmf::AppConfig cfg;
+    cfg.formulation = "mixed";
+    cfg.mesh.cartesian = true;
+    cfg.mesh.box.nx = cfg.mesh.box.ny = 8;
+    cfg.mesh.order = 2;
+    cfg.material.model = "iso_neo_hookean";
+    cfg.material.mu = 1.0;
+    cfg.material.kappa = 1000.0;
+    cfg.material.volumetric = "logarithmic";
+    cfg.solver.load_steps = 2;
+    cfg.solver.newton.print_level = 0;
+    cfg.solver.newton.rtol = 1e-10;
+    cfg.solver.newton.max_it = 40;
+    cfg.solver.linear.rtol = 1e-12;
+    cfg.solver.linear.max_it = 400;
+    cfg.solver.linear.krylov_dim = 100;
+    cfg.solver.linear.inner_rtol = 1e-4;
+    cfg.solver.linear.inner_max_it = 100;
+    std::unique_ptr<mfem::ParMesh> mesh = cmf::BuildParMesh(MPI_COMM_WORLD, cfg.mesh);
+    mfem::Vector zero(2), top(2);
+    zero = 0.0;
+    top(0) = 0.3; top(1) = 0.0;
+    mfem::VectorConstantCoefficient clamp(zero), shear(top);
+    auto solve = [&](const std::string &predictor, mfem::Vector &x)
+    {
+      cfg.solver.predictor = predictor;
+      std::unique_ptr<cmf::SolidProblem> problem = cmf::MakeSolidProblem(*mesh, cfg);
+      problem->AddDirichlet({1}, clamp);
+      problem->AddDirichlet({3}, shear);
+      problem->Finalize();
+      std::unique_ptr<mfem::Solver> linear = problem->MakeLinearSolver(cfg.solver.linear);
+      x.SetSize(problem->Height());
+      x = 0.0;
+      return cmf::SolveQuasiStatic(*problem, *linear, cfg.solver, x);
+    };
+    mfem::Vector x_plain, x_pred;
+    const cmf::QuasiStaticReport plain = solve("none", x_plain);
+    const cmf::QuasiStaticReport predicted = solve("tangent", x_pred);
+    int damped_plain = 0, damped_pred = 0;
+    const int its_plain = TotalNewtonIterations(plain, &damped_plain);
+    const int its_pred = TotalNewtonIterations(predicted, &damped_pred);
+    std::printf("  predictor (mixed, logarithmic law, kappa/mu 1000): plain %s, its %d (%d damped); "
+                "tangent its %d (%d damped)\n", plain.converged ? "converged" : "FAILED", its_plain,
+                damped_plain, its_pred, damped_pred);
+    CHECK_MSG(predicted.converged, "predictor: mixed logarithmic shear converged");
+    CHECK_MSG(damped_pred == 0, "predictor: every Newton step is a full step");
+    CHECK_MSG(!plain.converged || its_pred < its_plain, "predictor saves Newton iterations (mixed)");
+    if (plain.converged)
+    {
+      mfem::Vector d(x_plain);
+      d -= x_pred;
+      CHECK_MSG(d.Normlinf() <= 1e-7 * x_plain.Normlinf(), "predictor reaches the same mixed state");
+    }
+  }
+}
+
 // ---------------------------------------------------------------- L2: f(x, y, z, t)
 
 // A programmatic time-dependent coefficient with the constant schedule
@@ -927,6 +1047,7 @@ int main(int argc, char *argv[])
   StagedLoadingTest();
   LoadUnloadTest();
   BisectionTest();
+  PredictorTest();
   TimeDependentCoefficientTest();
   ExpressionMMSTest();
   ExpressionReassemblyTest();

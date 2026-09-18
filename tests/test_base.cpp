@@ -409,6 +409,14 @@ void TestLoading()
     CHECK(c.solver.substep.on_failure && c.solver.substep.max_bisections == 3);
     CHECK_CLOSE(c.solver.substep.min_dt, 0.01, 0.0);
   }
+  // The predictor key of the load stepper.
+  {
+    const std::string head2 = "mesh: { file: square.msh }\nmaterial: { model: neo_hookean, E: 1.0, nu: 0.3 }\n";
+    CHECK(cmf::ParseConfig(YAML::Load(head2)).solver.predictor == "none");
+    CHECK(cmf::ParseConfig(YAML::Load(head2 + "solver: { predictor: tangent }\n")).solver.predictor == "tangent");
+    CHECK_THROWS(cmf::ParseConfig(YAML::Load(head2 + "solver: { predictor: secant }\n")), cmf::ConfigError,
+                 "'solver.predictor': expected none or tangent");
+  }
   // Defaults: ramp schedules, all components, no breakpoints, no bisection.
   {
     const cmf::AppConfig c = cmf::ParseConfig(YAML::Load(head +

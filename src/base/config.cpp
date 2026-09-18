@@ -716,6 +716,12 @@ SolverConfig ParseSolverConfig(const YAML::Node &node, const std::string &path)
   SolverConfig cfg;
   if (!node.IsDefined() || node.IsNull()) { return cfg; }
   NodeReader r(node, path);
+  cfg.predictor = r.Optional<std::string>("predictor", cfg.predictor);
+  if (cfg.predictor != "none" && cfg.predictor != "tangent")
+  {
+    throw ConfigError("key '" + r.Path("predictor") + "': expected none or tangent, got '" +
+                      cfg.predictor + "'");
+  }
   cfg.load_steps = r.Optional<int>("load_steps", 1);
   if (cfg.load_steps < 1)
   {

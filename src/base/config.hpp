@@ -192,6 +192,14 @@ struct SolverConfig
 {
   int load_steps = 1;
   std::vector<double> breakpoints;
+  // Initial guess of each increment. none: the last converged state with the
+  // new Dirichlet data written on the boundary (the interior lags, so the
+  // first Newton linearisation is about a state whose boundary layer of
+  // elements carries the whole increment). tangent: one linear solve about
+  // the last converged state with the Dirichlet increment imposed on the
+  // update, x = x_n + d - J(x_n)^{-1} (R(x_n) + J(x_n) d), which spreads the
+  // increment through the body before Newton starts.
+  std::string predictor = "none";
   SubstepConfig substep;
   NewtonConfig newton;
   LinearSolverConfig linear;

@@ -1,6 +1,7 @@
 #include "solvers/quasi_static.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 
 namespace cmf
@@ -16,6 +17,60 @@ std::vector<double> LoadStepBreakpoints(const SolverConfig &cfg)
   }
   return b;
 }
+
+namespace
+{
+
+double GlobalMaxAbs(MPI_Comm comm, const mfem::Vector &v)
+{
+  double local = v.Size() ? v.Normlinf() : 0.0, global = 0.0;
+  MPI_Allreduce(&local, &global, 1, MPI_DOUBLE, MPI_MAX, comm);
+  return global;
+}
+
+// Tangent predictor: with x the last converged state (old Dirichlet values)
+// and the loads of the problem already at the new pseudo-time, d = g - x is
+// the Dirichlet increment (g = x with the new data applied; nonzero on the
+// essential dofs only). One linear solve about x,
+//   J(x) s = R(x) + J(x) d,      x <- x + d - s,
+// imposes the increment on the update instead of on the state: the Jacobian
+// is that of the converged, undistorted configuration. J(x) d is formed by a
+// forward difference of the residual, since the assembled Jacobian has its
+// essential columns eliminated. Returns false (x = g, the plain start) when
+// there is no increment, the linear solve fails, or the result is not finite.
+bool TangentPredictor(QuasiStaticProblem &problem, mfem::Solver &linear_solver, mfem::Vector &x)
+{
+  const MPI_Comm comm = problem.Comm();
+  mfem::Vector g(x);
+  problem.ApplyDirichlet(g);
+  mfem::Vector d(g);
+  d -= x;
+  const double dmax = GlobalMaxAbs(comm, d);
+  if (dmax == 0.0) { x = g; return false; }
+  const double eps = 1e-6 * std::max(dmax, GlobalMaxAbs(comm, x)) / dmax;
+  const int n = x.Size();
+  mfem::Vector r0(n), r1(n), xe(x), s(n);
+  problem.Mult(x, r0);
+  xe.Add(eps, d);
+  problem.Mult(xe, r1);
+  r1 -= r0;
+  r1 /= eps;       // J d on the free rows (essential rows are zeroed by Mult)
+  r1 += r0;        // R + J d
+  mfem::Operator &J = problem.GetGradient(x);
+  linear_solver.SetOperator(J);
+  s = 0.0;
+  linear_solver.Mult(r1, s);
+  mfem::Vector trial(g);
+  trial -= s;
+  problem.ApplyDirichlet(trial); // essential entries exactly the prescribed ones
+  problem.Mult(trial, r1);
+  const double rn = std::sqrt(mfem::InnerProduct(comm, r1, r1));
+  if (!std::isfinite(rn)) { x = g; return false; }
+  x = trial;
+  return true;
+}
+
+} // namespace
 
 QuasiStaticReport SolveQuasiStatic(QuasiStaticProblem &problem,
                                    mfem::Solver &linear_solver,
@@ -46,7 +101,8 @@ QuasiStaticReport SolveQuasiStatic(QuasiStaticProblem &problem,
                     t, t_try);
       }
       problem.SetLoadFactor(t_try);
-      problem.ApplyDirichlet(x);
+      if (cfg.predictor == "tangent") { TangentPredictor(problem, linear_solver, x); }
+      else { problem.ApplyDirichlet(x); }
       attempts++;
       LoadStepReport s;
       s.step = accepted + 1;

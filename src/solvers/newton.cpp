@@ -5,6 +5,7 @@
 #include <limits>
 
 #include "solvers/linear_solver.hpp"
+#include "solvers/saddle_point_solver.hpp"
 
 namespace cmf
 {
@@ -23,6 +24,10 @@ bool LinearSolveConverged(const mfem::Solver &solver)
   if (const auto *ours = dynamic_cast<const LinearSolver *>(&solver))
   {
     return ours->Converged();
+  }
+  if (const auto *saddle = dynamic_cast<const SaddlePointSolver *>(&solver))
+  {
+    return saddle->Converged();
   }
   if (const auto *it = dynamic_cast<const mfem::IterativeSolver *>(&solver))
   {
