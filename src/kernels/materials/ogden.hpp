@@ -1,6 +1,7 @@
 // Decoupled Ogden material in the isochoric principal stretches lb_a = J^{-1/3} lambda_a:
 //   Psi_iso = sum_r mu_r/alpha_r (lb_1^alpha_r + lb_2^alpha_r + lb_3^alpha_r - 3)
-//   U(J)    = kappa/2 (J - 1)^2         (kappa = inf: incompressible)
+//   U(J)    = kappa/2 (J - 1)^2         (kappa = inf: incompressible;
+//             other laws selectable, see volumetric.hpp)
 // Small-strain shear modulus mu = 1/2 sum_r mu_r alpha_r (each mu_r alpha_r > 0).
 //
 // Stresses are evaluated spectrally. With C = F^T F = sum_a c_a N_a (x) N_a,
@@ -23,6 +24,7 @@
 
 #include "base/dual.hpp"
 #include "base/tensor.hpp"
+#include "materials/volumetric.hpp"
 #include "materials/spectral.hpp"
 
 namespace cmf
@@ -36,6 +38,7 @@ struct Ogden
   std::array<double, kMaxTerms> mu{};
   std::array<double, kMaxTerms> alpha{};
   double kappa = std::numeric_limits<double>::infinity();
+  VolumetricLaw law = VolumetricLaw::Quadratic;
 
   Ogden()
   {
@@ -141,11 +144,27 @@ struct Ogden
     return dual(EnergyIso(F), ddot(PK1Iso(F), dF));
   }
 
+  // Volumetric law U(J) = kappa u(J) (materials/volumetric.hpp): U'(J) and
+  // U(J) for the displacement formulation, u'(J) and u''(J) for the mixed
+  // constraint u'(J) - p / kappa = 0 and its tangent.
   template <typename T>
-  T VolumetricPressure(const T &J) const { return kappa * (J - 1.0); }
+  T VolumetricPressure(const T &J) const { return kappa * cmf::NormalizedVolumetricPressure(law, J); }
 
   template <typename T>
-  T VolumetricEnergy(const T &J) const { return 0.5 * kappa * (J - 1.0) * (J - 1.0); }
+  T VolumetricEnergy(const T &J) const { return kappa * cmf::NormalizedVolumetricEnergy(law, J); }
+
+  template <typename T>
+  T NormalizedVolumetricPressure(const T &J) const { return cmf::NormalizedVolumetricPressure(law, J); }
+
+  template <typename T>
+  T NormalizedVolumetricModulus(const T &J) const { return cmf::NormalizedVolumetricModulus(law, J); }
+
+  // kappa u*(p / kappa), the volumetric energy as a function of the pressure
+  // (p^2 / (2 kappa) for the quadratic law); finite kappa only.
+  double ComplementaryVolumetricEnergy(double p) const
+  {
+    return kappa * cmf::NormalizedComplementaryEnergy(law, p / kappa);
+  }
 
   template <typename T>
   tensor<T, 3, 3> PK1(const tensor<T, 3, 3> &F) const

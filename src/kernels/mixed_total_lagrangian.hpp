@@ -2,11 +2,14 @@
 // spaces) for decoupled hyperelastic materials with P = P_iso(F) + p J F^{-T}.
 //
 //   R_u(u, p).w = int [P_iso(F) + p J F^{-T}] : Grad w dV
-//   R_p(u, p).q = int q (J - 1 - p / kappa) dV      (kappa = inf: q (J - 1))
+//   R_p(u, p).q = int q (u'(J) - p / kappa) dV      (kappa = inf: q u'(J), i.e. J = 1)
+// with U(J) = kappa u(J) the material's volumetric law (materials/volumetric.hpp;
+// u' = J - 1 for the default quadratic law, which recovers J - 1 - p / kappa).
 //
 // Tangent blocks: K_uu = int Grad w : A(F, p) : Grad du with A = dP/dF at
 // fixed p (dual seeding), K_up = int (J F^{-T}) : Grad w  q,
-// K_pu = K_up^T, K_pp = -1/kappa int q dp.
+// K_pu = int q u''(J) (J F^{-T}) : Grad du (= K_up^T for the quadratic law),
+// K_pp = -1/kappa int q dp.
 #pragma once
 
 #include <cmath>
@@ -98,7 +101,10 @@ public:
   explicit MixedTotalLagrangianIntegrator(const std::vector<Material> &by_attribute)
     : materials_(by_attribute) {}
 
-  // Mixed functional int Psi_iso(F) + p (J - 1) - p^2 / (2 kappa) dV.
+  // Mixed functional int Psi_iso(F) + p (J - 1) - kappa u*(p / kappa) dV with
+  // u* the Legendre transform of the volumetric law (p^2 / (2 kappa) for the
+  // quadratic law, whose perturbed Lagrangian this is); kappa = inf drops the
+  // last term.
   mfem::real_t GetElementEnergy(const mfem::Array<const mfem::FiniteElement *> &el,
                                 mfem::ElementTransformation &Tr,
                                 const mfem::Array<const mfem::Vector *> &elfun) override
@@ -187,7 +193,8 @@ private:
       const double w = ip.weight * Tr.Weight();
       const tensor<double, 3, 3> F = DeformationGradient<dim>(H);
       const double J = det(F);
-      energy += w * (material.EnergyIso(F) + p * (J - 1.0) - 0.5 * inv_kappa * p * p);
+      energy += w * (material.EnergyIso(F) + p * (J - 1.0) -
+                     (inv_kappa > 0.0 ? material.ComplementaryVolumetricEnergy(p) : 0.0));
     }
     return energy;
   }
@@ -226,7 +233,7 @@ private:
         }
       double J = 1.0;
       QPointVolumeGradient<dim>(H, J);
-      const double constraint = J - 1.0 - inv_kappa * p;
+      const double constraint = material.NormalizedVolumetricPressure(J) - inv_kappa * p;
       for (int b = 0; b < dof_p; b++) { (*elvec[1])(b) += w * constraint * Sh_(b); }
     }
   }
@@ -280,7 +287,8 @@ private:
           }
       double J = 1.0;
       const tensor<double, dim, dim> G = QPointVolumeGradient<dim>(H, J);
-      // Kup(a i, b) = w (J F^{-T})_ij DS(a, j) N_b ; Kpu = Kup^T
+      // Kup(a i, b) = w (J F^{-T})_ij DS(a, j) N_b ; Kpu = u''(J) Kup^T
+      const double upp = material.NormalizedVolumetricModulus(J);
       for (int a = 0; a < dof_u; a++)
         for (int i = 0; i < dim; i++)
         {
@@ -290,7 +298,7 @@ private:
           {
             const double v = w * s * Sh_(b);
             Kup(a + i * dof_u, b) += v;
-            Kpu(b, a + i * dof_u) += v;
+            Kpu(b, a + i * dof_u) += upp * v;
           }
         }
       if (inv_kappa > 0.0)

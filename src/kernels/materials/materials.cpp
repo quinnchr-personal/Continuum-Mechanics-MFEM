@@ -11,7 +11,7 @@ namespace
 bool Set(double v) { return !std::isnan(v); }
 double Or(double v, double fallback) { return std::isnan(v) ? fallback : v; }
 
-MixedMaterial MakeDecoupled(const MaterialConfig &cfg, const ResolvedModuli &m)
+MixedMaterial MakeDecoupledBase(const MaterialConfig &cfg, const ResolvedModuli &m)
 {
   if (cfg.model == "iso_neo_hookean") { return IsoNeoHookean(m.mu, m.kappa); }
   if (cfg.model == "mooney_rivlin") { return MooneyRivlin(cfg.c1, cfg.c2, m.kappa); }
@@ -19,6 +19,15 @@ MixedMaterial MakeDecoupled(const MaterialConfig &cfg, const ResolvedModuli &m)
   if (cfg.model == "gent") { return Gent(cfg.mu, cfg.Jm, m.kappa); }
   if (cfg.model == "arruda_boyce") { return ArrudaBoyce(cfg.mu, cfg.N, m.kappa); }
   return Ogden(cfg.mu_r, cfg.alpha_r, m.kappa);
+}
+
+// The decoupled material with its volumetric law (material.volumetric).
+MixedMaterial MakeDecoupled(const MaterialConfig &cfg, const ResolvedModuli &m)
+{
+  MixedMaterial material = MakeDecoupledBase(cfg, m);
+  const VolumetricLaw law = ParseVolumetricLaw(cfg.volumetric);
+  std::visit([law](auto &mat) { mat.law = law; }, material);
+  return material;
 }
 
 } // namespace

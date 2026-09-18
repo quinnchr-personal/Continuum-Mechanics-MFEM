@@ -198,7 +198,8 @@ std::string MixedSolidMechanicsTL::Description() const
 {
   return "mixed u-p formulation, " + MaterialName(materials_[0]) +
          (materials_.size() > 1 ? " (regions)" : "") +
-         (incompressible_ ? " (incompressible)" : " (kappa " + std::to_string(kappa_) + ")");
+         (incompressible_ ? " (incompressible)" : " (kappa " + std::to_string(kappa_) +
+                            VolumetricLawSuffix(materials_[0]) + ")");
 }
 
 void MixedSolidMechanicsTL::EnsureFields()
@@ -241,7 +242,9 @@ void MixedSolidMechanicsTL::UpdateFields(const mfem::Vector &x)
       s.F = DeformationGradientAt(grad, T.GetDimension());
       s.P = MixedPK1(mat, s.F, p);
       // The mixed functional's integrand, consistent with InternalEnergy.
-      s.energy = mat.EnergyIso(s.F) + p * (det(s.F) - 1.0) - 0.5 * inv_kappa * p * p;
+      const double J = det(s.F);
+      s.energy = mat.EnergyIso(s.F) + p * (J - 1.0) -
+                 (inv_kappa > 0.0 ? mat.ComplementaryVolumetricEnergy(p) : 0.0);
     });
   }, materials_[0]);
 }

@@ -1,9 +1,11 @@
-// Linear solver for the mixed u-p Jacobian J = [[K, B], [B^T, -C]]
-// (C = M_p / kappa, zero when incompressible).
+// Linear solver for the mixed u-p Jacobian J = [[K, B], [Bt, -C]]
+// (C = M_p / kappa, zero when incompressible; Bt = B^T for the quadratic
+// volumetric law, Bt = u''(J)-weighted B^T otherwise, so J need not be symmetric).
 //
 // The system is first put in the algebraically equivalent augmented
-// Lagrangian form (gamma = augmentation * mu, W = diag(M_p)^{-1}):
-//   [[K + gamma B W B^T,  B - gamma B W C], [B^T, -C]] [u; p]
+// Lagrangian form (gamma = augmentation * mu, W = diag(M_p)^{-1}), adding
+// gamma B W times the second block row to the first:
+//   [[K + gamma B W Bt,  B - gamma B W C], [Bt, -C]] [u; p]
 //     = [b_u + gamma B W b_p; b_p],
 // whose displacement block stays well conditioned when the pressure is large
 // (the raw K carries the indefinite p-weighted geometric stiffness). It is
@@ -59,8 +61,8 @@ private:
 
   // Augmented operator and its blocks (rebuilt in SetOperator).
   const mfem::BlockOperator *jacobian_ = nullptr;
-  std::unique_ptr<mfem::HypreParMatrix> BtW_;    // W B^T
-  std::unique_ptr<mfem::HypreParMatrix> K_aug_;  // K + gamma B W B^T
+  std::unique_ptr<mfem::HypreParMatrix> BW_;     // B W
+  std::unique_ptr<mfem::HypreParMatrix> K_aug_;  // K + gamma B W Bt
   std::unique_ptr<mfem::HypreParMatrix> B_aug_;  // B - gamma B W C (or null: use B)
   std::unique_ptr<mfem::BlockOperator> A_aug_;
 

@@ -56,7 +56,7 @@ struct MeshConfig
 //   arruda_boyce: mu, N                  (small-strain modulus mu (1 + 3/(5N) + ...))
 //   ogden: mu_r, alpha_r lists           (mu = 1/2 sum mu_r alpha_r)
 // The decoupled models (all but the first two) take the bulk modulus from
-// exactly one of kappa | nu | incompressible.
+// exactly one of kappa | nu | incompressible, and optionally a volumetric law.
 // `regions` override parameters by element attribute (numbers and/or
 // physical-volume names in attr/attr_names): the same model with other
 // values, every key not given inherited from the base (a region that gives
@@ -79,6 +79,10 @@ struct MaterialConfig
   std::vector<double> mu_r;
   std::vector<double> alpha_r;
   bool incompressible = false;
+  // Volumetric law U(J) = kappa u(J) of the decoupled models: quadratic
+  // (default, (J - 1)^2 / 2) | simo_taylor | logarithmic | j_log_j
+  // (kernels/materials/volumetric.hpp). Not a key of the coupled models.
+  std::string volumetric = "quadratic";
   double rho0 = 1.0;
   std::vector<int> attr;                 // regions only
   std::vector<std::string> attr_names;   // regions only

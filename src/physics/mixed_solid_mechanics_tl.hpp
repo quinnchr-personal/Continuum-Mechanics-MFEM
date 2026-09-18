@@ -3,7 +3,8 @@
 // incompressible decoupled materials.
 //   R_u(u, p).w = int [P_iso(F) + p J F^{-T}] : Grad w dV + [follower pressures]
 //                 - sum_i s_i(t) [ext. loads_i]
-//   R_p(u, p).q = int q (J - 1 - p/kappa) dV       (kappa = inf: q (J - 1))
+//   R_p(u, p).q = int q (u'(J) - p/kappa) dV       (kappa = inf: q u'(J) <=> J = 1;
+//                 U = kappa u(J) the volumetric law, u' = J - 1 by default)
 // The unknown is the block true-dof vector [u; p]; Mult/GetGradient act on it.
 // Loads and essential dofs live in a LoadSet on the displacement space.
 #pragma once

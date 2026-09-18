@@ -76,16 +76,18 @@ void SaddlePointSolver::SetOperator(const mfem::Operator &op)
 
   if (gamma_ > 0.0)
   {
-    // W B^T with W = diag(M_p)^{-1}.
-    BtW_ = std::make_unique<mfem::HypreParMatrix>(*Bt);
-    BtW_->InvScaleRows(mass_diag_);
-    std::unique_ptr<mfem::HypreParMatrix> BWBt(mfem::ParMult(B, BtW_.get()));
+    // B W with W = diag(M_p)^{-1}, formed as (W B^T)^T so that the row
+    // operation uses the (0,1) block itself, not the transpose of the (1,0)
+    // block (they differ for a non-quadratic volumetric law).
+    std::unique_ptr<mfem::HypreParMatrix> BT(B->Transpose());
+    BT->InvScaleRows(mass_diag_);
+    BW_.reset(BT->Transpose());
+    std::unique_ptr<mfem::HypreParMatrix> BWBt(mfem::ParMult(BW_.get(), Bt));
     K_aug_.reset(mfem::Add(1.0, *K, gamma_, *BWBt));
     if (std::isfinite(kappa_))
     {
-      // B~ = B - gamma B W C = B + gamma (W B^T)^T (-C)
-      std::unique_ptr<mfem::HypreParMatrix> BW(BtW_->Transpose());
-      std::unique_ptr<mfem::HypreParMatrix> BWCneg(mfem::ParMult(BW.get(), Cneg));
+      // B~ = B - gamma B W C = B + gamma (B W) (-C)
+      std::unique_ptr<mfem::HypreParMatrix> BWCneg(mfem::ParMult(BW_.get(), Cneg));
       B_aug_.reset(mfem::Add(1.0, *B, gamma_, *BWCneg));
     }
     else
@@ -95,7 +97,7 @@ void SaddlePointSolver::SetOperator(const mfem::Operator &op)
   }
   else
   {
-    BtW_.reset();
+    BW_.reset();
     K_aug_ = std::make_unique<mfem::HypreParMatrix>(*K);
     B_aug_.reset();
   }
@@ -141,13 +143,13 @@ void SaddlePointSolver::Mult(const mfem::Vector &b, mfem::Vector &x) const
   if (!jacobian_) { throw std::runtime_error("SaddlePointSolver::Mult before SetOperator"); }
   const int n_u = offsets_[1], n_p = offsets_[2] - offsets_[1];
   mfem::Vector b_aug(b);
-  if (BtW_)
+  if (BW_)
   {
     // b~_u = b_u + gamma B W b_p
     mfem::Vector b_p(const_cast<mfem::Vector &>(b).GetData() + n_u, n_p);
     mfem::Vector b_u(b_aug.GetData(), n_u);
     mfem::Vector t(n_u);
-    BtW_->MultTranspose(b_p, t);
+    BW_->Mult(b_p, t);
     b_u.Add(gamma_, t);
   }
   inner_iterations_ = 0;

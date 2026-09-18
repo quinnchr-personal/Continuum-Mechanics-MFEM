@@ -169,7 +169,7 @@ HYPRE_BigInt SolidMechanicsTL::GlobalTrueVSize() const
 std::string SolidMechanicsTL::Description() const
 {
   return "displacement formulation, " + MaterialName(materials_[0]) +
-         (materials_.size() > 1 ? " (regions)" : "");
+         VolumetricLawSuffix(materials_[0]) + (materials_.size() > 1 ? " (regions)" : "");
 }
 
 std::unique_ptr<mfem::Solver>

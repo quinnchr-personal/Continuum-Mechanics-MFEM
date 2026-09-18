@@ -19,6 +19,7 @@
 #include "materials/ogden.hpp"
 #include "materials/plane_stress.hpp"
 #include "materials/st_venant_kirchhoff.hpp"
+#include "materials/volumetric.hpp"
 #include "materials/yeoh.hpp"
 
 namespace cmf
@@ -124,6 +125,35 @@ inline std::string MaterialName(const MixedMaterial &m)
 {
   return std::visit([](const auto &mat) -> std::string
   { return ModelName<std::decay_t<decltype(mat)>>(); }, m);
+}
+
+// ", <law> volumetric law" for a decoupled material with a finite bulk modulus
+// and a non-default law; "" otherwise (the plane-stress adapter reports its base).
+template <typename M, typename = void>
+struct has_volumetric_law : std::false_type {};
+template <typename M>
+struct has_volumetric_law<M, std::void_t<decltype(std::declval<const M &>().law)>> : std::true_type {};
+
+template <typename M>
+inline std::string VolumetricLawSuffixOf(const M &mat)
+{
+  if constexpr (is_plane_stress<M>::value) { return VolumetricLawSuffixOf(mat.material); }
+  else if constexpr (has_volumetric_law<M>::value)
+  {
+    if (mat.Incompressible() || mat.law == VolumetricLaw::Quadratic) { return ""; }
+    return std::string(", ") + VolumetricLawName(mat.law) + " volumetric law";
+  }
+  else { return ""; }
+}
+
+inline std::string VolumetricLawSuffix(const Material &m)
+{
+  return std::visit([](const auto &mat) { return VolumetricLawSuffixOf(mat); }, m);
+}
+
+inline std::string VolumetricLawSuffix(const MixedMaterial &m)
+{
+  return std::visit([](const auto &mat) { return VolumetricLawSuffixOf(mat); }, m);
 }
 
 } // namespace cmf

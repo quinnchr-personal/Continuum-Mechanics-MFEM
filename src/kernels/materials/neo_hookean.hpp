@@ -1,4 +1,6 @@
-// Compressible neo-Hookean hyperelasticity (Simo-Hughes / Bonet-Wood form).
+// Compressible neo-Hookean hyperelasticity in the form of Bonet and Wood
+// (Nonlinear Continuum Mechanics for Finite Element Analysis, Sec. 6.4), also
+// used by the FEniCS/FEniCSx hyperelasticity demos and FEBio.
 //   W(F) = mu/2 (tr C - 3) - mu ln J + lambda/2 (ln J)^2
 //   P(F) = mu (F - F^{-T}) + lambda ln(J) F^{-T}
 // Stateless value type; PK1 is templated so dual numbers give the tangent.

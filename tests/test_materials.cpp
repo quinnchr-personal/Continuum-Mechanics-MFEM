@@ -276,6 +276,71 @@ void TestDecoupled(const Material &m, const std::string &name, double mu, double
   }
 }
 
+// Volumetric laws (materials/volumetric.hpp): every law has u(1) = u'(1) = 0
+// and u''(1) = 1, u' is the derivative of u and u'' of u' (duals vs central
+// differences), and the decoupled models pass TestDecoupled with each law
+// (tangent, dW/dF = P, small-strain limit with the same kappa).
+void TestVolumetricLaws(double mu, double kappa)
+{
+  const cmf::VolumetricLaw laws[] = {cmf::VolumetricLaw::Quadratic, cmf::VolumetricLaw::SimoTaylor,
+                                     cmf::VolumetricLaw::Logarithmic, cmf::VolumetricLaw::JLogJ};
+  for (cmf::VolumetricLaw law : laws)
+  {
+    const std::string name = cmf::VolumetricLawName(law);
+    CHECK(cmf::ParseVolumetricLaw(name) == law);
+    CHECK_MSG(std::abs(cmf::NormalizedVolumetricEnergy(law, 1.0)) <= 1e-15, name + ": u(1) = 0");
+    CHECK_MSG(std::abs(cmf::NormalizedVolumetricPressure(law, 1.0)) <= 1e-15, name + ": u'(1) = 0");
+    CHECK_MSG(std::abs(cmf::NormalizedVolumetricModulus(law, 1.0) - 1.0) <= 1e-15, name + ": u''(1) = 1");
+    double worst = 0.0;
+    for (double J : {0.5, 0.8, 0.97, 1.03, 1.4, 2.5})
+    {
+      const double h = 1e-6;
+      const double up_fd = (cmf::NormalizedVolumetricEnergy(law, J + h) -
+                            cmf::NormalizedVolumetricEnergy(law, J - h)) / (2.0 * h);
+      const double upp_fd = (cmf::NormalizedVolumetricPressure(law, J + h) -
+                             cmf::NormalizedVolumetricPressure(law, J - h)) / (2.0 * h);
+      const dual u = cmf::NormalizedVolumetricEnergy(law, dual(J, 1.0));
+      const dual up = cmf::NormalizedVolumetricPressure(law, dual(J, 1.0));
+      worst = std::max({worst, std::abs(up_fd - up.v), std::abs(u.d - up.v),
+                        std::abs(upp_fd - cmf::NormalizedVolumetricModulus(law, J)),
+                        std::abs(up.d - cmf::NormalizedVolumetricModulus(law, J))});
+    }
+    std::printf("  volumetric law %s: derivative consistency %.2e\n", name.c_str(), worst);
+    CHECK_MSG(worst <= 1e-8, name + ": u' = du/dJ and u'' = du'/dJ");
+    // Legendre transform: u*(pi) = pi (J - 1) - u(J) at u'(J) = pi, and
+    // u*(pi) + u(J) = pi (J - 1) (Fenchel equality) for J in the invertible range.
+    for (double J : {0.7, 0.95, 1.1, 1.8})
+    {
+      const double pi = cmf::NormalizedVolumetricPressure(law, J);
+      const double ustar = cmf::NormalizedComplementaryEnergy(law, pi);
+      CHECK_MSG(std::abs(ustar + cmf::NormalizedVolumetricEnergy(law, J) - pi * (J - 1.0)) <= 1e-12,
+                name + ": Legendre transform at J = " + std::to_string(J));
+    }
+    CHECK_MSG(std::abs(cmf::NormalizedComplementaryEnergy(law, 0.0)) <= 1e-15, name + ": u*(0) = 0");
+    if (law == cmf::VolumetricLaw::Quadratic) { continue; }
+    cmf::IsoNeoHookean nh(mu, kappa);
+    nh.law = law;
+    TestDecoupled(nh, "iso_neo_hookean/" + name, mu, kappa);
+    cmf::Ogden og({0.63 * mu, 0.0012 * mu, -0.01 * mu}, {1.3, 5.0, -2.0}, kappa);
+    og.law = law;
+    TestDecoupled(og, "ogden/" + name, og.ShearModulus(), kappa);
+  }
+  // The factory applies the law; the coupled models refuse the key.
+  cmf::MaterialConfig c;
+  c.model = "iso_neo_hookean"; c.mu = mu; c.kappa = kappa; c.volumetric = "logarithmic";
+  const cmf::MixedMaterial m = cmf::MakeMixedMaterial(c);
+  CHECK(std::get<cmf::IsoNeoHookean>(m).law == cmf::VolumetricLaw::Logarithmic);
+  CHECK(cmf::VolumetricLawSuffix(m) == ", logarithmic volumetric law");
+  CHECK(cmf::VolumetricLawSuffix(cmf::MakeMaterial(c)) == ", logarithmic volumetric law");
+  c.volumetric = "quadratic";
+  CHECK(cmf::VolumetricLawSuffix(cmf::MakeMixedMaterial(c)).empty());
+  c.volumetric = "cubic";
+  CHECK_THROWS(cmf::MakeMixedMaterial(c), cmf::ConfigError, "unknown volumetric law 'cubic'");
+  c.model = "neo_hookean"; c.E = 1.0; c.nu = 0.3; c.mu = c.kappa = std::numeric_limits<double>::quiet_NaN();
+  c.volumetric = "logarithmic";
+  CHECK_THROWS(cmf::MakeMaterial(c), cmf::ConfigError, "'material.volumetric' is not used");
+}
+
 // Ogden reduces to the isochoric neo-Hookean model for (mu, alpha) = (mu, 2)
 // and to Mooney-Rivlin for (2 c1, 2) + (-2 c2, -2); its analytic tangent must
 // match finite differences also at coincident principal stretches, where
@@ -538,6 +603,7 @@ int main()
     TestDecoupled(og, "ogden", og.ShearModulus(), kappa);
   }
   TestOgdenSpecial(mu, kappa);
+  TestVolumetricLaws(mu, kappa);
   TestPlaneStress(E, nu, mu, kappa);
   // Mooney-Rivlin with c2 = 0 is the isochoric neo-Hookean model.
   {

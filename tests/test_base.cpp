@@ -593,6 +593,21 @@ void TestMaterialRegions()
     CHECK_CLOSE(r1.kappa, 280000.0, 0.0);  // inherited
     CHECK(c.material.attr.empty() && c.material.attr_names.empty());
   }
+  // The volumetric law is a key of the decoupled models and is inherited by regions.
+  {
+    const cmf::AppConfig c = cmf::ParseConfig(YAML::Load(head +
+      "material: { model: iso_neo_hookean, mu: 1.0, kappa: 100.0, volumetric: simo_taylor, "
+      "regions: [ { attr: [2], mu: 2.0 } ] }\n"));
+    CHECK(c.material.volumetric == "simo_taylor" && c.material.regions[0].volumetric == "simo_taylor");
+    CHECK(cmf::ParseConfig(YAML::Load(head + "material: { model: yeoh, c10: 1.0, nu: 0.3 }\n"))
+            .material.volumetric == "quadratic");
+    CHECK_THROWS(cmf::ParseConfig(YAML::Load(head +
+      "material: { model: iso_neo_hookean, mu: 1.0, kappa: 100.0, volumetric: cubic }\n")),
+      cmf::ConfigError, "'material.volumetric': unknown volumetric law 'cubic'");
+    CHECK_THROWS(cmf::ParseConfig(YAML::Load(head +
+      "material: { model: neo_hookean, E: 1.0, nu: 0.3, volumetric: logarithmic }\n")),
+      cmf::ConfigError, "'material.volumetric' is not used by model 'neo_hookean'");
+  }
   // A region may switch the bulk specification (nu instead of kappa).
   {
     const cmf::AppConfig c = cmf::ParseConfig(YAML::Load(head +

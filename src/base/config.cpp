@@ -410,7 +410,7 @@ void ValidateMaterialConfig(const MaterialConfig &cfg, const std::string &path)
     {"c1", set(cfg.c1)}, {"c2", set(cfg.c2)}, {"c10", set(cfg.c10)}, {"c20", set(cfg.c20)},
     {"c30", set(cfg.c30)}, {"Jm", set(cfg.Jm)}, {"N", set(cfg.N)},
     {"mu_r", !cfg.mu_r.empty()}, {"alpha_r", !cfg.alpha_r.empty()},
-    {"incompressible", cfg.incompressible}};
+    {"incompressible", cfg.incompressible}, {"volumetric", cfg.volumetric != "quadratic"}};
   auto is_set = [&](const std::string &k)
   {
     for (const Key &e : keys) { if (k == e.name) { return e.set; } }
@@ -425,42 +425,52 @@ void ValidateMaterialConfig(const MaterialConfig &cfg, const std::string &path)
   if (coupled) { allowed = {"E", "nu"}; required = {"E", "nu"}; needs = "E and nu"; }
   else if (model == "iso_neo_hookean")
   {
-    allowed = {"mu", "E", "nu", "kappa", "incompressible"};
+    allowed = {"mu", "E", "nu", "kappa", "incompressible", "volumetric"};
     needs = "mu, or E and nu";
   }
   else if (model == "mooney_rivlin")
   {
-    allowed = {"c1", "c2", "nu", "kappa", "incompressible"};
+    allowed = {"c1", "c2", "nu", "kappa", "incompressible", "volumetric"};
     required = {"c1", "c2"};
     needs = "c1 and c2";
   }
   else if (model == "yeoh")
   {
-    allowed = {"c10", "c20", "c30", "nu", "kappa", "incompressible"};
+    allowed = {"c10", "c20", "c30", "nu", "kappa", "incompressible", "volumetric"};
     required = {"c10"};
     needs = "c10 (and optionally c20, c30)";
   }
   else if (model == "gent")
   {
-    allowed = {"mu", "Jm", "nu", "kappa", "incompressible"};
+    allowed = {"mu", "Jm", "nu", "kappa", "incompressible", "volumetric"};
     required = {"mu", "Jm"};
     needs = "mu and Jm";
   }
   else if (model == "arruda_boyce")
   {
-    allowed = {"mu", "N", "nu", "kappa", "incompressible"};
+    allowed = {"mu", "N", "nu", "kappa", "incompressible", "volumetric"};
     required = {"mu", "N"};
     needs = "mu and N";
   }
   else if (model == "ogden")
   {
-    allowed = {"mu_r", "alpha_r", "nu", "kappa", "incompressible"};
+    allowed = {"mu_r", "alpha_r", "nu", "kappa", "incompressible", "volumetric"};
     required = {"mu_r", "alpha_r"};
     needs = "mu_r and alpha_r";
   }
   else
   {
     throw ConfigError("key " + key("model") + ": unknown model '" + model + "'");
+  }
+  {
+    static const char *laws[] = {"quadratic", "simo_taylor", "logarithmic", "j_log_j"};
+    bool known = false;
+    for (const char *l : laws) { known = known || cfg.volumetric == l; }
+    if (!known)
+    {
+      throw ConfigError("key " + key("volumetric") + ": unknown volumetric law '" + cfg.volumetric +
+                        "' (expected quadratic, simo_taylor, logarithmic, or j_log_j)");
+    }
   }
   for (const std::string &k : required)
   {
@@ -582,6 +592,7 @@ MaterialConfig ReadMaterialKeys(NodeReader &r, const std::string &path, const Ma
   cfg.mu_r = r.Optional<std::vector<double>>("mu_r", cfg.mu_r);
   cfg.alpha_r = r.Optional<std::vector<double>>("alpha_r", cfg.alpha_r);
   cfg.incompressible = r.Optional<bool>("incompressible", cfg.incompressible);
+  cfg.volumetric = r.Optional<std::string>("volumetric", cfg.volumetric);
   cfg.rho0 = r.Optional<double>("rho0", cfg.rho0);
   static const char *models[] = {"neo_hookean", "st_venant_kirchhoff", "iso_neo_hookean",
                                  "mooney_rivlin", "yeoh", "gent", "arruda_boyce", "ogden"};

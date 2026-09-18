@@ -54,6 +54,7 @@ cmf::AppConfig BaseConfig(int nx, int order, double perturb, const std::string &
   cfg.solver.linear.inner_rtol = 1e-4;
   cfg.solver.linear.inner_max_it = 100;
   if (std::getenv("CMF_LINEAR_PRINT")) { cfg.solver.linear.print_level = 1; }
+  if (std::getenv("CMF_NEWTON_PRINT")) { cfg.solver.newton.print_level = 1; }
   return cfg;
 }
 
@@ -257,6 +258,7 @@ SolveResult SolveManufactured(const cmf::AppConfig &cfg, const Manufactured &m,
 template <typename Material>
 void PatchTest(const std::string &model, const Material &material, bool incompressible)
 {
+  const std::string label = model + cmf::VolumetricLawSuffixOf(material);
   cmf::AppConfig cfg = BaseConfig(4, 2, 0.15, model, 0.45, incompressible);
   cfg.solver.load_steps = 3;
   cfg.solver.newton.rtol = 1e-13;
@@ -271,23 +273,23 @@ void PatchTest(const std::string &model, const Material &material, bool incompre
   {
     A(0, 0) = 0.08; A(0, 1) = 0.25;
     A(1, 0) = -0.05; A(1, 1) = -0.06;
-    p0 = material.kappa * (det(cmf::I<2>() + A) - 1.0);
+    p0 = material.VolumetricPressure(det(cmf::I<2>() + A)); // U'(J) of the material's law
   }
   const Manufactured m = Affine(A, p0);
   SolveResult r = SolveManufactured(cfg, m, material, false);
   std::printf("  patch %s %s (p0 %.4f): max nodal error u %.3e p %.3e, last-step newton its %d, |R|:",
-              model.c_str(), incompressible ? "incompressible" : "nu=0.45", p0,
+              label.c_str(), incompressible ? "incompressible" : "nu=0.45", p0,
               r.max_nodal_u, r.max_nodal_p, r.newton.iterations);
   for (const cmf::NewtonIteration &it : r.newton.history)
   {
     std::printf(" %.1e%s", it.residual, it.iteration > 0 && it.alpha < 1.0 ? "*" : "");
   }
   std::printf("  (* = damped step)\n");
-  CHECK_MSG(r.newton.converged, model + " patch converged");
-  CHECK_MSG(r.max_nodal_u <= 1e-12, model + " patch displacement reproduced (" +
+  CHECK_MSG(r.newton.converged, label + " patch converged");
+  CHECK_MSG(r.max_nodal_u <= 1e-12, label + " patch displacement reproduced (" +
             std::to_string(r.max_nodal_u) + ")");
   CHECK_MSG(r.max_nodal_p <= 1e-10 * std::max(1.0, std::abs(p0)),
-            model + " patch pressure reproduced (" + std::to_string(r.max_nodal_p) + ")");
+            label + " patch pressure reproduced (" + std::to_string(r.max_nodal_p) + ")");
 }
 
 template <typename Material>
@@ -296,6 +298,7 @@ void JacobianTest(const std::string &model, const Material &material, bool incom
   cmf::AppConfig cfg = BaseConfig(3, 2, 0.2, model, 0.45, incompressible);
   std::unique_ptr<mfem::ParMesh> pmesh = cmf::BuildParMesh(MPI_COMM_WORLD, cfg.mesh);
   cmf::MixedSolidMechanicsTL physics(*pmesh, cfg, cmf::MixedMaterial(material));
+  const std::string label = model + cmf::VolumetricLawSuffixOf(material);
   const Manufactured m = Isochoric(0.05, 0.04, 3.0);
   mfem::VectorFunctionCoefficient exact_u(2, m.u);
   physics.AddDirichlet({4}, exact_u);
@@ -324,9 +327,14 @@ void JacobianTest(const std::string &model, const Material &material, bool incom
   rp /= 2.0 * eps;
   rp -= Jv;
   const double rel = rp.Normlinf() / Jv.Normlinf();
-  std::printf("  jacobian %s %s: |J v - FD| / |J v| = %.3e\n", model.c_str(),
-              incompressible ? "incompressible" : "nu=0.45", rel);
-  CHECK_MSG(rel <= 1e-6, model + " block Jacobian vs FD relative error " + std::to_string(rel));
+  // The pressure rows alone (K_pu, K_pp), which carry the volumetric law.
+  const int n_u = physics.BlockOffsets()[1];
+  mfem::Vector rp_p(rp.GetData() + n_u, n - n_u), Jv_p(Jv.GetData() + n_u, n - n_u);
+  const double rel_p = rp_p.Normlinf() / Jv_p.Normlinf();
+  std::printf("  jacobian %s %s: |J v - FD| / |J v| = %.3e (pressure rows %.3e)\n", label.c_str(),
+              incompressible ? "incompressible" : "nu=0.45", rel, rel_p);
+  CHECK_MSG(rel <= 1e-6, label + " block Jacobian vs FD relative error " + std::to_string(rel));
+  CHECK_MSG(rel_p <= 1e-6, label + " pressure rows vs FD relative error " + std::to_string(rel_p));
 }
 
 double Seconds()
@@ -453,6 +461,13 @@ int main(int argc, char *argv[])
   const cmf::IsoNeoHookean nh_inc(kMu, std::numeric_limits<double>::infinity());
   const cmf::MooneyRivlin mr45(0.3 * kMu, 0.2 * kMu, kappa45);
   const cmf::MooneyRivlin mr_inc(0.3 * kMu, 0.2 * kMu, std::numeric_limits<double>::infinity());
+  // Non-quadratic volumetric laws: the constraint u'(J) = p / kappa and the
+  // non-symmetric K_pu = u''(J) K_up^T of the general form.
+  cmf::IsoNeoHookean nh45_log(kMu, kappa45), nh45_st(kMu, kappa45);
+  nh45_log.law = cmf::VolumetricLaw::Logarithmic;
+  nh45_st.law = cmf::VolumetricLaw::SimoTaylor;
+  cmf::MooneyRivlin mr45_jlj(0.3 * kMu, 0.2 * kMu, kappa45);
+  mr45_jlj.law = cmf::VolumetricLaw::JLogJ;
 
   double t0 = Seconds();
   std::cout << "patch tests" << std::endl;
@@ -460,12 +475,17 @@ int main(int argc, char *argv[])
   PatchTest("iso_neo_hookean", nh_inc, true);
   PatchTest("mooney_rivlin", mr45, false);
   PatchTest("mooney_rivlin", mr_inc, true);
+  PatchTest("iso_neo_hookean", nh45_log, false);
+  PatchTest("iso_neo_hookean", nh45_st, false);
+  PatchTest("mooney_rivlin", mr45_jlj, false);
   std::printf("  [%.1f s]\n", Seconds() - t0);
   t0 = Seconds();
   std::cout << "jacobian consistency" << std::endl;
   JacobianTest("iso_neo_hookean", nh45, false);
   JacobianTest("iso_neo_hookean", nh_inc, true);
   JacobianTest("mooney_rivlin", mr_inc, true);
+  JacobianTest("iso_neo_hookean", nh45_log, false);
+  JacobianTest("mooney_rivlin", mr45_jlj, false);
   std::printf("  [%.1f s]\n", Seconds() - t0);
   t0 = Seconds();
   // Amplitude 0.02 (max |Grad u| ~ 0.06): at kappa/mu ~ 10 the pressure
