@@ -106,6 +106,17 @@ NewtonReport DampedNewtonSolve(mfem::Operator &op, mfem::Solver &linear_solver,
       }
       alpha *= 0.5;
     }
+    // Linear problem, second or later step, every linear solve converged: a
+    // step that cannot reduce the residual (or, below, reduces it by less
+    // than ten) has met the round-off floor of the residual evaluation.
+    const bool linear_floor = cfg.linear_problem && report.iterations >= 1 &&
+                              report.linear_solve_failures == 0;
+    if (!accepted && linear_floor)
+    {
+      report.converged = true;
+      report.at_floor = true;
+      break;
+    }
     if (!accepted)
     {
       char buf[160];
@@ -116,6 +127,7 @@ NewtonReport DampedNewtonSolve(mfem::Operator &op, mfem::Solver &linear_solver,
       report.failure = buf;
       break;
     }
+    const double rn_before = rn;
     x = x_trial;
     r = r_trial;
     rn = rn_trial;
@@ -127,6 +139,17 @@ NewtonReport DampedNewtonSolve(mfem::Operator &op, mfem::Solver &linear_solver,
     {
       std::printf("newton it %2d: |R| = %.6e  alpha = %.4f\n", it + 1, rn, alpha);
     }
+    if (linear_floor && rn > 0.1 * rn_before && rn > cfg.atol && rn > cfg.rtol * report.initial_residual)
+    {
+      report.converged = true;
+      report.at_floor = true;
+      break;
+    }
+  }
+  if (verbose && report.at_floor)
+  {
+    std::printf("newton: linear problem, the residual is at its round-off floor "
+                "(|R|/|R0| = %.2e); accepted\n", rn / report.initial_residual);
   }
   if (verbose && !report.failure.empty())
   {

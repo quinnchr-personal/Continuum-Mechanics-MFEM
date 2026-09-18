@@ -26,6 +26,10 @@ public:
   // Overwrite the essential true dofs of x with the scaled Dirichlet data.
   virtual void ApplyDirichlet(mfem::Vector &x) const = 0;
   virtual MPI_Comm Comm() const = 0;
+  // The residual is affine in the unknown (small-strain elasticity with dead
+  // loads): Newton then accepts a residual at its round-off floor
+  // (NewtonConfig::linear_problem).
+  virtual bool IsLinear() const { return false; }
 };
 
 // One accepted increment (or the final failed one): t_begin -> load_factor,

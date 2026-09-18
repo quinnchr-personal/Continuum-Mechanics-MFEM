@@ -81,6 +81,8 @@ QuasiStaticReport SolveQuasiStatic(QuasiStaticProblem &problem,
   MPI_Comm_rank(problem.Comm(), &rank);
   const bool verbose = rank == 0 && cfg.newton.print_level > 0;
   const std::vector<double> targets = LoadStepBreakpoints(cfg);
+  NewtonConfig newton = cfg.newton;
+  newton.linear_problem = problem.IsLinear();
   QuasiStaticReport report;
   report.converged = true;
   mfem::Vector x_last(x);
@@ -109,7 +111,7 @@ QuasiStaticReport SolveQuasiStatic(QuasiStaticProblem &problem,
       s.load_factor = t_try;
       s.t_begin = t;
       s.attempts = attempts;
-      s.newton = DampedNewtonSolve(problem, linear_solver, x, cfg.newton, problem.Comm());
+      s.newton = DampedNewtonSolve(problem, linear_solver, x, newton, problem.Comm());
       if (s.newton.converged)
       {
         accepted++;

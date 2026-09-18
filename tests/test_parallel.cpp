@@ -4,7 +4,8 @@
 // 1e-14 and Newton to 1e-12 relative (its round-off floor is ~3e-13 on these
 // problems, so 1e-14 would stall and truncate the load path); the achieved
 // reduction is reported. Both the displacement and the mixed u-p Cook's
-// membrane inputs are checked.
+// membrane inputs are checked; a linear problem may be accepted at the
+// round-off floor of its residual instead.
 #include <cmath>
 #include <cstdio>
 #include <fstream>
@@ -32,7 +33,7 @@ struct Norms
 };
 
 Norms RunReference(const std::string &input, double &residual_reduction, int &iterations,
-                   bool &all_steps_converged)
+                   bool &all_steps_converged, bool &at_floor)
 {
   cmf::AppConfig cfg = cmf::LoadConfig(input);
   cfg.output.paraview.clear();
@@ -54,6 +55,7 @@ Norms RunReference(const std::string &input, double &residual_reduction, int &it
   const cmf::NewtonReport &newton = report.steps.back().newton;
   residual_reduction = newton.residual / newton.initial_residual;
   iterations = newton.iterations;
+  at_floor = newton.at_floor;
   all_steps_converged = report.converged;
   physics.UpdateFields(u);
   Norms n;
@@ -94,8 +96,8 @@ int main(int argc, char *argv[])
   {
     double reduction = 1.0;
     int iterations = 0;
-    bool all_steps = false;
-    const Norms n = RunReference(input, reduction, iterations, all_steps);
+    bool all_steps = false, at_floor = false;
+    const Norms n = RunReference(input, reduction, iterations, all_steps, at_floor);
     norms.push_back(n);
     CHECK_MSG(all_steps, input + ": every load step converged");
     if (root)
@@ -105,7 +107,10 @@ int main(int argc, char *argv[])
                   mfem::Mpi::WorldSize(), reduction, iterations,
                   n.u_l2, n.corner_ux, n.corner_uy, n.energy);
     }
-    CHECK_MSG(reduction <= 1e-12, input + ": residual reduced to <= 1e-12 relative");
+    // A linear problem may meet the round-off floor of its residual first
+    // (NewtonReport::at_floor); the norms below are compared either way.
+    CHECK_MSG(reduction <= 1e-12 || (at_floor && reduction <= 1e-10),
+              input + ": residual reduced to <= 1e-12 relative, or to the floor of a linear problem");
   }
 
   if (!std::string(write_path).empty())

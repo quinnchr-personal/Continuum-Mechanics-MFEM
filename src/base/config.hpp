@@ -158,6 +158,12 @@ struct NewtonConfig
   double armijo_c = 1e-4;
   int max_halvings = 8;
   int print_level = 1;
+  // Programmatic only (set by the load stepper from QuasiStaticProblem::
+  // IsLinear): the residual is affine in the unknown, so the first step is the
+  // exact solve and a later step that no longer reduces the residual has met
+  // the round-off floor of its evaluation; the state is accepted there
+  // instead of failing on an rtol below that floor (solvers/newton.hpp).
+  bool linear_problem = false;
 };
 
 struct LinearSolverConfig

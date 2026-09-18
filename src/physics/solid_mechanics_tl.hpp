@@ -65,6 +65,8 @@ public:
   double LoadFactor() const override { return loads_.Time(); }
   void ApplyDirichlet(mfem::Vector &x) const override;
   MPI_Comm Comm() const override { return fes_.GetComm(); }
+  // A small-strain material with dead loads (follower loads are rejected for it).
+  bool IsLinear() const override { return IsSmallStrain(materials_[0]) && !loads_.HasFollowerPressure(); }
 
   mfem::ParMesh &Mesh() { return mesh_; }
   mfem::ParFiniteElementSpace &FESpace() { return fes_; }

@@ -15,7 +15,9 @@
 //      pressures and the tangent predictor are configuration errors;
 //   8. every output quantity of homogeneous Hooke states at 5 percent strain,
 //      in every presentation: sigma = P (no push-forward), J = 1 + tr(eps),
-//      strain = eps, the thickness stretch 1 + eps_33 under plane stress.
+//      strain = eps, the thickness stretch 1 + eps_33 under plane stress;
+//   9. a Newton tolerance below the round-off floor of the residual: a linear
+//      problem is accepted at the floor, a nonlinear one still fails.
 #include <cmath>
 #include <cstdio>
 #include <functional>
@@ -490,6 +492,56 @@ void ReactionAndConfigTests()
   }
 }
 
+// 9. The round-off floor of the residual. A slender beam in bending puts the
+// floor of |R| / |R0| (eps |K| |u| / |f|) near 1e-10; with a Newton tolerance
+// below it, a linear problem is accepted at the floor after a second step
+// that cannot reduce the residual (SolidMechanicsTL::IsLinear ->
+// NewtonConfig::linear_problem), with the same solution; a nonlinear model
+// under the same tolerance still reports the failed line search.
+void ResidualFloorTest()
+{
+  auto solve = [](const std::string &model, double rtol, double load, mfem::Vector &u)
+  {
+    ElementCase ec{2, "quad", 4, 0.0};
+    cmf::AppConfig cfg = BoxConfig(ec, 2, model);
+    cfg.mesh.box.nx = 80;
+    cfg.mesh.box.sx = 20.0;
+    cfg.solver.newton.rtol = rtol;
+    std::unique_ptr<mfem::ParMesh> pmesh = cmf::BuildParMesh(MPI_COMM_WORLD, cfg.mesh);
+    cmf::SolidMechanicsTL physics(*pmesh, cfg, cmf::MakeMaterial(cfg.material));
+    mfem::Vector zero(2), t(2);
+    zero = 0.0;
+    t(0) = 0.0; t(1) = load;
+    mfem::VectorConstantCoefficient zero_coef(zero), traction(t);
+    physics.AddDirichlet({LeftAttr(2)}, zero_coef);
+    physics.AddTraction({RightAttr(2)}, traction);
+    physics.Finalize();
+    cmf::LinearSolver linear(cfg.solver.linear, physics.FESpace());
+    u.SetSize(physics.FESpace().GetTrueVSize());
+    u = 0.0;
+    return cmf::SolveQuasiStatic(physics, linear, cfg.solver, u);
+  };
+  mfem::Vector u_ref, u_floor, u_svk;
+  const cmf::QuasiStaticReport ref = solve("linear_elastic", 1e-8, 1e-3, u_ref);
+  const cmf::NewtonReport &rn = ref.steps.back().newton;
+  CHECK_MSG(ref.converged && rn.iterations == 1 && !rn.at_floor, "floor test: rtol 1e-8 is met by the first step");
+  const cmf::QuasiStaticReport low = solve("linear_elastic", 1e-15, 1e-3, u_floor);
+  const cmf::NewtonReport &ln = low.steps.back().newton;
+  std::printf("  slender beam: first step |R|/|R0| = %.2e; rtol 1e-15: converged %d, at the floor %d, its %d, "
+              "|R|/|R0| = %.2e, solution rel diff %.1e\n", rn.residual / rn.initial_residual, int(low.converged),
+              int(ln.at_floor), ln.iterations, ln.residual / ln.initial_residual, RelDiff(u_floor, u_ref));
+  CHECK_MSG(rn.residual / rn.initial_residual > 1e-13, "floor test: the floor of this problem lies above 1e-13");
+  CHECK_MSG(low.converged && ln.at_floor, "floor test: a linear problem is accepted at the round-off floor");
+  CHECK_MSG(ln.iterations <= 3, "floor test: at most three steps, got " + std::to_string(ln.iterations));
+  CHECK_MSG(ln.residual > 1e-15 * ln.initial_residual, "floor test: the tolerance was indeed out of reach");
+  CHECK_MSG(RelDiff(u_floor, u_ref) <= 1e-9, "floor test: the accepted state is the solution");
+  // The nonlinear model in its linear range, same tolerance: unchanged behaviour.
+  const cmf::QuasiStaticReport svk = solve("st_venant_kirchhoff", 1e-15, 1e-6, u_svk);
+  const cmf::NewtonReport &sn = svk.steps.back().newton;
+  std::printf("  st_venant_kirchhoff, rtol 1e-15: converged %d (%s)\n", int(svk.converged), sn.failure.c_str());
+  CHECK_MSG(!svk.converged && !sn.at_floor, "floor test: a nonlinear problem is not accepted at the floor");
+}
+
 // 8. Output quantities of homogeneous Hooke states at a strain of 5 percent,
 // where the finite-strain measures (J^{-1} P F^T, det F) would be off by
 // percents. A state is an affine displacement u = H X; the expected values
@@ -712,5 +764,7 @@ int main(int argc, char *argv[])
   ReactionAndConfigTests();
   std::cout << "output quantities of homogeneous states" << std::endl;
   HomogeneousOutputTests();
+  std::cout << "round-off floor of the residual" << std::endl;
+  ResidualFloorTest();
   return cmf_test::Report("test_linear_elasticity");
 }
