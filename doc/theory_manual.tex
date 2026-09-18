@@ -77,7 +77,8 @@ finite-strain solid mechanics in total Lagrangian form on a fixed reference
 mesh, discretised with continuous Galerkin finite elements on MFEM.  It
 covers the kinematics and balance laws, the hyperelastic constitutive
 library in four categories (compressible coupled, compressible uncoupled,
-slightly compressible and incompressible), the two-dimensional plane-strain and
+slightly compressible and incompressible), small-strain linear elasticity as
+a special case of the same forms, the two-dimensional plane-strain and
 plane-stress reductions, the displacement and the mixed
 displacement--pressure formulations, boundary conditions and load
 scheduling, the element kernels and the dual-number tangents, the
@@ -119,9 +120,10 @@ Layer & Content \\
 \file{src/kernels/} & the total Lagrangian element integrators
   (displacement and mixed $u$--$p$) and the follower-pressure boundary
   face integrator \\
-\file{src/kernels/materials/} & the hyperelastic material functors, the
-  plane-stress adapter, the dual-number tangent, the material variant and
-  the YAML factory \\
+\file{src/kernels/materials/} & the hyperelastic material functors and the
+  small-strain linear elastic one, the kinematics trait, the plane-stress
+  adapter, the dual-number tangent, the material variant and the YAML
+  factory \\
 \file{src/physics/} & the solid mechanics modules (residual, Jacobian,
   fields), the load set shared by both formulations, and the
   quadrature-point post-processing \\
@@ -153,6 +155,11 @@ the verification manual.
     independent field; and the same six as incompressible materials with
     $\kappa = \infty$ and a Lagrange multiplier.  Materials are stateless
     and may vary by element attribute.
+  \item Small-strain (geometrically linear) isotropic elasticity,
+    \code{linear\_elastic}, in both formulations, including $\nu = \tfrac12$
+    (Section~\ref{sec:smallstrain}).  It is a material of the same kernels,
+    with the kinematics as a compile-time trait; the problem is linear and
+    is solved by one Newton step.
   \item Two formulations: a pure displacement formulation with the
     assembled tangent, and a mixed displacement--pressure formulation on
     Taylor--Hood pairs for near- and fully incompressible materials.
@@ -172,7 +179,7 @@ the verification manual.
     with Armijo backtracking, GMRES or CG with BoomerAMG, and FGMRES with a
     block upper-triangular preconditioner for the $u$--$p$ saddle point.
   \item Post-processing of Cauchy and first Piola--Kirchhoff stress, the
-    deformation gradient, its determinant, von Mises stress, energy density
+    deformation gradient, the strain, the volume ratio, von Mises stress, energy density
     and thickness stretch at quadrature points, presented as nodal fields,
     element averages or point clouds; probes; reactions of the Dirichlet
     entries.
@@ -926,6 +933,161 @@ other laws it is not, and the linear solver of
 Section~\ref{sec:saddlesolver} is written for the general case.
 
 %============================================================================
+\section{Small-strain linear elasticity}
+\label{sec:smallstrain}
+%============================================================================
+
+\subsection{The same weak form}
+
+Linearising the kinematics about $\bF = \bI$ replaces every strain measure
+by the infinitesimal strain and removes the distinction between the
+reference and the current configuration: $\Omega_R$ is the domain of
+integration, and $\bP$, $\bS$ and $\bsig$ coincide.  With
+$\bH = \Grad\bu = \bF - \bI$,
+\begin{equation}
+  \beps = \sym\bH, \qquad
+  \bsig = \mathbb{C}:\beps = 2\mu\,\dev\beps + \kappa\,(\tr\beps)\,\bI
+        = \lambda\,(\tr\beps)\,\bI + 2\mu\,\beps, \qquad
+  \lambda = \kappa - \tfrac23\mu ,
+  \label{eq:hooke}
+\end{equation}
+with the energy $\Psi = \mu\,\dev\beps:\dev\beps + \tfrac12\kappa(\tr\beps)^2$.
+Because $\bsig$ is symmetric, $\bsig:\beps(\bw) = \bsig:\Grad\bw$, and the
+weak form of linear elasticity,
+\begin{equation}
+  \int_{\Omega_R}\bsig(\beps(\bu)):\beps(\bw)\ud V
+  = \int_{\Omega_R}\bsig:\Grad\bw\ud V
+  = \int_{\Omega_R}\rho_R\bb\cdot\bw\ud V + \int_{\Gamma_R^N}\bar\bT\cdot\bw\ud A ,
+  \label{eq:linearweak}
+\end{equation}
+is the total Lagrangian form \eqref{eq:weak} with the flux
+$\bP(\bF) := \bsig(\sym(\bF - \bI))$.  It is therefore not a new weak form
+and not a new integrator: \code{linear\_elastic} is a material whose
+\code{PK1(F)} returns \eqref{eq:hooke}.  The element residual is
+$\int\sigma_{ij}N_{a,j}$, the tangent
+$\partial\bP/\partial\bF = \mathbb{C}$,
+$C_{ijkl} = \lambda\delta_{ij}\delta_{kl} + \mu(\delta_{ik}\delta_{jl} + \delta_{il}\delta_{jk})$,
+is constant and has the minor symmetries, and the element matrix
+$\int N_{a,j}C_{ijkl}N_{b,l}$ is the classical $\bm B^T\mathbb{C}\bm B$
+stiffness (it equals MFEM's \code{ElasticityIntegrator} to round-off; the
+tangents of the compressible hyperelastic models at $\bu = \bm 0$ are this
+matrix).  The model is not objective under finite rotations, by
+construction; it is invariant under infinitesimal ones, $\bP(\bI + \bm W) = \bm 0$
+for skew $\bm W$.  The input keys are those of \code{iso\_neo\_hookean}:
+\code{mu}, or \code{E} and \code{nu}, and the bulk modulus from exactly one
+of \code{kappa}, \code{nu}, \code{incompressible}; there is no volumetric
+law to choose.
+
+\subsection{What depends on the kinematics}
+
+The flux contract of the kernels is the same for both kinematics.  What
+differs lies outside the flux, and is switched by a compile-time trait of
+the material (\file{materials/kinematics.hpp}; the plane-stress adapter
+inherits the trait of its base):
+\begin{center}
+\small
+\renewcommand{\arraystretch}{1.15}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{4.4cm} >{\raggedright\arraybackslash}p{4.9cm} >{\raggedright\arraybackslash}p{5.6cm}@{}}
+\toprule
+ & Finite strain & Small strain \\
+\midrule
+Cauchy stress (outputs, von Mises) & $\bsig = J^{-1}\bP\bF^T$ & $\bsig = \bP$ \\
+Volume ratio (\code{jacobian}) & $J = \det\bF$ & $1 + \tr\beps$ \\
+\code{strain} & Green--Lagrange $\bE = \tfrac12(\bF^T\bF - \bI)$ & $\beps = \sym(\bF - \bI)$ \\
+Volume measure of the mixed form and its gradient & $J$, \ $\partial J/\partial\bF = J\bF^{-T}$ & $\theta = 1 + \tr\beps$, \ $\partial\theta/\partial\bF = \bI$ \\
+Incompressible plane stress & $\lambda_3 = 1/\det\bF_{2\mathrm D}$, $\bP = \bP_{\mathrm{iso}} + p\,\bF^{-T}$ & $\varepsilon_{33} = -(\varepsilon_{11} + \varepsilon_{22})$, $\bP = \bP_{\mathrm{iso}} + p\,\bI$ \\
+Follower pressure & a load of its own (Section~\ref{sec:follower}) & identical to the dead pressure; rejected as an input error \\
+Moment arms of the reactions & current positions $\bX + \bu$ & reference positions $\bX$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+A stress formed with the finite-strain push-forward would be wrong by
+$O(|\Grad\bu|)$ and not symmetric; with reference moment arms the moment
+balance of the reactions closes exactly, as the equilibrium equations of the
+linear theory are written on the reference configuration.  The outputs
+\code{pk1\_stress} and \code{cauchy\_stress} coincide, the
+\code{deformation\_gradient} is $\bI + \Grad\bu$, and the
+\code{thickness\_stretch} is $1 + \varepsilon_{33}$.
+
+\subsection{Two-dimensional problems}
+
+Plane strain is the padded $F_{33} = 1$, i.e. $\varepsilon_{33} = 0$, with
+$\sigma_{33} = \lambda(\varepsilon_{11} + \varepsilon_{22})$ carried in the
+outputs.  Under plane stress the compressible branch of the adapter of
+Section~\ref{sec:planestress} applies unchanged: its scalar Newton iteration
+on $P_{33} = 0$ is exact after one step and returns
+$\varepsilon_{33} = -\tfrac{\nu}{1-\nu}(\varepsilon_{11} + \varepsilon_{22})$,
+and the dual refinement returns the plane-stress moduli,
+$\sigma_{\alpha\beta} = \lambda^*\varepsilon_{\gamma\gamma}\delta_{\alpha\beta} + 2\mu\,\varepsilon_{\alpha\beta}$
+with $\lambda^* = 2\lambda\mu/(\lambda + 2\mu)$, that is $E/(1-\nu^2)$ and
+$E\nu/(1-\nu^2)$.  For $\nu = \tfrac12$ the thickness strain and the mean
+stress are eliminated in closed form, $\lambda^* = 2\mu$, and no pressure
+unknown is needed.
+
+\subsection{Mixed formulation (Herrmann)}
+
+With the volume measure $\theta = 1 + \tr\beps$ and
+$\partial\theta/\partial\bF = \bI$ in place of $J$ and $J\bF^{-T}$, the
+residuals \eqref{eq:mixedweak} become
+\begin{equation}
+  R_u = \int_{\Omega_R}\bigl[2\mu\,\dev\beps + p\,\bI\bigr]:\Grad\bw\ud V - \text{loads}, \qquad
+  R_p = \int_{\Omega_R} q\,\Bigl(\tr\beps - \frac{p}{\kappa}\Bigr)\ud V ,
+  \label{eq:herrmann}
+\end{equation}
+Herrmann's formulation of linear elasticity \cite{herrmann}: the material provides
+$\bP_{\mathrm{iso}} = 2\mu\,\dev\beps$ and the volumetric law
+$u(\theta) = \tfrac12(\theta - 1)^2$, and $\kappa = \infty$ gives the
+incompressible problem $\tr\beps = 0$ in weak form.  The blocks of
+\eqref{eq:saddle} are $\bBm: q\,\dive\bw$, $\bBm_{pu} = \bBm^T$, and $\bK$
+carries no pressure term, so the system is symmetric, independent of the
+state, and $\bK$ is positive semi-definite; the saddle-point solver of
+Section~\ref{sec:saddlesolver} applies unchanged.  As for the finite-strain
+materials the constraint holds weakly: the pointwise $\tr\beps$ of an
+incompressible solution is $O(h^2)$, not zero.
+
+\subsection{Solution of a linear problem}
+\label{sec:linearsolve}
+
+The residual is affine in the unknown, so the first Newton step is the exact
+solve: one assembly, one preconditioner setup, one Krylov solve.  Three
+points follow.
+\begin{itemize}[nosep]
+  \item \emph{The residual has a round-off floor that can lie above the
+    Newton tolerance.}  The residual $\bK\bu - \bm f$ is evaluated with an
+    error of the order of $\epsilon_{\mathrm{mach}}\|\bK\|\|\bu\|$, that is
+    $\epsilon_{\mathrm{mach}}\|\bK\|\|\bu\|/\|\bm f\|$ relative to
+    $\|R_0\|$.  Bending makes this ratio large: measured values are
+    $4\times10^{-11}$ for Cook's membrane, $8\times10^{-11}$ for a 10:1
+    cantilever and $1.6\times10^{-9}$ for a 20:1 beam, and tightening the
+    Krylov tolerance does not move them.  A nonlinear problem passes such a
+    tolerance by quadratic convergence; a linear one lands on the floor and
+    stays there, and a second step then fails its line search.  A problem
+    therefore declares itself linear (\code{QuasiStaticProblem::IsLinear}:
+    a small-strain material with dead loads), and for such a problem a second
+    or later Newton step that fails its line search, or reduces the residual
+    by less than a factor of ten, is taken as having met the floor: the
+    state is accepted (\code{NewtonReport::at\_floor}), provided every
+    linear solve converged.  Steps that still reduce the residual tenfold
+    (an inexact linear solver, i.e. iterative refinement) continue as usual,
+    and nothing changes for a nonlinear problem.
+  \item \emph{Tolerances.}  \code{newton.rtol} only accepts the linear solve;
+    the accuracy of the solution is set by \code{linear.rtol}.  The inputs
+    use $10^{-8}$ and $10^{-13}$.  The mixed formulation typically takes a
+    second step, which refines the first.
+  \item \emph{The tangent predictor is excluded.}  After an exact predictor
+    Newton would start at the floor, where $\text{rtol}\,\|R_0\|$ is
+    meaningless; \code{solver.predictor: tangent} is an input error for a
+    small-strain material.
+\end{itemize}
+Forming $\bF = \bI + \bH$ and subtracting $\bI$ again leaves an absolute
+error of $\epsilon_{\mathrm{mach}}$ in $\beps$, a relative floor of
+$\epsilon_{\mathrm{mach}}/|\Grad\bu|$ in the stress.  Since the solution
+scales with the load, inputs choose amplitudes with
+$|\Grad\bu| \gtrsim 10^{-4}$ and scale the results, never the reverse; the
+``linear limit'' runs of the hyperelastic models, which must keep
+$|\Grad\bu|$ small, do not have that freedom.
+
+%============================================================================
 \section{Boundary conditions and loading}
 \label{sec:loads}
 %============================================================================
@@ -1220,7 +1382,9 @@ For $R(x) = 0$ with Jacobian $J(x) = \partial R/\partial x$
     ($c = 10^{-4}$ by default).  A non-finite trial residual (an inverted
     element, a Gent state beyond locking) is simply rejected;
   \item stop with failure when the line search cannot reduce the residual
-    or after \code{max\_it} iterations.
+    or after \code{max\_it} iterations; a problem that declares itself
+    linear is instead accepted at the round-off floor of its residual
+    (Section~\ref{sec:linearsolve}).
 \end{enumerate}
 The report carries the iteration history and the failure reason, which the
 stepper uses to decide on bisection.
@@ -1300,7 +1464,10 @@ The nodal unknowns, \code{displacement} and (mixed) \code{pressure}, are
 the $H^1$ fields the solver computes and are written as they are.  The
 quadrature quantities are computed once per load step at the quadrature
 points of the kernels' rule into a \code{QuadratureFunction}, the source of
-truth, from the state $(\bF, \bP, \Psi)$ at each point:
+truth, from the state $(\bF, \bP, \Psi)$ at each point and the measures of
+the material's kinematics formed from it (finite strain below; for a
+small-strain material $\bsig = \bP$, the volume ratio is $1 + \tr\beps$ and
+the strain is $\beps$, Section~\ref{sec:smallstrain}):
 \begin{center}
 \small
 \begin{tabular}{@{}l l l@{}}
@@ -1310,6 +1477,7 @@ Name & Components & Definition \\
 \code{cauchy\_stress} & 6 ($xx\,yy\,zz\,xy\,yz\,xz$) & $\bsig = J^{-1}\bP\bF^T$, symmetrised \\
 \code{pk1\_stress} & 9 (row-major) & $\bP$ \\
 \code{deformation\_gradient} & 9 (row-major) & $\bF$ (completed $\bF_c$ under plane stress) \\
+\code{strain} & 6 ($xx\,yy\,zz\,xy\,yz\,xz$) & Green--Lagrange $\bE = \tfrac12(\bF^T\bF - \bI)$ \\
 \code{jacobian} & 1 & $J = \det\bF$ \\
 \code{vonmises} & 1 & $\sigma_{vm} = \sqrt{\tfrac32\,\bsig':\bsig'}$, $\bsig' = \dev\sym\bsig$ \\
 \code{energy\_density} & 1 & $\Psi(\bF)$; mixed: $\Psi_{\mathrm{iso}} + p(J-1) - \kappa\,u^*(p/\kappa)$ \\
@@ -1419,7 +1587,12 @@ with a second physics:
     exchange by name through the field registry.
   \item Materials are stateless, one model per problem with region-wise
     parameters; internal variables, temperature dependence and hand-coded
-    tangents are absent by design.
+    tangents are absent by design.  The kinematics (finite or small strain)
+    is a trait of the material, not of the kernel: the flux contract is
+    shared, and what depends on the kinematics outside the flux goes through
+    \file{materials/kinematics.hpp}.  An eigenstrain (thermal, shrinkage)
+    would enter where the small-strain material forms $\beps$, once
+    materials can read a field.
   \item All kernels are CPU host code written without allocation or
     virtual calls in the quadrature loops, so device annotations and
     \code{mfem::forall} can be added without restructuring; partial
@@ -1475,7 +1648,8 @@ File & Content \\
 \file{kernels/total\_lagrangian.hpp} & quadrature-point functions and the displacement integrator \\
 \file{kernels/mixed\_total\_lagrangian.hpp} & $u$--$p$ quadrature-point functions and block integrator \\
 \file{kernels/follower\_pressure.hpp} & follower-pressure face integrators (both formulations) \\
-\file{kernels/materials/*.hpp} & material functors, isochoric helpers, volumetric laws, spectral solver, plane-stress adapter, dual tangent \\
+\file{kernels/materials/*.hpp} & material functors (hyperelastic, \file{linear\_elastic.hpp}), isochoric helpers, volumetric laws, spectral solver, plane-stress adapter, dual tangent \\
+\file{kernels/materials/kinematics.hpp} & finite or small strain as a trait of the material: Cauchy stress, volume ratio, strain \\
 \file{kernels/materials/materials.\{hpp,cpp\}} & material variants, factory, moduli resolution, region tables \\
 \file{physics/loads.\{hpp,cpp\}} & load set: Dirichlet entries, dead loads, follower scales, schedules, reactions \\
 \file{physics/solid\_mechanics\_tl.\{hpp,cpp\}} & displacement formulation module \\
@@ -1483,7 +1657,7 @@ File & Content \\
 \file{physics/solid\_problem.\{hpp,cpp\}} & common interface, factory by formulation, YAML load installer \\
 \file{physics/quadrature\_fields.\{hpp,cpp\}} & quadrature quantities and their presentations \\
 \file{solvers/quasi\_static.\{hpp,cpp\}} & load stepping with bisection \\
-\file{solvers/newton.\{hpp,cpp\}} & damped Newton with Armijo backtracking \\
+\file{solvers/newton.\{hpp,cpp\}} & damped Newton with Armijo backtracking; acceptance of a linear problem at the floor of its residual \\
 \file{solvers/linear\_solver.\{hpp,cpp\}} & GMRES/CG + BoomerAMG with the systems fallback \\
 \file{solvers/saddle\_point\_solver.\{hpp,cpp\}} & augmented-Lagrangian FGMRES for the $u$--$p$ Jacobian \\
 \bottomrule
@@ -1491,7 +1665,7 @@ File & Content \\
 \end{center}
 
 %============================================================================
-\small\begin{thebibliography}{9}
+\small\begin{thebibliography}{99}
 %============================================================================
 \bibitem{bonetwood} J. Bonet, R.\,D. Wood, \emph{Nonlinear Continuum Mechanics for Finite Element Analysis}, 2nd ed., Cambridge University Press, 2008.
 \bibitem{holzapfel} G.\,A. Holzapfel, \emph{Nonlinear Solid Mechanics: A Continuum Approach for Engineering}, Wiley, 2000.
@@ -1502,6 +1676,7 @@ File & Content \\
 \bibitem{ab} E.\,M. Arruda, M.\,C. Boyce, A three-dimensional constitutive model for the large stretch behavior of rubber elastic materials, \emph{J. Mech. Phys. Solids} 41 (1993) 389--412.
 \bibitem{gent} A.\,N. Gent, A new constitutive relation for rubber, \emph{Rubber Chem. Technol.} 69 (1996) 59--61.
 \bibitem{yeoh} O.\,H. Yeoh, Some forms of the strain energy function for rubber, \emph{Rubber Chem. Technol.} 66 (1993) 754--771.
+\bibitem{herrmann} L.\,R. Herrmann, Elasticity equations for incompressible and nearly incompressible materials by a variational theorem, \emph{AIAA J.} 3 (1965) 1896--1900.
 \bibitem{benzi} M. Benzi, M.\,A. Olshanskii, An augmented Lagrangian-based approach to the Oseen problem, \emph{SIAM J. Sci. Comput.} 28 (2006) 2095--2113.
 \bibitem{mfem} R. Anderson et al., MFEM: A modular finite element methods library, \emph{Comput. Math. Appl.} 81 (2021) 42--74.
 \end{thebibliography}

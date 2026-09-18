@@ -8,7 +8,10 @@ fluxes and sources at quadrature points and the framework owns assembly,
 Newton, and the linear solvers (architecture: `doc/flux_kernel_architecture.html`,
 plan: `doc/hyperelasticity_implementation_plan.md`). The first physics is
 quasi-static nonlinear solid mechanics (compressible hyperelasticity, total
-Lagrangian, CG, weak form in `doc/solid_mechanics_forms.tex`). The models and
+Lagrangian, CG, weak form in `doc/solid_mechanics_forms.tex`), with
+small-strain linear elasticity as a material of the same kernels
+(`model: linear_elastic`, plan and measured results in
+`doc/linear_elasticity_plan.md`). The models and
 methods of `src/` are described in `doc/theory_manual.tex`; every input and
 test under `apps/` and `tests/`, with its reference solution and tolerance, in
 `doc/verification_manual.tex`. The `myapps/` tree is legacy and separate.
@@ -32,6 +35,9 @@ src/kernels/materials/
                 ogden.hpp (isochoric-volumetric split, either formulation; isochoric.hpp shared
                 I1bar pieces, volumetric.hpp the selectable volumetric laws U(J),
                 spectral.hpp symmetric 3x3 eigen-solver for Ogden);
+                linear_elastic.hpp (small strain: sigma(sym(F - I)), either formulation) and
+                kinematics.hpp (finite or small strain as a trait of the material: Cauchy stress,
+                volume ratio, strain);
                 plane_stress.hpp (adapter: F33 = thickness stretch with P33 = 0, any base model);
                 material_tangent.hpp (dual seeding), materials.{hpp,cpp} (variants, YAML factory, moduli)
 src/physics/    solid_problem.{hpp,cpp} (common interface, factory by formulation, YAML load installer);
@@ -43,7 +49,8 @@ src/physics/    solid_problem.{hpp,cpp} (common interface, factory by formulatio
                 solid_mechanics_tl.{hpp,cpp}: displacement formulation (residual, assembled
                 Jacobian, output fields);
                 mixed_solid_mechanics_tl.{hpp,cpp}: u-p formulation on a Taylor-Hood pair
-src/solvers/    newton (damped Newton, Armijo backtracking), linear_solver (GMRES/CG + BoomerAMG),
+src/solvers/    newton (damped Newton, Armijo backtracking; a linear problem is accepted at the round-off
+                floor of its residual), linear_solver (GMRES/CG + BoomerAMG),
                 saddle_point_solver (augmented Lagrangian FGMRES for the u-p Jacobian),
                 quasi_static (load stepping over the pseudo-time t in (0, 1] with bisection)
 apps/           solid_mechanics.cpp (YAML parsing and wiring only), apps/mesh/*.geo (Gmsh sources of the
@@ -56,11 +63,16 @@ apps/           solid_mechanics.cpp (YAML parsing and wiring only), apps/mesh/*.
                     inflation, homogeneous_deformations/*.yaml vs the closed forms of the incompressible
                     neo-Hookean model through apps/homogeneous_compare.py; any of the six models works in
                     those inputs and tests/test_homogeneous covers all six);
+                apps/input/linear_elasticity/ (small strain, model: linear_elastic):
+                  verification/ (Lame cylinder and sphere, Kirsch, cantilever, manufactured solutions,
+                    two materials) and cooks_membrane/ (the benchmark as posed, and its incompressible
+                    plane-strain variant), all checked by tests/test_linear_verification;
                 apps/input/anand_coupled_theories/<chapter>/*.yaml (the examples of Anand's coupled-theories
                   book, from its FEniCSx companion codes; finite_elasticity so far)
-tests/          test_base, test_materials, test_solid_mms, test_mixed, test_homogeneous, test_loading
-                (make check); test_mixed --full, test_benchmarks, test_parallel, homogeneous compare,
-                test_loading np=4, test_verification (make test)
+tests/          test_base, test_materials, test_solid_mms, test_mixed, test_homogeneous, test_loading,
+                test_linear_elasticity (make check); test_mixed --full, test_benchmarks, test_parallel,
+                homogeneous compare, test_loading np=4, test_verification, test_linear_verification
+                (make test)
 makefile        out-of-tree build under build/ (BUILD_DIR): build/libcmf.a (LIBNAME) from src/,
                 then build/apps/* and build/tests/* linked against it
 ```
@@ -74,8 +86,9 @@ yaml-cpp via `pkg-config`, and an `mpirun`.
 ```
 make            # build/libcmf.a, build/apps/solid_mechanics, build/tests/*
 make meshes     # regenerate apps/mesh/*.msh from apps/mesh/*.geo with Gmsh (the .msh files are kept in the tree)
-make check      # serial, ~20 s: tensor/dual/YAML units, materials, patch tests + MMS (both
-                # formulations), homogeneous deformations vs closed forms (all incompressible models)
+make check      # serial, ~40 s: tensor/dual/YAML units, materials, patch tests + MMS (both
+                # formulations), homogeneous deformations vs closed forms (all incompressible models),
+                # small-strain linear elasticity (operator vs MFEM's ElasticityIntegrator, outputs)
 make homogeneous # the app on apps/input/finite_elasticity/verification/homogeneous_deformations/*.yaml, compared with the closed forms (python3 + yaml)
 make test       # everything: app runs serial and np=4, np={2,4} consistency, benchmarks, homogeneous
 make clean      # removes build/
@@ -152,6 +165,11 @@ material: { model: neo_hookean, E: 250.0, nu: 0.3, rho0: 1.0 }
   #   (J^2 - 1 - 2 ln J)/4 | (ln J)^2/2 (p = kappa ln J / J, Anand's FEniCSx codes) | J ln J - J + 1.
   #   Every law has u''(1) = 1, so kappa keeps its meaning; they differ at finite strain.
   #   Closed forms and homogeneous solutions: doc/incompressible_hyperelasticity.tex.
+  # linear_elastic: small-strain (geometrically linear) isotropic elasticity, either formulation;
+  #   keys mu (or E, nu) and one of kappa | nu | incompressible, as for iso_neo_hookean, no volumetric
+  #   law: sigma = 2 mu dev(eps) + kappa tr(eps) I with eps = sym(grad u). nu = 0.5 needs
+  #   formulation: mixed or plane: stress. type: follower_pressure and solver.predictor: tangent are
+  #   input errors for it. See "Small-strain linear elasticity" below.
   # regions: [ { attr: [inclusion, 3], mu: 2800.0, kappa: 2800000.0 } ]
   #   Other parameters of the same model by element attribute (physical-volume names and/or
   #   numbers); keys not given are inherited from the base, a region giving any of kappa | nu |
@@ -184,7 +202,8 @@ output:
   paraview: out/cook              # empty or absent -> no files
   fields: [displacement, vonmises, jacobian]   # nodal unknowns: displacement, pressure (mixed); quadrature
                                   # quantities: cauchy_stress (6: xx yy zz xy yz xz), pk1_stress (9, row-major),
-                                  # deformation_gradient (9), jacobian, vonmises, energy_density,
+                                  # deformation_gradient (9), strain (6: Green-Lagrange; the infinitesimal
+                                  # strain for linear_elastic), jacobian, vonmises, energy_density,
                                   # thickness_stretch (plane stress); in 2D the out-of-plane terms are included
   quadrature_at: [nodes]          # presentations of the quadrature quantities: nodes (continuous field <name>),
                                   # elements (element average <name>_elem), quadrature_points (point cloud <name>_qp)
@@ -338,6 +357,73 @@ elements under the rotated end face inverted before Newton starts (the
 boundary layer caution of the plane-stress section), which bisection would
 also recover from.
 
+### Small-strain linear elasticity (`model: linear_elastic`, `apps/input/linear_elasticity/`)
+
+It is not a new weak form. Because the stress is symmetric,
+`int sigma(eps(u)) : eps(w) = int sigma : Grad w`, which is the total Lagrangian form
+`int P(F) : Grad w` with the flux `P(F) = sigma(sym(F - I))`. `linear_elastic` is therefore a
+material of the existing kernels: `TotalLagrangianIntegrator` assembles the classical `B^T C B`
+operator (it equals `mfem::ElasticityIntegrator` to 5e-16, and the tangent at u = 0 of the
+compressible hyperelastic models), the tangent is constant, and the first Newton step is the
+exact linear solve.
+
+What depends on the kinematics lies outside the flux and is switched by a compile-time trait of
+the material (`materials/kinematics.hpp`; the plane-stress adapter inherits it from its base):
+
+| | finite strain | small strain |
+|---|---|---|
+| `cauchy_stress`, `vonmises` | `J^-1 P F^T` | `P` (= `pk1_stress`, symmetric) |
+| `jacobian` | `det F` | `1 + tr(eps)` |
+| `strain` | Green-Lagrange `(F^T F - I)/2` | `eps = sym(F - I)` |
+| mixed formulation | `P_iso + p J F^-T`, constraint `u'(J) - p/kappa` | Herrmann: `2 mu dev(eps) + p I`, constraint `tr(eps) - p/kappa` |
+| plane stress, incompressible | `lambda_3 = 1/det F_2D` | `eps_33 = -(eps_11 + eps_22)` |
+| follower pressure | a load of its own | the dead pressure; rejected as an input error |
+| reaction moments | arms `X + u` | arms `X` |
+
+Plane strain is the padded `F33 = 1`; under plane stress the compressible branch of the adapter
+applies unchanged (its scalar Newton iteration is exact after one step) and returns
+`E/(1 - nu^2)`, `E nu/(1 - nu^2)`. With `formulation: mixed` the same block kernel is Herrmann's
+linear, symmetric saddle-point problem, valid up to `nu = 0.5`; at `nu = 0.4999` on the Lame
+cylinder the displacement formulation is off by 50% with p = 1 and by 2.8e-4 with p = 2, the
+mixed Q2-Q1 by 4e-6.
+
+Solving a linear problem:
+
+- One Newton iteration = one assembly, one AMG setup, one Krylov solve (the mixed formulation
+  usually takes a second step, which refines the first). `cg_amg` is valid (SPD).
+- `newton.rtol` only accepts the linear solve; the accuracy is set by `linear.rtol`. The inputs use
+  `1e-8` and `1e-13`. The reason is the round-off floor of the residual, `eps |K| |u| / |f|`
+  relative to `|R0|`, which bending puts at 4e-11 (Cook), 8e-11 (the 10:1 cantilever) and 1.6e-9
+  (a 20:1 beam), at or above the default `rtol` of 1e-10, however tight the Krylov tolerance. A
+  nonlinear problem overshoots such a tolerance by quadratic convergence; a linear one lands on
+  the floor and stays. A problem that declares itself linear (`QuasiStaticProblem::IsLinear`) is
+  therefore accepted at the floor: Newton prints "the residual is at its round-off floor" instead of
+  reporting a failed line search.
+- `solver.predictor: tangent` is refused: after an exact predictor Newton would start at the floor.
+- The solution scales with the load, so choose amplitudes with `|grad u| >= 1e-4` and scale the
+  results: forming `F = I + H` and subtracting `I` again leaves a relative floor of
+  `1e-16 / |grad u|` in the stress. (The hyperelastic "linear limit" inputs, which must keep
+  `|grad u|` small, do not have that freedom.)
+
+Cases, all checked by `tests/test_linear_verification` (`make test`, about 30 s):
+
+| Input | Reference | Check |
+|-------|-----------|-------|
+| `verification/lame_cylinder.yaml` | Lame's thick-walled cylinder, plane strain, dead pressure | u_r to 1e-5 (the floor of the second-order arcs), wall stresses and strains converging with h^2 (ratios 3.90, 4.04, 4.02) |
+| `verification/lame_cylinder_incompressible.yaml` | the same at nu = 0.5, mixed Q2-Q1 | u_r to 1e-5, the pressure unknown equal to the constant `p a^2/(b^2 - a^2)` to 1e-5 in the wall; locking record at nu = 0.4999 |
+| `verification/lame_sphere.yaml` | Lame's thick-walled sphere | u_r to 3e-4, stresses to 1% |
+| `verification/kirsch_plate_with_hole.yaml` | Kirsch, plane stress, sigma_0 = 1 | stresses to 2%; within 5e-4 of the neo-Hookean input run at a strain of 1e-4 |
+| `verification/euler_bernoulli_cantilever3d.yaml` | Euler-Bernoulli at 1000 times the load of the finite-strain input | tip to 0.2%; compliance equal to the small-load neo-Hookean one to 1e-7 |
+| `verification/manufactured_solutions/mms_{2d_plane_strain,3d_hex,3d_tet}.yaml` | exact field, body force `-[(lambda + mu) grad(div u) + mu lap(u)]` written out | third-order L2 convergence for p = 2 |
+| `verification/spherical_inclusion.yaml` | two materials by `regions`: Reuss and Voigt bounds on the apparent modulus | bounds; reaction vs energy to 1e-9; regions with the base's parameters give the homogeneous field |
+| `cooks_membrane/cook_linear.yaml` | Cook's membrane as posed (plane stress, E = 1, nu = 1/3, unit load): literature 23.96 at the mid-point (48, 52) of the free edge | 23.9650 (within 1%), corner 25.1640; both frozen to 1e-8 |
+| `cooks_membrane/cook_linear_incompressible.yaml` | the incompressible plane-strain membrane, mixed Q2-Q1 | corner 19.4176 frozen; the displacement formulation at nu = 0.4999, p = 2 within 2% |
+
+Not supported: anisotropic linear elasticity, thermal or shrinkage eigenstrains (materials cannot
+read a field yet), linear dynamics and modal analysis, linear buckling (needs a geometric
+stiffness), small-strain plasticity or viscoelasticity (internal variables), and reuse of the
+constant tangent across load steps (each step reassembles it; one step is the normal use).
+
 ### Anand's coupled-theories examples (`apps/input/anand_coupled_theories/`)
 
 Inputs after the FEniCSx companion codes of Lallit Anand's *Introduction to
@@ -459,8 +545,11 @@ shared by both formulations):
 - Nodal unknowns, `displacement` and (mixed) `pressure`, are the H1 fields
   the solver computes and are written as they are.
 - Quadrature quantities, `cauchy_stress` (sigma = J^-1 P F^T as xx, yy, zz,
-  xy, yz, xz), `pk1_stress` (P row-major), `deformation_gradient` (F
-  row-major), `jacobian`, `vonmises`, `energy_density` (the stored energy per
+  xy, yz, xz; sigma = P for a small-strain material), `pk1_stress` (P
+  row-major), `deformation_gradient` (F row-major), `strain` (the
+  Green-Lagrange strain, or the infinitesimal strain for a small-strain
+  material, in the order of the stress), `jacobian` (det F, or 1 + tr(eps)),
+  `vonmises`, `energy_density` (the stored energy per
   unit reference volume, for the mixed formulation the integrand of its
   functional) and `thickness_stretch` (plane stress), are computed once per
   load step at the quadrature points of the kernels' rule (order 2p + 3)
@@ -696,6 +785,9 @@ For the next physics the following will have to generalize:
   region-wise parameters (`material.regions`; the integrators hold a table
   indexed by attribute). Internal variables (`QuadratureFunction` state),
   temperature dependence, and hand-coded tangents are absent by design.
+  The kinematics (finite or small strain) is a trait of the material, not of
+  the kernel: the flux contract is shared, and what depends on the kinematics
+  outside the flux goes through `materials/kinematics.hpp`.
 - All kernels are CPU host code written as plain callables without
   allocation or virtual calls in the qpoint loops, so `MFEM_HOST_DEVICE` and
   `mfem::forall` can be added without restructuring; partial assembly is not

@@ -12,6 +12,10 @@
 \newcommand{\ud}{\,\mathrm{d}}
 \newcommand{\Grad}{\operatorname{Grad}}
 \newcommand{\Dive}{\operatorname{Div}}
+\newcommand{\grad}{\operatorname{grad}}
+\newcommand{\dive}{\operatorname{div}}
+\newcommand{\sym}{\operatorname{sym}}
+\newcommand{\beps}{\bm{\varepsilon}}
 \newcommand{\dev}{\operatorname{dev}}
 \newcommand{\tr}{\operatorname{tr}}
 \newcommand{\diag}{\operatorname{diag}}
@@ -74,13 +78,14 @@ The checks form three tiers, each relying on the previous one.
     expression parser, and every material's stress-free reference state,
     tangent, objectivity and small-strain limit.
   \item \textbf{Discretisation tests} (\file{tests/test\_solid\_mms},
-    \file{test\_mixed}, \file{test\_homogeneous}, \file{test\_loading}):
+    \file{test\_mixed}, \file{test\_homogeneous}, \file{test\_loading},
+    \file{test\_linear\_elasticity}):
     patch tests, assembled Jacobians against finite differences, manufactured
     solutions with measured convergence rates, homogeneous states against
     closed forms, and the boundary-condition and load-scheduling features.
   \item \textbf{Application cases} (\file{apps/input/}, driven by
-    \file{tests/test\_verification}, \file{test\_benchmarks},
-    \file{test\_loading}, \file{test\_parallel} and
+    \file{tests/test\_verification}, \file{test\_linear\_verification},
+    \file{test\_benchmarks}, \file{test\_loading}, \file{test\_parallel} and
     \file{apps/homogeneous\_compare.py}): complete inputs run through the
     same library wiring as the executable and compared with analytical
     solutions, literature benchmarks, frozen regression values, or a
@@ -97,9 +102,9 @@ Target & Content \\
 \midrule
 \code{make} & \file{build/libcmf.a}, \file{build/apps/solid\_mechanics}, \file{build/tests/*} \\
 \code{make meshes} & regenerates \file{apps/mesh/*.msh} from the \file{.geo} sources with Gmsh (the \file{.msh} files are kept in the tree) \\
-\code{make check} & serial, about 20 s: \file{test\_base}, \file{test\_materials}, \file{test\_solid\_mms}, \file{test\_mixed}, \file{test\_homogeneous}, \file{test\_loading} \\
+\code{make check} & serial, about 40 s: \file{test\_base}, \file{test\_materials}, \file{test\_solid\_mms}, \file{test\_mixed}, \file{test\_homogeneous}, \file{test\_loading}, \file{test\_linear\_elasticity} \\
 \code{make homogeneous} & the executable on the homogeneous-deformation inputs, compared with the closed forms by \file{apps/homogeneous\_compare.py} \\
-\code{make test} & everything: \code{check}, the Cook inputs serial and with four ranks, parallel consistency with two and four ranks, the incompressible Cook input, the homogeneous comparison, \file{test\_mixed --full}, \file{test\_benchmarks} serial and parallel, \file{test\_loading} with four ranks, \file{test\_verification}, and finally the Cook ratio gate \\
+\code{make test} & everything: \code{check}, the Cook inputs (finite strain and small strain, both formulations) serial and with four ranks, \file{test\_linear\_verification} (about 30 s), parallel consistency with two and four ranks, the homogeneous comparison, \file{test\_mixed --full}, \file{test\_benchmarks} serial and parallel, \file{test\_loading} with four ranks, \file{test\_verification}, and finally the Cook ratio gate \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -211,7 +216,20 @@ with $\det\bF > 0.3$:
     checks above with each law; the factory applies the key and the
     coupled models refuse it;
   \item resolution of $(\mu, \kappa)$ from every admissible key combination
-    and the refusal of the inadmissible ones.
+    and the refusal of the inadmissible ones;
+  \item \code{linear\_elastic}: the checks above without objectivity (the
+    model is not objective, by construction) and with the small-strain limit
+    taken at a strain of $5\%$, where it holds to $10^{-14}$ because the
+    model \emph{is} that limit (at the generic $\epsilon = 10^{-7}$ it would
+    sit on the $\epsilon_{\mathrm{mach}}/|\Grad\bu|$ cancellation floor,
+    $8\times10^{-10}$); $\bP(\bI + \bm W) = \bm 0$ for skew $\bm W$; the dual
+    tangent equal to the closed-form $\mathbb C$ at two random $\bF$
+    (constant, minor and major symmetries); $\Psi = \tfrac12\bsig:\beps$; the
+    split $\bP = \bP_{\mathrm{iso}} + \kappa\tr\beps\,\bI$ with a deviatoric
+    $\bP_{\mathrm{iso}}$; under plane stress, stress, thickness strain and
+    tangent against the closed forms at a finite strain, for $\nu = 0.3$
+    ($\lambda^* = 2\lambda\mu/(\lambda + 2\mu)$) and $\nu = \tfrac12$
+    ($\lambda^* = 2\mu$); the factory and its key rules.
 \end{itemize}
 
 %============================================================================
@@ -246,6 +264,20 @@ $p = \kappa(J-1)$, rates $u \ge 3.4$, $p \ge 2.0$; and agreement of the
 mixed and displacement formulations at finite $\kappa$ under refinement.
 The pressure is made unique by a manufactured traction on one edge.
 \code{--full} adds the $32\times32$ levels.
+
+The same gates for \code{linear\_elastic} (Herrmann's formulation): the
+mixed stress at $p = \kappa\tr\beps$ equals the displacement formulation's;
+patch tests at an amplitude of $0.3$ with $p_0 = \kappa\tr\bm A$, and with a
+traceless $\bm A$ and a free $p_0$ at $\kappa = \infty$, exact in two Newton
+steps (the first reaches $4\times10^{-11}\|R_0\|$, the second refines); a
+block Jacobian that does not depend on the state (difference exactly zero)
+and is symmetric ($4\times10^{-17}$); manufactured solutions at
+$\nu = 0.45$ with $p = \kappa\,\dive\bu$ at an amplitude of $0.2$
+($|\Grad\bu| \approx 0.6$) and at $\nu = \tfrac12$ with a divergence-free field
+from the stream function $\psi = \sin\pi X\sin\pi Y/\pi$, rates
+$u \ge 3.0$, $p \ge 2.0$; agreement with the displacement formulation under
+refinement; follower pressures, the tangent predictor and $\nu = \tfrac12$
+in the displacement formulation refused.
 
 \subsection{Homogeneous deformations (\texttt{test\_homogeneous})}
 For the six incompressible models with rubber-like parameters (isochoric
@@ -299,10 +331,59 @@ a consistent tangent and deform less in the stiff half; and the reactions
 equal $P_{11}$ times the face area on the uniaxial cube and balance the
 applied resultant on Cook's membrane to $10^{-14}$.
 
+\subsection{Small-strain linear elasticity (\texttt{test\_linear\_elasticity})}
+\label{sec:testlinear}
+The total Lagrangian kernel with the flux $\bsig(\sym(\bF - \bI))$ must be
+the classical linear elasticity operator, and the solve must be linear.
+\begin{itemize}[nosep]
+  \item \emph{Oracle.}  On perturbed quadrilateral, triangular, hexahedral
+    and tetrahedral meshes, $k = 1, 2$, the assembled Jacobian applied to a
+    random vector equals a \code{ParBilinearForm} with MFEM's
+    \code{ElasticityIntegrator} and the kernel's quadrature rule to
+    $5\times10^{-16}$; it equals the assembled Jacobians of
+    \code{neo\_hookean}, \code{st\_venant\_kirchhoff} and
+    \code{iso\_neo\_hookean} at $\bu = \bm 0$ (bitwise here), with a control
+    away from $\bu = \bm 0$, where they must differ by $O(|\Grad\bu|)$.
+  \item \emph{Linearity.}  With Dirichlet data, a traction and a body force:
+    one Newton iteration from $\bu = \bm 0$ and from a random start, and at a
+    thousand times the load (strains of order one to ten), where the solution
+    scales to $10^{-14}$; superposition of the three loads; Clapeyron's
+    theorem $2\Psi_{\mathrm{int}} = \bm f_{\mathrm{ext}}\cdot\bu$, all to
+    $10^{-10}$ or better.
+  \item \emph{Patch tests} at an amplitude of $0.1$ on the four element
+    types: $10^{-14}$ in one iteration (the hyperelastic patch tests need
+    amplitudes below $10^{-5}$ for that).
+  \item \emph{Manufactured solution} with the body force
+    $-[(\lambda + \mu)\grad\dive\bu + \mu\,\Delta\bu]$ written out, so that the
+    check does not pass through the material's own stress function: $L^2$
+    rates 1.97--2.00 ($k = 1$) and 3.00 ($k = 2$).
+  \item \emph{Finite-strain limit.}  \code{st\_venant\_kirchhoff} approaches
+    it linearly in the load: the relative difference halves with the load
+    (ratios 2.00).
+  \item \emph{Outputs.}  Five homogeneous Hooke states at a strain of $5\%$
+    (three-dimensional uniaxial stress and a general gradient with a rotation
+    part, plane strain, plane stress uniaxial and general) solved by finite
+    elements; every quantity in every presentation against closed forms built
+    from $E$, $\nu$ and the gradient alone, to $6\times10^{-13}$ of a stress
+    level of 12.5; end-face reactions $\sigma A$ on the reference area.
+    With the finite-strain push-forward left in, this test fails by $3\%$.
+  \item \emph{Reactions and input errors.}  Force and moment balance of a
+    clamped, loaded square with reference moment arms; follower pressures
+    and the tangent predictor refused.
+  \item \emph{The floor of the residual.}  A 20:1 beam whose exact first
+    step leaves $\|R\|/\|R_0\| = 1.6\times10^{-9}$, above the default Newton
+    tolerance: with $\text{rtol} = 10^{-15}$ it is accepted at the floor
+    after two steps with the same solution, whereas
+    \code{st\_venant\_kirchhoff} under the same tolerance still fails.
+\end{itemize}
+
 \subsection{Parallel consistency (\texttt{test\_parallel})}
-The Cook inputs of both formulations are run serially with tightened
-tolerances (\code{--write}) and the recorded norms are matched to
-$10^{-10}$ relative by runs with two and four ranks (\code{--check}).
+The Cook inputs of both formulations, finite strain and small strain, are
+run serially with tightened tolerances (\code{--write}) and the recorded
+norms are matched to $10^{-10}$ relative by runs with two and four ranks
+(\code{--check}; the measured differences are $10^{-15}$).  A linear
+problem may be accepted at the round-off floor of its residual, just above
+the $10^{-12}$ asked for.
 
 %============================================================================
 \section{Verification cases (\texttt{apps/input/finite\_elasticity/verification/})}
@@ -639,6 +720,148 @@ as written rather than relaxed, so \code{make test} ends with this known
 failure.
 
 %============================================================================
+\section{Small-strain cases (\texttt{apps/input/linear\_elasticity/})}
+\label{sec:linearcases}
+%============================================================================
+
+The inputs of this directory use \code{model: linear\_elastic} and are
+checked by \file{tests/test\_linear\_verification} (about 30 s).  Every
+displacement solve takes one Newton iteration and every mixed one at most
+two; \code{newton.rtol} is $10^{-8}$ because it only accepts the linear
+solve (theory manual, Section on the solution of a linear problem), and the
+accuracy is set by \code{linear.rtol} $= 10^{-13}$.  Several cases are the
+small-strain counterparts of a finite-strain input and are compared with
+it: the hyperelastic ``linear limit'' runs have to keep $|\Grad\bu|$ near
+$10^{-4}$ and their Newton tolerance above the round-off floor of their
+stress evaluation, whereas the amplitude of a linear run is free.
+
+\subsection{Lam\'e's thick-walled cylinder}
+
+\paragraph{Problem.}
+Quarter annulus $a = 1$, $b = 2$ (\file{annulus.msh}, second-order arcs,
+$16\times32$ quadrilaterals after two refinements, $k = 2$), plane strain,
+rollers on the symmetry lines, dead pressure $P = 10$ on the inner surface;
+$E = 1000$ with $\nu = 0.3$ in the displacement formulation
+(\file{lame\_cylinder}) and $\nu = \tfrac12$ in the mixed one
+(\file{lame\_cylinder\_incompressible}).
+
+\paragraph{Reference.}
+With $A = Pa^2/(b^2 - a^2)$ \cite{timoshenko},
+$u_r = \frac{1+\nu}{E}A\bigl[(1-2\nu)r + b^2/r\bigr]$,
+$\sigma_{rr} = A(1 - b^2/r^2)$, $\sigma_{\theta\theta} = A(1 + b^2/r^2)$,
+$\sigma_{zz} = 2\nu A$.  For $\nu = \tfrac12$ the mean stress
+$\tfrac12(\sigma_{rr} + \sigma_{\theta\theta}) = A$ is uniform, so the
+pressure unknown must be the constant $A = 10/3$.
+
+\paragraph{Check} (\file{test\_linear\_verification}).
+$u_r(a)$, $u_r(b)$ and $u_r$ in the wall to $10^{-5}$ (measured
+$3\times10^{-6}$, the floor of the second-order arcs, which refinement
+keeps).  The pointwise stresses and strains of the projected fields at
+$r = 1.25, 1.5, 1.75$ on the diagonal converge with $h^2$: error ratios
+3.90, 4.04, 4.02 over three refinements, $0.26\%$ of $P$ at the input's
+level.  Incompressible: $u_r$ to $4\times10^{-6}$, the pressure unknown equal
+to $A$ to $3\times10^{-6}$ in the wall and $10^{-4}$ in the corner elements,
+$\sigma_{zz} = A$, and $\tr\beps$ small against the strains (the constraint
+holds weakly, so pointwise it is $O(h^2)$, not zero).
+\emph{Locking record} at $\nu = 0.4999$ on the same mesh, error of $u_r(a)$:
+displacement formulation $k = 1$: $50\%$; $k = 2$: $2.8\times10^{-4}$; mixed
+Q2--Q1: $4\times10^{-6}$.
+
+\subsection{Lam\'e's thick-walled sphere}
+
+\paragraph{Problem.}
+Octant $a = 10$, $b = 11$ (\file{sphere\_octant.msh}, curved second-order
+tetrahedra), rollers on the three symmetry planes, dead pressure $P = 1$
+inside, $E = 1000$, $\nu = 0.3$ (\file{lame\_sphere}).
+
+\paragraph{Reference.}
+With $A = Pa^3/(b^3 - a^3)$,
+$u_r = \frac{A}{E}\bigl[(1-2\nu)r + (1+\nu)b^3/(2r^2)\bigr]$,
+$\sigma_{rr} = A(1 - b^3/r^3)$, $\sigma_{\theta\theta} = A(1 + b^3/(2r^3))$.
+
+\paragraph{Check.}
+$u_r(a)$, $u_r(b)$ and $u_r(a)$ on the $z$ axis to $3\times10^{-4}$ (measured
+$7\times10^{-5}$); the stresses at $r = 10.5$ on the diagonal to $1\%$ of the
+hoop stress, no shear on the radial direction.
+
+\subsection{Kirsch's plate, the cantilever}
+
+\paragraph{Problem.}
+\file{kirsch\_plate\_with\_hole} and \file{euler\_bernoulli\_cantilever3d}:
+the finite-strain inputs of the same names with \code{linear\_elastic}, the
+plate under $\sigma_0 = 1$ so that the probed stresses are the concentration
+factors, the beam under a thousand times the load.
+
+\paragraph{Check.}
+Kirsch's stresses to $2\%$ of $3\sigma_0$ (the finite width dominates), no
+shear on the axes, $\sigma_{zz} = 0$ to $10^{-10}$ (plane stress), and
+agreement with the neo-Hookean run at a strain of $10^{-4}$ to
+$5\times10^{-4}$ (measured $9\times10^{-5}$).  Cantilever: tip deflection
+within $0.2\%$ of $PL^3/(3EI)$ (measured $0.15\%$); compliance equal to that
+of the small-load neo-Hookean run to $10^{-7}$ (measured $10^{-9}$: the
+transverse deflection is odd in the load, so the nonlinear correction is
+second order in $|\Grad\bu| = 5\times10^{-5}$); clamp force and moment
+$PL$ with reference arms to $10^{-9}$.
+
+\subsection{Manufactured solutions}
+
+\paragraph{Problem.}
+The displacement fields of the finite-strain manufactured inputs on the
+unit square and cube (\file{mms\_2d\_plane\_strain}, \file{mms\_3d\_hex},
+\file{mms\_3d\_tet}), prescribed on the whole boundary, with the body force
+$\rho_R\bb = -[(\lambda + \mu)\grad\dive\bu + \mu\,\Delta\bu]$ generated by
+sympy and checked against that identity.
+
+\paragraph{Check.}
+$L^2$ rates for $k = 2$: 3.00 (2D, four levels), 3.01 (hexahedra, three
+levels), 2.93 (tetrahedra); gates 2.9, 2.9, 2.8.
+
+\subsection{Two materials by regions}
+
+\paragraph{Problem.}
+\file{spherical\_inclusion}: the octant of a cube with a centred spherical
+inclusion (\file{inclusion.msh}), matrix $E = 100$, inclusion ten times
+stiffer through \code{material.regions}, uniaxial strain of $1\%$ with
+rollers on every face.
+
+\paragraph{Reference.}
+The apparent constrained modulus $M = F/(L^2\varepsilon) = 2\Psi/(V\varepsilon^2)$
+lies between the Reuss and Voigt averages of $\lambda + 2\mu$ with the
+volume fraction $f = \pi a^3/(6L^3)$ \cite{hill}: $143.04 < M < 213.91$.
+Both bounds hold for the discrete solution (affine fields are in the space;
+the displacement method overestimates the energy).
+
+\paragraph{Check.}
+$M = 148.86$ from the reaction and from the energy (equal to $10^{-9}$),
+within the bounds; with the base's parameters in the region the solution is
+the homogeneous uniaxial-strain field and $M = \lambda + 2\mu$ to $10^{-10}$.
+
+\subsection{Cook's membrane in the small-strain theory}
+
+\paragraph{Problem.}
+The membrane as it was posed \cite{cook}: plane stress, $E = 1$,
+$\nu = \tfrac13$, unit shear load, $k = 2$ (\file{cook\_linear}); and the
+incompressible plane-strain variant in the mixed formulation
+(\file{cook\_linear\_incompressible}, $\nu = \tfrac12$, Q2--Q1).
+
+\paragraph{Reference.}
+Literature values of the vertical tip displacement lie near 23.9 (23.91 to
+23.96).  Probing both candidate points shows that they refer to the
+mid-point $(48, 52)$ of the free edge: this code gives $23.9650$ there and
+$25.1640$ at the corner $(48, 60)$ on the $64\times64$ mesh.
+
+\paragraph{Check.}
+The mid-edge value within $1\%$ of 23.96 (measured $2\times10^{-4}$); both
+values frozen to $10^{-8}$; successive-difference ratios $\ge 2$ (measured
+2.08--2.27 at the corner, 2.11--3.57 at mid-edge, limited by the clamped
+corner as for the finite-strain membrane); clamp force $-1$ and moment
+$-48$ with reference arms although the corner moves by $u_x = -19$ in these
+units.  Incompressible: corner $19.4176$ and mid-edge $18.4974$ on
+$32\times32$, frozen, ratios 2.9 and 3.3; the displacement formulation at
+$\nu = 0.4999$, $k = 2$ gives $19.164$ ($1.3\%$).  Both membranes are part
+of \file{test\_parallel}.
+
+%============================================================================
 \section{Validation against a reference code: Anand\textquotesingle s examples}
 \label{sec:anand}
 %============================================================================
@@ -749,12 +972,21 @@ plate with hole & Kirsch & stresses to $2\%$ & \file{test\_verification} \\
 Cook's membrane & frozen values, self-convergence & $10^{-8}$; ratio gate not met & \file{test\_benchmarks} \\
 Anand examples & FEniCSx codes, analytical curves & plots & \file{anand\_plots.py} \\
 parallel consistency & serial run & norms to $10^{-10}$ & \file{test\_parallel} \\
+\midrule
+linear operator & MFEM \code{ElasticityIntegrator}, hyperelastic tangents at $\bu = \bm 0$ & $10^{-12}$ & \file{test\_linear\_elasticity} \\
+Hooke states, outputs & closed forms at $5\%$ strain & all presentations, $10^{-10}$ & \file{test\_linear\_elasticity} \\
+Lam\'e cylinder & Lam\'e; uniform pressure at $\nu = \tfrac12$ & $u_r$ to $10^{-5}$, stresses by $h^2$ & \file{test\_linear\_verification} \\
+Lam\'e sphere & Lam\'e & $u_r$ to $3\times10^{-4}$, stresses $1\%$ & \file{test\_linear\_verification} \\
+plate, cantilever (small strain) & Kirsch, Euler--Bernoulli, the finite-strain runs & $2\%$, $0.2\%$; $5\times10^{-4}$, $10^{-7}$ & \file{test\_linear\_verification} \\
+manufactured (small strain) & exact field, analytic body force & $L^2$ rate $\ge 2.8$ ($k = 2$) & \file{test\_linear\_elasticity}, \file{test\_linear\_verification} \\
+two materials & Reuss and Voigt bounds & bounds; reaction vs energy & \file{test\_linear\_verification} \\
+Cook's membrane (small strain) & literature 23.96, frozen values & $1\%$; $10^{-8}$ & \file{test\_linear\_verification} \\
 \bottomrule
 \end{tabular}
 \end{center}
 
 %============================================================================
-\small\begin{thebibliography}{9}
+\small\begin{thebibliography}{99}
 %============================================================================
 \bibitem{ogden} R.\,W. Ogden, \emph{Non-Linear Elastic Deformations}, Ellis Horwood, 1984 (Dover, 1997).
 \bibitem{rivlin} R.\,S. Rivlin, Large elastic deformations of isotropic materials IV, \emph{Phil. Trans. R. Soc. A} 241 (1948) 379--397.
@@ -762,6 +994,9 @@ parallel consistency & serial run & norms to $10^{-10}$ & \file{test\_parallel} 
 \bibitem{kirsch} E.\,G. Kirsch, Die Theorie der Elastizit\"at und die Bed\"urfnisse der Festigkeitslehre, \emph{Z. VDI} 42 (1898) 797--807.
 \bibitem{howland} R.\,C.\,J. Howland, On the stresses in the neighbourhood of a circular hole in a strip under tension, \emph{Phil. Trans. R. Soc. A} 229 (1930) 49--86.
 \bibitem{southwell} R.\,V. Southwell, On the analysis of experimental observations in problems of elastic stability, \emph{Proc. R. Soc. A} 135 (1932) 601--616.
+\bibitem{timoshenko} S.\,P. Timoshenko, J.\,N. Goodier, \emph{Theory of Elasticity}, 3rd ed., McGraw-Hill, 1970.
+\bibitem{herrmann} L.\,R. Herrmann, Elasticity equations for incompressible and nearly incompressible materials by a variational theorem, \emph{AIAA J.} 3 (1965) 1896--1900.
+\bibitem{hill} R. Hill, Elastic properties of reinforced solids: some theoretical principles, \emph{J. Mech. Phys. Solids} 11 (1963) 357--372.
 \bibitem{cook} R.\,D. Cook, Improved two-dimensional finite element, \emph{J. Struct. Div. ASCE} 100 (1974) 1851--1863.
 \bibitem{anand} L. Anand, \emph{Introduction to Coupled Theories in Solid Mechanics}, Oxford University Press, 2025; companion codes by E. Stewart and L. Anand, \url{solidmechanicscoupledtheories.github.io}.
 \bibitem{ab} E.\,M. Arruda, M.\,C. Boyce, A three-dimensional constitutive model for the large stretch behavior of rubber elastic materials, \emph{J. Mech. Phys. Solids} 41 (1993) 389--412.

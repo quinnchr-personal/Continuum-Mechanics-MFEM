@@ -6,7 +6,8 @@ trailers). This extends the framework of `doc/hyperelasticity_implementation_pla
 `doc/bc_loading_plan.md`; their design decisions (reference mesh never moves, thin `apps/`,
 `myapps/` untouched, materials are stateless value types templated on the scalar) still hold.
 
-**Status (2026-09-18):** LE1 complete. Measured: the assembled Jacobian equals
+**Status (2026-09-18):** LE1-LE5 complete, LE6 (optional) not started.
+LE1 complete. Measured: the assembled Jacobian equals
 `mfem::ElasticityIntegrator` to 5e-16 on perturbed quad / tri / hex / tet meshes (p = 1, 2)
 and is bitwise the tangent at u = 0 of `neo_hookean`, `st_venant_kirchhoff` and
 `iso_neo_hookean`; one Newton iteration at any amplitude; patch tests at amplitude 0.1 to
@@ -62,6 +63,15 @@ at nu = 0.4999, p = 2 gives 19.164 (1.3 percent). np 2 and 4 agree with serial t
 Adding the alternative to `MixedMaterial` needed one guard in `test_homogeneous` (a visitor
 over the rubber models). The pointwise tr(eps) of the incompressible solution is not zero
 but O(h^2) (the constraint is weak), which the verification tolerance reflects.
+LE5 complete: theory manual (new section "Small-strain linear elasticity": the identity of the
+weak forms, the table of what depends on the kinematics, plane stress, Herrmann's form, the
+solution of a linear problem with the floor of the residual; abstract, feature list, Newton
+algorithm, quantity table, seam and source-file appendix updated), verification manual
+(`test_linear_elasticity` subsection, notes in `test_materials`, `test_mixed` and
+`test_parallel`, a section "Small-strain cases" with problem / reference / check for every
+input, summary rows, three references), README (schema, a section with the comparison table,
+the case table and the "not supported" list). LE6 (reuse of the constant tangent across load
+steps) was not started: every case here is a single step.
 
 **Goal:** `material: { model: linear_elastic, E: ..., nu: ... }` solves geometrically linear
 (small-strain) isotropic elasticity in 2D (plane strain, plane stress) and 3D, in the
