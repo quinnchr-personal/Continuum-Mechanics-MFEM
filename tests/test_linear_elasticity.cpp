@@ -17,7 +17,12 @@
 //      in every presentation: sigma = P (no push-forward), J = 1 + tr(eps),
 //      strain = eps, the thickness stretch 1 + eps_33 under plane stress;
 //   9. a Newton tolerance below the round-off floor of the residual: a linear
-//      problem is accepted at the floor, a nonlinear one still fails.
+//      problem is accepted at the floor, a nonlinear one still fails;
+//  10. the constant Jacobian of a linear problem is assembled once and the
+//      solver's setup kept over a load path (both formulations), bit-identical
+//      to reassembling every step; new boundary conditions reassemble; a
+//      nonlinear problem assembles at every Newton iteration as before.
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <functional>
@@ -31,10 +36,12 @@
 #include "base/probes.hpp"
 #include "materials/materials.hpp"
 #include "mfem.hpp"
+#include "physics/mixed_solid_mechanics_tl.hpp"
 #include "physics/solid_mechanics_tl.hpp"
 #include "physics/solid_problem.hpp"
 #include "solvers/linear_solver.hpp"
 #include "solvers/quasi_static.hpp"
+#include "solvers/saddle_point_solver.hpp"
 #include "test_util.hpp"
 
 namespace
@@ -542,6 +549,170 @@ void ResidualFloorTest()
   CHECK_MSG(!svk.converged && !sn.at_floor, "floor test: a nonlinear problem is not accepted at the floor");
 }
 
+// 10. Reuse of the constant Jacobian over a load path. A traction that is
+// loaded and partly unloaded by a table schedule, a ramped Dirichlet datum,
+// ten load steps: with the reuse (the default) the Jacobian is assembled once
+// and the AMG hierarchy built once; without it, once per step. The two paths
+// must agree bit for bit, step by step.
+struct PathResult
+{
+  std::vector<double> norms, sums; // per load step: |x|_2 and sum of the entries
+  mfem::Vector x;
+  int assemblies = 0, setups = 0, newton_its = 0;
+  double seconds = 0.0;
+  bool converged = false;
+};
+
+template <typename Physics>
+PathResult SolvePath(Physics &physics, const cmf::AppConfig &cfg)
+{
+  PathResult r;
+  std::unique_ptr<mfem::Solver> linear = physics.MakeLinearSolver(cfg.solver.linear);
+  r.x.SetSize(physics.Height());
+  r.x = 0.0;
+  const int assemblies_before = physics.GradientAssemblies();
+  const auto t0 = std::chrono::steady_clock::now();
+  const cmf::QuasiStaticReport report = cmf::SolveQuasiStatic(
+    physics, *linear, cfg.solver, r.x, [&](const cmf::LoadStepReport &, const mfem::Vector &x)
+    {
+      r.norms.push_back(x.Norml2());
+      r.sums.push_back(x.Sum());
+    });
+  r.seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+  r.converged = report.converged;
+  for (const cmf::LoadStepReport &step : report.steps) { r.newton_its += step.newton.iterations; }
+  r.assemblies = physics.GradientAssemblies() - assemblies_before;
+  if (const auto *ls = dynamic_cast<const cmf::LinearSolver *>(linear.get())) { r.setups = ls->Setups(); }
+  if (const auto *sp = dynamic_cast<const cmf::SaddlePointSolver *>(linear.get())) { r.setups = sp->Setups(); }
+  return r;
+}
+
+bool SamePath(const PathResult &a, const PathResult &b)
+{
+  if (a.norms.size() != b.norms.size() || a.x.Size() != b.x.Size()) { return false; }
+  for (std::size_t k = 0; k < a.norms.size(); k++)
+  {
+    if (a.norms[k] != b.norms[k] || a.sums[k] != b.sums[k]) { return false; }
+  }
+  for (int i = 0; i < a.x.Size(); i++)
+  {
+    if (a.x(i) != b.x(i)) { return false; }
+  }
+  return true;
+}
+
+template <typename Physics>
+void AddPathLoads(Physics &physics, mfem::VectorCoefficient &pull, mfem::VectorCoefficient &traction,
+                  int pulled_attr)
+{
+  cmf::BCOptions table;
+  table.schedule = cmf::Schedule::Table({0.0, 0.5, 1.0}, {0.0, 1.0, 0.3});
+  physics.AddDirichlet({LeftAttr(2)}, pull);             // ramp
+  physics.AddTraction({pulled_attr}, traction, table);   // loaded, then partly unloaded
+  physics.Finalize();
+}
+
+void GradientReuseTest()
+{
+  ElementCase ec{2, "quad", 24, 0.2};
+  mfem::Vector t(2);
+  t(0) = 0.4; t(1) = -0.7;
+  mfem::VectorConstantCoefficient traction(t);
+  mfem::VectorFunctionCoefficient pull(2, [](const mfem::Vector &X, mfem::Vector &g)
+  {
+    g.SetSize(2);
+    g(0) = 2e-3 * X(1) * (1.0 - X(1));
+    g(1) = -1e-3 * std::sin(M_PI * X(1));
+  });
+
+  // Displacement formulation, 10 steps.
+  {
+    cmf::AppConfig cfg = BoxConfig(ec, 2);
+    cfg.solver.load_steps = 10;
+    cfg.solver.newton.rtol = 1e-8;
+    std::unique_ptr<mfem::ParMesh> pmesh = cmf::BuildParMesh(MPI_COMM_WORLD, cfg.mesh);
+    cmf::SolidMechanicsTL physics(*pmesh, cfg, cmf::MakeMaterial(cfg.material));
+    AddPathLoads(physics, pull, traction, RightAttr(2));
+    const PathResult reused = SolvePath(physics, cfg);
+    physics.ReuseConstantGradient(false);
+    const PathResult rebuilt = SolvePath(physics, cfg);
+    physics.ReuseConstantGradient(true);
+    std::printf("  displacement, %d dofs, 10 steps: assemblies %d (rebuilt %d), AMG setups %d (%d), "
+                "%.2f s (%.2f s); same path bit for bit: %s\n", reused.x.Size(), reused.assemblies,
+                rebuilt.assemblies, reused.setups, rebuilt.setups, reused.seconds, rebuilt.seconds,
+                SamePath(reused, rebuilt) ? "yes" : "NO");
+    CHECK_MSG(reused.converged && rebuilt.converged, "gradient reuse: both paths converged");
+    CHECK_MSG(reused.newton_its == 10 && rebuilt.newton_its == 10, "gradient reuse: one Newton iteration per step");
+    CHECK_MSG(reused.assemblies == 1 && reused.setups == 1, "gradient reuse: one assembly and one AMG setup for the path");
+    CHECK_MSG(rebuilt.assemblies == 10 && rebuilt.setups == 10, "without reuse: one assembly and one setup per step");
+    CHECK_MSG(SamePath(reused, rebuilt), "gradient reuse: bit-identical to reassembling every step");
+
+    // New boundary conditions: the Jacobian is reassembled (other essential
+    // dofs), and the result is that of a fresh problem.
+    physics.ClearBoundaryConditions();
+    AddPathLoads(physics, pull, traction, 3); // the traction now on the top edge
+    physics.AddDirichlet({1}, pull);          // and the bottom edge prescribed as well
+    physics.Finalize();
+    const PathResult changed = SolvePath(physics, cfg);
+    cmf::SolidMechanicsTL fresh(*pmesh, cfg, cmf::MakeMaterial(cfg.material));
+    AddPathLoads(fresh, pull, traction, 3);
+    fresh.AddDirichlet({1}, pull);
+    fresh.Finalize();
+    const PathResult expected = SolvePath(fresh, cfg);
+    CHECK_MSG(changed.assemblies == 1 && changed.setups == 1, "new boundary conditions: reassembled once");
+    CHECK_MSG(SamePath(changed, expected), "new boundary conditions: the solution of a fresh problem");
+    CHECK_MSG(!SamePath(changed, reused), "new boundary conditions: another solution than before");
+  }
+
+  // Mixed formulation (incompressible), 5 steps.
+  {
+    cmf::AppConfig cfg = BoxConfig(ElementCase{2, "quad", 8, 0.2}, 2);
+    cfg.formulation = "mixed";
+    cfg.material = cmf::MaterialConfig();
+    cfg.material.model = "linear_elastic";
+    cfg.material.mu = 80.0;
+    cfg.material.incompressible = true;
+    cfg.solver.load_steps = 5;
+    cfg.solver.newton.rtol = 1e-8;
+    cfg.solver.linear.type = "gmres_amg";
+    cfg.solver.linear.rtol = 1e-13;
+    cfg.solver.linear.krylov_dim = 100;
+    cfg.solver.linear.inner_rtol = 1e-4;
+    cfg.solver.linear.inner_max_it = 100;
+    std::unique_ptr<mfem::ParMesh> pmesh = cmf::BuildParMesh(MPI_COMM_WORLD, cfg.mesh);
+    cmf::MixedSolidMechanicsTL physics(*pmesh, cfg, cmf::MakeMixedMaterial(cfg.material));
+    AddPathLoads(physics, pull, traction, RightAttr(2));
+    const PathResult reused = SolvePath(physics, cfg);
+    physics.ReuseConstantGradient(false);
+    const PathResult rebuilt = SolvePath(physics, cfg);
+    std::printf("  mixed, %d dofs, 5 steps: assemblies %d (rebuilt %d), saddle-point setups %d (%d), Newton its %d, "
+                "%.2f s (%.2f s); same path bit for bit: %s\n", reused.x.Size(), reused.assemblies,
+                rebuilt.assemblies, reused.setups, rebuilt.setups, reused.newton_its, reused.seconds,
+                rebuilt.seconds, SamePath(reused, rebuilt) ? "yes" : "NO");
+    CHECK_MSG(reused.converged && rebuilt.converged, "mixed gradient reuse: both paths converged");
+    CHECK_MSG(reused.assemblies == 1 && reused.setups == 1, "mixed gradient reuse: one assembly and one setup");
+    CHECK_MSG(rebuilt.assemblies == rebuilt.newton_its && rebuilt.setups == rebuilt.newton_its,
+              "mixed without reuse: one assembly and one setup per Newton iteration");
+    CHECK_MSG(SamePath(reused, rebuilt), "mixed gradient reuse: bit-identical to reassembling");
+  }
+
+  // A nonlinear problem assembles, and sets up, at every Newton iteration.
+  {
+    cmf::AppConfig cfg = BoxConfig(ElementCase{2, "quad", 8, 0.2}, 2, "st_venant_kirchhoff");
+    cfg.solver.load_steps = 2;
+    cfg.solver.newton.max_it = 25;
+    std::unique_ptr<mfem::ParMesh> pmesh = cmf::BuildParMesh(MPI_COMM_WORLD, cfg.mesh);
+    cmf::SolidMechanicsTL physics(*pmesh, cfg, cmf::MakeMaterial(cfg.material));
+    AddPathLoads(physics, pull, traction, RightAttr(2));
+    const PathResult r = SolvePath(physics, cfg);
+    std::printf("  nonlinear (st_venant_kirchhoff): Newton its %d, assemblies %d, AMG setups %d\n", r.newton_its,
+                r.assemblies, r.setups);
+    CHECK_MSG(r.converged && r.newton_its > 2, "nonlinear path converged in several iterations");
+    CHECK_MSG(r.assemblies == r.newton_its && r.setups == r.newton_its,
+              "nonlinear: one assembly and one AMG setup per Newton iteration");
+  }
+}
+
 // 8. Output quantities of homogeneous Hooke states at a strain of 5 percent,
 // where the finite-strain measures (J^{-1} P F^T, det F) would be off by
 // percents. A state is an affine displacement u = H X; the expected values
@@ -766,5 +937,7 @@ int main(int argc, char *argv[])
   HomogeneousOutputTests();
   std::cout << "round-off floor of the residual" << std::endl;
   ResidualFloorTest();
+  std::cout << "reuse of the constant Jacobian over a load path" << std::endl;
+  GradientReuseTest();
   return cmf_test::Report("test_linear_elasticity");
 }

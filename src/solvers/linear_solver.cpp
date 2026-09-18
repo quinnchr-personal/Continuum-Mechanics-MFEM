@@ -48,6 +48,7 @@ void LinearSolver::BuildPreconditioner(const std::string &mode) const
   }
   amg_->SetPrintLevel(0);
   amg_mode_ = mode;
+  setups_++;
   krylov_->SetPreconditioner(*amg_);
 }
 
@@ -58,6 +59,9 @@ void LinearSolver::SetOperator(const mfem::Operator &op)
   {
     throw std::runtime_error("LinearSolver::SetOperator expects a HypreParMatrix");
   }
+  // The same, unchanged operator (a linear problem): keep the hierarchy.
+  if (stamp_ && amg_ && A == A_ && *stamp_ == seen_stamp_) { return; }
+  if (stamp_) { seen_stamp_ = *stamp_; }
   height = A->Height();
   width = A->Width();
   A_ = A;

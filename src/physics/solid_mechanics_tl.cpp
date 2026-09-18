@@ -56,6 +56,7 @@ void SolidMechanicsTL::ResetForm()
   }, materials_[0]);
   follower_markers_.clear();
   finalized_ = false;
+  gradient_ = nullptr;
 }
 
 void SolidMechanicsTL::Build(const AppConfig &cfg)
@@ -118,6 +119,7 @@ void SolidMechanicsTL::Finalize()
 {
   loads_.Finalize();
   nlf_->SetEssentialTrueDofs(loads_.EssentialTrueDofs());
+  gradient_ = nullptr; // the essential rows and columns may have changed
   finalized_ = true;
 }
 
@@ -166,7 +168,10 @@ std::vector<Reaction> SolidMechanicsTL::Reactions(const mfem::Vector &x) const
 mfem::Operator &SolidMechanicsTL::GetGradient(const mfem::Vector &x) const
 {
   MFEM_VERIFY(finalized_, "SolidMechanicsTL: call Finalize() first");
-  return nlf_->GetGradient(x);
+  if (gradient_ && reuse_gradient_ && IsLinear()) { return *gradient_; }
+  ++*gradient_stamp_;
+  gradient_ = &nlf_->GetGradient(x);
+  return *gradient_;
 }
 
 double SolidMechanicsTL::InternalEnergy(const mfem::Vector &x) const
@@ -194,7 +199,9 @@ SolidMechanicsTL::MakeLinearSolver(const LinearSolverConfig &cfg)
     throw ConfigError("solver.linear.type: cg_amg needs a symmetric tangent, but a "
                       "follower_pressure entry makes it non-symmetric; use gmres_amg");
   }
-  return cmf::MakeLinearSolver(cfg, fes_);
+  std::unique_ptr<LinearSolver> solver = cmf::MakeLinearSolver(cfg, fes_);
+  solver->SetOperatorStamp(gradient_stamp_);
+  return solver;
 }
 
 void SolidMechanicsTL::EnsureFields()

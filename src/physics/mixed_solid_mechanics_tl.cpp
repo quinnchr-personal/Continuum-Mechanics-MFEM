@@ -69,6 +69,7 @@ void MixedSolidMechanicsTL::ResetForm()
   }, materials_[0]);
   follower_markers_.clear();
   finalized_ = false;
+  gradient_ = nullptr;
 }
 
 void MixedSolidMechanicsTL::Build(const AppConfig &cfg)
@@ -134,6 +135,7 @@ void MixedSolidMechanicsTL::Finalize()
   ess_p_empty_.SetSize(0);
   nlf_->SetEssentialTrueDofs(0, loads_.EssentialTrueDofs());
   nlf_->SetEssentialTrueDofs(1, ess_p_empty_);
+  gradient_ = nullptr; // the essential rows and columns may have changed
 
   // Pressure mass matrix for the Schur complement approximation.
   mfem::ParBilinearForm mass(&fes_p_);
@@ -192,7 +194,10 @@ std::vector<Reaction> MixedSolidMechanicsTL::Reactions(const mfem::Vector &x) co
 mfem::Operator &MixedSolidMechanicsTL::GetGradient(const mfem::Vector &x) const
 {
   MFEM_VERIFY(finalized_, "MixedSolidMechanicsTL: call Finalize() first");
-  return nlf_->GetGradient(x);
+  if (gradient_ && reuse_gradient_ && IsLinear()) { return *gradient_; }
+  ++*gradient_stamp_;
+  gradient_ = &nlf_->GetGradient(x);
+  return *gradient_;
 }
 
 double MixedSolidMechanicsTL::InternalEnergy(const mfem::Vector &x) const
@@ -276,8 +281,10 @@ std::unique_ptr<mfem::Solver>
 MixedSolidMechanicsTL::MakeLinearSolver(const LinearSolverConfig &cfg)
 {
   if (!finalized_) { Finalize(); }
-  return std::make_unique<SaddlePointSolver>(cfg, fes_u_, offsets_, *pressure_mass_,
-                                             mu_, kappa_);
+  auto solver = std::make_unique<SaddlePointSolver>(cfg, fes_u_, offsets_, *pressure_mass_,
+                                                    mu_, kappa_);
+  solver->SetOperatorStamp(gradient_stamp_);
+  return solver;
 }
 
 } // namespace cmf

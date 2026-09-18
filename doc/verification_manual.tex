@@ -376,6 +376,16 @@ the classical linear elasticity operator, and the solve must be linear.
     tolerance: with $\text{rtol} = 10^{-15}$ it is accepted at the floor
     after two steps with the same solution, whereas
     \code{st\_venant\_kirchhoff} under the same tolerance still fails.
+  \item \emph{One Jacobian for a load path.}  Ten steps with a ramped
+    Dirichlet datum and a traction loaded and partly unloaded by a table
+    schedule: one assembly and one AMG setup with the reuse, ten of each
+    without, and the two paths identical bit for bit at every step (norm,
+    sum and final vector compared with \code{==}); the same for the
+    incompressible mixed problem over five steps (one saddle-point setup
+    against five).  After \code{ClearBoundaryConditions} and other boundary
+    conditions the Jacobian is reassembled once and the solution is that of
+    a fresh problem.  A \code{st\_venant\_kirchhoff} path assembles and sets
+    up once per Newton iteration, as before.
 \end{itemize}
 
 \subsection{Parallel consistency (\texttt{test\_parallel})}

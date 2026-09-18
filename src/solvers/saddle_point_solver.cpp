@@ -62,6 +62,10 @@ void SaddlePointSolver::SetOperator(const mfem::Operator &op)
   {
     throw std::runtime_error("SaddlePointSolver::SetOperator expects a 2x2 BlockOperator");
   }
+  // The same, unchanged operator (a linear problem): keep the whole setup.
+  if (stamp_ && jacobian_ == J && A_aug_ && *stamp_ == seen_stamp_) { return; }
+  if (stamp_) { seen_stamp_ = *stamp_; }
+  setups_++;
   auto &Jm = *const_cast<mfem::BlockOperator *>(J);
   const auto *K = dynamic_cast<const mfem::HypreParMatrix *>(&Jm.GetBlock(0, 0));
   const auto *B = dynamic_cast<const mfem::HypreParMatrix *>(&Jm.GetBlock(0, 1));

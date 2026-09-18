@@ -31,8 +31,14 @@ public:
                     const mfem::Array<int> &offsets, mfem::HypreParMatrix &pressure_mass,
                     double mu, double kappa);
 
-  // op must be a 2x2 BlockOperator whose blocks are HypreParMatrix.
+  // op must be a 2x2 BlockOperator whose blocks are HypreParMatrix. The
+  // augmented blocks and the AMG hierarchy of the displacement block are
+  // rebuilt for it, unless it is the operator of the last call with an
+  // unchanged stamp (linear_solver.hpp: a linear problem).
   void SetOperator(const mfem::Operator &op) override;
+  void SetOperatorStamp(OperatorStamp stamp) { stamp_ = std::move(stamp); }
+  // Number of setups so far (augmented blocks + AMG hierarchy).
+  int Setups() const { return setups_; }
   void Mult(const mfem::Vector &b, mfem::Vector &x) const override;
 
   bool Converged() const { return outer_->GetConverged(); }
@@ -74,6 +80,9 @@ private:
   std::unique_ptr<mfem::FGMRESSolver> outer_;
   mutable int inner_iterations_ = 0;
   mutable int inner_failures_ = 0;
+  OperatorStamp stamp_;
+  long seen_stamp_ = -1;
+  int setups_ = 0;
 };
 
 } // namespace cmf

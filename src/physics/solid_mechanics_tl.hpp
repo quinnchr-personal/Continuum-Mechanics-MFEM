@@ -67,6 +67,15 @@ public:
   MPI_Comm Comm() const override { return fes_.GetComm(); }
   // A small-strain material with dead loads (follower loads are rejected for it).
   bool IsLinear() const override { return IsSmallStrain(materials_[0]) && !loads_.HasFollowerPressure(); }
+  // The Jacobian of a linear problem depends neither on the state nor on the
+  // pseudo-time (the essential dofs are fixed by Finalize), so GetGradient
+  // assembles it once and returns that matrix until the boundary conditions
+  // change; the solver of MakeLinearSolver then keeps its AMG hierarchy
+  // (solvers/linear_solver.hpp, operator stamp). On by default; off
+  // reassembles on every call, like a nonlinear problem.
+  void ReuseConstantGradient(bool on) { reuse_gradient_ = on; gradient_ = nullptr; }
+  // Number of Jacobian assemblies so far.
+  int GradientAssemblies() const { return int(*gradient_stamp_); }
 
   mfem::ParMesh &Mesh() { return mesh_; }
   mfem::ParFiniteElementSpace &FESpace() { return fes_; }
@@ -118,6 +127,12 @@ private:
   LoadSet loads_;
   std::deque<mfem::Array<int>> follower_markers_; // referenced by the form's integrators (stable)
   bool finalized_ = false;
+
+  // The assembled Jacobian of a linear problem (owned by nlf_) and the stamp
+  // shared with the linear solver, incremented at every assembly.
+  bool reuse_gradient_ = true;
+  mutable mfem::Operator *gradient_ = nullptr;
+  std::shared_ptr<long> gradient_stamp_ = std::make_shared<long>(0);
 
   std::unique_ptr<mfem::ParGridFunction> displacement_;
   bool plane_stress_ = false;

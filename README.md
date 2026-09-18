@@ -395,6 +395,13 @@ Solving a linear problem:
 
 - One Newton iteration = one assembly, one AMG setup, one Krylov solve (the mixed formulation
   usually takes a second step, which refines the first). `cg_amg` is valid (SPD).
+- Over a load path the Jacobian is assembled once and the solver's setup (the AMG hierarchy; for
+  the mixed formulation also the augmented blocks) is built once: the matrix depends neither on
+  the state nor on the pseudo-time, so `GetGradient` returns the same matrix until the boundary
+  conditions change, and the physics shares an operator stamp with the solver it makes so that
+  the solver knows. Bit-identical to reassembling; assembly + setup over 10 steps drops 7-9x
+  (1.9 -> 0.2 s on the Lame sphere). The Krylov solves remain, and they dominate: about 1.5x
+  overall for the displacement formulation, next to nothing for the mixed one.
 - `newton.rtol` only accepts the linear solve; the accuracy is set by `linear.rtol`. The inputs use
   `1e-8` and `1e-13`. The reason is the round-off floor of the residual, `eps |K| |u| / |f|`
   relative to `|R0|`, which bending puts at 4e-11 (Cook), 8e-11 (the 10:1 cantilever) and 1.6e-9
@@ -425,8 +432,9 @@ Cases, all checked by `tests/test_linear_verification` (`make test`, about 30 s)
 
 Not supported: anisotropic linear elasticity, thermal or shrinkage eigenstrains (materials cannot
 read a field yet), linear dynamics and modal analysis, linear buckling (needs a geometric
-stiffness), small-strain plasticity or viscoelasticity (internal variables), and reuse of the
-constant tangent across load steps (each step reassembles it; one step is the normal use).
+stiffness), small-strain plasticity or viscoelasticity (internal variables), and a factorisation
+or an initial guess carried over the load steps of a linear problem (every step is a fresh Krylov
+solve with the one hierarchy).
 
 ### The elastic bar exercise (`apps/input/elastic_bar/`, `apps/elastic_bar_compare.py`)
 

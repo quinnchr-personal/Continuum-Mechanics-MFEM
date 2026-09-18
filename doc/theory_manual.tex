@@ -1049,7 +1049,7 @@ incompressible solution is $O(h^2)$, not zero.
 \label{sec:linearsolve}
 
 The residual is affine in the unknown, so the first Newton step is the exact
-solve: one assembly, one preconditioner setup, one Krylov solve.  Three
+solve: one assembly, one preconditioner setup, one Krylov solve.  Four
 points follow.
 \begin{itemize}[nosep]
   \item \emph{The residual has a round-off floor that can lie above the
@@ -1078,6 +1078,23 @@ points follow.
     Newton would start at the floor, where $\text{rtol}\,\|R_0\|$ is
     meaningless; \code{solver.predictor: tangent} is an input error for a
     small-strain material.
+  \item \emph{The Jacobian is assembled once for a load path.}  It depends
+    neither on the state nor on the pseudo-time (the essential degrees of
+    freedom are fixed when the loads are finalised), so a problem that
+    declares itself linear returns the same assembled matrix from every
+    Jacobian request until its boundary conditions change.  The physics
+    shares an \emph{operator stamp} with the linear solver it creates, a
+    counter incremented at every assembly; a solver that is handed the same
+    operator with an unchanged stamp keeps its setup, the AMG hierarchy and,
+    in the mixed formulation, the augmented blocks of
+    Section~\ref{sec:saddlesolver}.  The address of the matrix alone would
+    not identify it, since a reassembled matrix can occupy the address of the
+    old one.  A nonlinear problem stamps at every request, so nothing changes
+    for it.  The results are identical bit for bit to reassembling; over ten
+    steps the time spent in assembly and setup drops by a factor of seven to
+    nine.  The Krylov solves remain and dominate these runs, so the overall
+    gain is about $1.5$ for the displacement formulation and negligible for
+    the mixed one.
 \end{itemize}
 Forming $\bF = \bI + \bH$ and subtracting $\bI$ again leaves an absolute
 error of $\epsilon_{\mathrm{mach}}$ in $\beps$, a relative floor of
@@ -1404,7 +1421,8 @@ dimensions but stall on slender three-dimensional $k = 2$ meshes; they are
 given at most 100 iterations, after which the solver rebuilds the
 preconditioner with the systems options, repeats the solve, and keeps the
 systems options for the rest of the run.  The AMG hierarchy is rebuilt for
-every Newton Jacobian.
+every Newton Jacobian, except for a linear problem, whose one Jacobian and
+hierarchy serve the whole load path (Section~\ref{sec:linearsolve}).
 
 \subsection{Saddle-point solver of the mixed formulation}
 \label{sec:saddlesolver}

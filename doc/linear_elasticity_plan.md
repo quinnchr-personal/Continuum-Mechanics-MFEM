@@ -6,7 +6,7 @@ trailers). This extends the framework of `doc/hyperelasticity_implementation_pla
 `doc/bc_loading_plan.md`; their design decisions (reference mesh never moves, thin `apps/`,
 `myapps/` untouched, materials are stateless value types templated on the scalar) still hold.
 
-**Status (2026-09-18):** LE1-LE5 complete, LE6 (optional) not started.
+**Status (2026-09-18):** LE1-LE6 complete.
 LE1 complete. Measured: the assembled Jacobian equals
 `mfem::ElasticityIntegrator` to 5e-16 on perturbed quad / tri / hex / tet meshes (p = 1, 2)
 and is bitwise the tangent at u = 0 of `neo_hookean`, `st_venant_kirchhoff` and
@@ -70,8 +70,22 @@ algorithm, quantity table, seam and source-file appendix updated), verification 
 (`test_linear_elasticity` subsection, notes in `test_materials`, `test_mixed` and
 `test_parallel`, a section "Small-strain cases" with problem / reference / check for every
 input, summary rows, three references), README (schema, a section with the comparison table,
-the case table and the "not supported" list). LE6 (reuse of the constant tangent across load
-steps) was not started: every case here is a single step.
+the case table and the "not supported" list).
+LE6 complete, in both formulations (the text below names the displacement one only; the
+saddle-point setup of the mixed one - two sparse products, the augmented block, a hierarchy - is
+the more expensive). `GetGradient` of a problem that `IsLinear()` assembles once and returns that
+matrix until `Finalize` / `ResetForm`; the physics shares an *operator stamp* with the solver it
+makes (a counter it increments at every assembly), and `LinearSolver` / `SaddlePointSolver` keep
+their setup when handed the same operator with an unchanged stamp. The pointer alone would not
+do: after new boundary conditions the reassembled matrix can sit at the old address. A nonlinear
+problem stamps at every call, so nothing changes for it. Measured over 10 steps, assembly + setup:
+1.88 -> 0.22 s (Lame sphere, 16k dofs), 2.16 -> 0.27 s (3D hex MMS, 15k), 0.78 -> 0.09 s (Cook,
+33k), 0.25 -> 0.04 s (mixed Cook), i.e. 7-9x, results bit-identical (the app logs of a 100-step
+bar and of a 10-step mixed run with a load-unload table are identical in every printed digit).
+What it does not change is the Krylov solve, which dominates every one of these runs: overall the
+displacement runs gain about 1.5x (BoomerAMG's setup is lazy, so part of the saving shows up as
+a shorter first solve) and the mixed run 2 percent. A factorisation reused over the steps, or the
+previous increment as the initial guess, would be the next step for long linear load paths.
 
 **Goal:** `material: { model: linear_elastic, E: ..., nu: ... }` solves geometrically linear
 (small-strain) isotropic elasticity in 2D (plane strain, plane stress) and 3D, in the

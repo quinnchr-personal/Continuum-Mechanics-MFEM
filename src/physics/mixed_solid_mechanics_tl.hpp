@@ -55,6 +55,10 @@ public:
   void ApplyDirichlet(mfem::Vector &x) const override;
   // A small-strain material with dead loads: Herrmann's linear saddle-point problem.
   bool IsLinear() const override { return IsSmallStrain(materials_[0]) && !loads_.HasFollowerPressure(); }
+  // As in SolidMechanicsTL: the block Jacobian of a linear problem is assembled
+  // once, and the saddle-point solver keeps its augmented blocks and hierarchy.
+  void ReuseConstantGradient(bool on) { reuse_gradient_ = on; gradient_ = nullptr; }
+  int GradientAssemblies() const { return int(*gradient_stamp_); }
   MPI_Comm Comm() const override { return fes_u_.GetComm(); }
 
   mfem::ParMesh &Mesh() { return mesh_; }
@@ -122,6 +126,12 @@ private:
 
   bool finalized_ = false;
   std::unique_ptr<mfem::HypreParMatrix> pressure_mass_;
+
+  // The assembled block Jacobian of a linear problem (owned by nlf_) and the
+  // stamp shared with the saddle-point solver, incremented at every assembly.
+  bool reuse_gradient_ = true;
+  mutable mfem::Operator *gradient_ = nullptr;
+  std::shared_ptr<long> gradient_stamp_ = std::make_shared<long>(0);
 
   std::unique_ptr<mfem::ParGridFunction> displacement_;
   std::unique_ptr<mfem::ParGridFunction> pressure_;
