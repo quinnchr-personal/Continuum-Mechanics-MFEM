@@ -485,6 +485,133 @@ void TestLoading()
 }
 
 // Expression parser: precedence, functions, comparisons, errors with columns.
+// The dynamics block: time steps, schemes, schedules in physical time and the
+// keys that belong to one analysis only.
+void TestDynamicsConfig()
+{
+  const std::string head =
+    "mesh: { file: square.msh }\nmaterial: { model: neo_hookean, E: 1.0, nu: 0.3, rho0: 2.0 }\n";
+  auto parse = [&head](const std::string &rest) { return cmf::ParseConfig(YAML::Load(head + rest)); };
+
+  // Absent: quasi-static, nothing about time changes.
+  {
+    const cmf::AppConfig c = parse("bcs: { traction: [ { attr: [2], expression: [\"0\", \"1\"] } ] }\n");
+    CHECK(!c.dynamics.enabled && c.dynamics.breakpoints.empty());
+    CHECK(c.bcs.traction[0].schedule.kind == cmf::Schedule::Kind::Ramp);
+    CHECK(c.output.every == 1 && !c.output.energy);
+    CHECK_CLOSE(c.solver.substep.min_dt, 1e-4, 0.0);
+  }
+  // dt: equal steps ending on t_final exactly; a dt that does not divide it is shortened.
+  {
+    const cmf::AppConfig c = parse("dynamics: { t_final: 0.02, dt: 1.0e-5 }\n");
+    CHECK(c.dynamics.enabled && c.dynamics.breakpoints.size() == 2000);
+    CHECK(c.dynamics.breakpoints.back() == 0.02 && c.dynamics.scheme == "newmark");
+    CHECK_CLOSE(c.dynamics.breakpoints[0], 1e-5, 1e-20);
+    CHECK_CLOSE(c.solver.substep.min_dt, 1e-8, 1e-20); // 1e-3 of the smallest planned step
+    const cmf::AppConfig d = parse("dynamics: { t_final: 1.0, dt: 0.3 }\n");
+    CHECK(d.dynamics.breakpoints.size() == 4 && d.dynamics.breakpoints.back() == 1.0);
+    CHECK_CLOSE(d.dynamics.breakpoints[0], 0.25, 1e-15);
+  }
+  // steps: segments in physical time.
+  {
+    const cmf::AppConfig c = parse(
+      "dynamics: { t_final: 2.0, steps: [ { to: 0.5, n: 5 }, { to: 2.0, n: 3 } ], scheme: generalized_alpha, rho_inf: 0.8,\n"
+      "            initial: { displacement: [\"0\", \"0\"], velocity: [\"0\", \"1.5*x\"] } }\n"
+      "solver: { substep: { min_dt: 0.01 } }\n");
+    CHECK(c.dynamics.breakpoints.size() == 8 && c.dynamics.breakpoints.back() == 2.0);
+    CHECK_CLOSE(c.dynamics.breakpoints[4], 0.5, 1e-15);
+    CHECK_CLOSE(c.dynamics.breakpoints[5], 1.0, 1e-15);
+    CHECK_CLOSE(c.dynamics.rho_inf, 0.8, 0.0);
+    CHECK(c.dynamics.initial_velocity.size() == 2 && c.dynamics.initial_velocity[1] == "1.5*x");
+    CHECK(c.solver.substep.on_failure);
+    CHECK_CLOSE(c.solver.substep.min_dt, 0.01, 0.0);
+  }
+  // Schedules in physical time: the default is constant (on from t = 0), a
+  // ramp defaults to [0, t_final], tables reach t_final.
+  {
+    const cmf::AppConfig c = parse(
+      "dynamics: { t_final: 5.0, dt: 0.5 }\n"
+      "bcs:\n"
+      "  dirichlet: [ { attr: [4], expression: [\"0\", \"0\"] } ]\n"
+      "  traction:\n"
+      "    - { attr: [2], expression: [\"0\", \"1\"] }\n"
+      "    - { attr: [3], expression: [\"0\", \"sin(3*t)\"] }\n"
+      "    - { attr: [1], type: pressure, expression: \"2\", schedule: { type: ramp } }\n"
+      "    - { attr: [1], type: pressure, expression: \"2\", schedule: { type: table, t: [0, 2.5, 5], s: [0, 1, 0] } }\n"
+      "body_force: { expression: [\"0\", \"-9.81\"] }\n"
+      "output: { fields: [displacement, velocity, acceleration], every: 10, energy: true }\n");
+    CHECK(c.bcs.dirichlet[0].schedule.kind == cmf::Schedule::Kind::Constant);
+    CHECK(c.bcs.traction[0].schedule.kind == cmf::Schedule::Kind::Constant);
+    CHECK(c.bcs.traction[1].schedule.kind == cmf::Schedule::Kind::Constant);
+    CHECK(c.bcs.traction[2].schedule.kind == cmf::Schedule::Kind::Ramp);
+    CHECK_CLOSE(c.bcs.traction[2].schedule.to, 5.0, 0.0);
+    CHECK_CLOSE(c.bcs.traction[3].schedule.Eval(1.25, true), 0.5, 1e-15);
+    CHECK(c.body_force.schedule.kind == cmf::Schedule::Kind::Constant);
+    CHECK(c.output.every == 10 && c.output.energy && c.output.fields.size() == 3);
+    CHECK(cmf::DescribeTimeDependence(c.bcs.traction[0].schedule, c.bcs.traction[0].expression) ==
+          "constant in time (on from t = 0)");
+    CHECK(cmf::DescribeTimeDependence(c.bcs.traction[1].schedule, c.bcs.traction[1].expression) ==
+          "its expression in t");
+    CHECK(cmf::DescribeTimeDependence(c.bcs.traction[2].schedule, c.bcs.traction[2].expression) ==
+          "ramp over [0, 5]");
+  }
+  // The right limit at t = 0: a constant schedule is a step load that is on at once.
+  const cmf::Schedule constant = cmf::Schedule::Constant();
+  CHECK_CLOSE(constant.Eval(0.0, true), 1.0, 0.0);
+  CHECK_CLOSE(constant.Eval(0.0), 0.0, 0.0);
+
+  // Errors name the key.
+  CHECK_THROWS(parse("dynamics: { dt: 0.1 }\n"), cmf::ConfigError, "dynamics.t_final");
+  CHECK_THROWS(parse("dynamics: { t_final: 1.0 }\n"), cmf::ConfigError, "exactly one");
+  CHECK_THROWS(parse("dynamics: { t_final: 1.0, dt: 0.1, steps: [ { to: 1.0, n: 2 } ] }\n"),
+               cmf::ConfigError, "exactly one");
+  CHECK_THROWS(parse("dynamics: { t_final: 1.0, dt: 2.0 }\n"), cmf::ConfigError, "exceeds t_final");
+  CHECK_THROWS(parse("dynamics: { t_final: -1.0, dt: 0.1 }\n"), cmf::ConfigError, "dynamics.t_final");
+  CHECK_THROWS(parse("dynamics: { t_final: 2.0, steps: [ { to: 1.0, n: 2 } ] }\n"), cmf::ConfigError,
+               "must end at to: t_final");
+  CHECK_THROWS(parse("dynamics: { t_final: 2.0, steps: [ { to: 3.0, n: 2 } ] }\n"), cmf::ConfigError,
+               "end at t_final");
+  CHECK_THROWS(parse("dynamics: { t_final: 1.0, dt: 0.1, scheme: leapfrog }\n"), cmf::ConfigError,
+               "unknown scheme 'leapfrog'");
+  CHECK_THROWS(parse("dynamics: { t_final: 1.0, dt: 0.1, rho_inf: 0.5 }\n"), cmf::ConfigError,
+               "'dynamics.rho_inf' is not used by scheme 'newmark'");
+  CHECK_THROWS(parse("dynamics: { t_final: 1.0, dt: 0.1, scheme: hht, beta: 0.3 }\n"), cmf::ConfigError,
+               "'dynamics.beta' is not used by scheme 'hht'");
+  CHECK_THROWS(parse("dynamics: { t_final: 1.0, dt: 0.1, scheme: generalized_alpha, rho_inf: 1.2 }\n"),
+               cmf::ConfigError, "dynamics.rho_inf");
+  CHECK_THROWS(parse("dynamics: { t_final: 1.0, dt: 0.1, scheme: hht, alpha: 0.4 }\n"), cmf::ConfigError,
+               "dynamics.alpha");
+  CHECK_THROWS(parse("dynamics: { t_final: 1.0, dt: 0.1, beta: 0.0 }\n"), cmf::ConfigError, "dynamics.beta");
+  CHECK_THROWS(parse("dynamics: { t_final: 1.0, dt: 0.1, gamma: 0.4 }\n"), cmf::ConfigError, "dynamics.gamma");
+  CHECK_THROWS(parse("dynamics: { t_final: 1.0, dt: 0.1, damping: 0.1 }\n"), cmf::ConfigError,
+               "unknown key 'dynamics.damping'");
+  CHECK_THROWS(parse("dynamics: { t_final: 1.0, dt: 0.1, initial: { velocity: [\"t\", \"0\"] } }\n"),
+               cmf::ConfigError, "dynamics.initial.velocity[0]");
+  CHECK_THROWS(parse("dynamics: { t_final: 1.0, dt: 0.1, initial: { acceleration: [\"0\", \"0\"] } }\n"),
+               cmf::ConfigError, "unknown key 'dynamics.initial.acceleration'");
+  for (const std::string key : {"load_steps: 4", "steps: [ { to: 1.0, n: 2 } ]", "predictor: tangent"})
+  {
+    CHECK_THROWS(parse("dynamics: { t_final: 1.0, dt: 0.1 }\nsolver: { " + key + " }\n"), cmf::ConfigError,
+                 "is not used in a dynamic analysis");
+  }
+  CHECK_THROWS(parse("dynamics: { t_final: 1.0, dt: 0.1 }\nsolver: { substep: { min_dt: 0.0 } }\n"),
+               cmf::ConfigError, "solver.substep.min_dt");
+  CHECK_THROWS(parse("dynamics: { t_final: 2.0, dt: 0.1 }\n"
+                     "bcs: { traction: [ { attr: [2], expression: [\"0\", \"1\"], schedule: { type: ramp, to: 3.0 } } ] }\n"),
+               cmf::ConfigError, "<= t_final");
+  CHECK_THROWS(parse("dynamics: { t_final: 2.0, dt: 0.1 }\n"
+                     "body_force: { expression: [\"0\", \"1\"], schedule: { type: table, t: [0, 4], s: [0, 1] } }\n"),
+               cmf::ConfigError, "within [0, t_final]");
+  // Without the block the pseudo-time bounds and the dynamic output keys are errors.
+  CHECK_THROWS(parse("bcs: { traction: [ { attr: [2], expression: [\"0\", \"1\"], schedule: { type: ramp, to: 3.0 } } ] }\n"),
+               cmf::ConfigError, "<= 1");
+  CHECK_THROWS(parse("output: { fields: [displacement, velocity] }\n"), cmf::ConfigError,
+               "'velocity' needs a dynamic analysis");
+  CHECK_THROWS(parse("output: { energy: true }\n"), cmf::ConfigError, "needs a dynamic analysis");
+  CHECK_THROWS(parse("output: { every: 0 }\n"), cmf::ConfigError, "output.every");
+  CHECK(parse("output: { every: 5 }\n").output.every == 5);
+}
+
 void TestExpression()
 {
   auto ev = [](const char *text, double x = 0.0, double y = 0.0, double z = 0.0, double t = 0.0)
@@ -666,6 +793,7 @@ int main()
   TestDualTensor();
   TestYaml();
   TestLoading();
+  TestDynamicsConfig();
   TestExpression();
   TestMaterialRegions();
   return cmf_test::Report("test_base");

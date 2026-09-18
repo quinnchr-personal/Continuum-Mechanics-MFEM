@@ -4,7 +4,7 @@
 // numerical dissipation, the energy and momentum balances with loads and a
 // moving support, the nonlinear path (manufactured solution, Newton order,
 // self-convergence), one Jacobian and one solver setup per run of a linear
-// problem, and the stepper in physical time.
+// problem, the stepper in physical time, and the path from a YAML input.
 #include <cmath>
 #include <cstdio>
 #include <functional>
@@ -13,7 +13,9 @@
 #include <string>
 #include <vector>
 
+#include "base/fields.hpp"
 #include "base/mesh_input.hpp"
+#include "base/probes.hpp"
 #include "kernels/total_lagrangian.hpp"
 #include "materials/materials.hpp"
 #include "mfem.hpp"
@@ -805,6 +807,58 @@ void StepperTest()
   }
 }
 
+// 10. From a YAML input to the library objects (DY2): the dynamics block, the
+// initial state from expressions, the nodal fields velocity and acceleration,
+// the header of the run.
+void YamlTest()
+{
+  cmf::AppConfig cfg = cmf::LoadConfig("apps/input/dynamics/bar_free_vibration.yaml");
+  CHECK(cfg.dynamics.enabled && cfg.dynamics.breakpoints.size() == 2000 && cfg.output.energy);
+  cfg.output.paraview.clear();
+  cfg.dynamics.t_final = 0.4;
+  cfg.dynamics.breakpoints = cmf::UniformTimeSteps(0.4, 20);
+  const std::vector<std::string> header = cmf::DescribeDynamics(cfg);
+  CHECK(header.size() == 2 && header[0].find("trapezoidal rule") != std::string::npos &&
+        header[0].find("20 time steps of 0.02") != std::string::npos);
+  CHECK(header.size() == 2 && header[1] == "  dirichlet wall: constant in time (on from t = 0)");
+
+  std::unique_ptr<mfem::ParMesh> mesh = cmf::BuildParMesh(MPI_COMM_WORLD, cfg.mesh);
+  std::unique_ptr<cmf::SolidProblem> problem = cmf::MakeSolidProblem(*mesh, cfg);
+  problem->Finalize();
+  std::unique_ptr<cmf::DynamicSolidProblem> dyn = cmf::MakeDynamicSolidProblem(*problem, cfg);
+  cmf::FieldRegistry fields;
+  dyn->RegisterFields(fields);
+  CHECK(fields.Has("displacement") && fields.Has("velocity") && fields.Has("acceleration"));
+  mfem::Vector x(problem->Height());
+  x = 0.0;
+  const double change = dyn->Initialize(x);
+  CHECK_MSG(change <= 1e-15, "the initial displacement agrees with the clamp");
+  const double e0 = dyn->KineticEnergy() + problem->InternalEnergy(x);
+  std::unique_ptr<mfem::Solver> linear = dyn->MakeLinearSolver(cfg.solver.linear);
+  const cmf::QuasiStaticReport report =
+    cmf::SolveDynamic(*dyn, *linear, cfg.solver, cfg.dynamics.breakpoints, 0.0, x);
+  CHECK_MSG(report.converged && dyn->Time() == 0.4, "the input runs to its end time");
+  dyn->UpdateFields(x);
+  // The trapezoidal rule keeps the mode and its amplitude and lengthens the
+  // period: u_n = A cos(w~ t_n) with tan(w~ dt / 2) = w dt / 2.
+  const double A = 0.01, t = 0.4, dt = 0.02;
+  const double w = (2.0 / dt) * std::atan(0.5 * (0.5 * M_PI) * dt);
+  const std::vector<double> u = cmf::ProbeVector(fields.Get("displacement"), {10.0, 0.5, 0.5});
+  const std::vector<double> v = cmf::ProbeVector(fields.Get("velocity"), {10.0, 0.5, 0.5});
+  const std::vector<double> a = cmf::ProbeVector(fields.Get("acceleration"), {10.0, 0.5, 0.5});
+  const double e1 = dyn->KineticEnergy() + problem->InternalEnergy(x);
+  std::printf("  bar input, 20 steps: tip u %.9e (discrete dispersion %.9e), v %.9e (%.9e), a %.9e (%.9e), energy drift %.1e\n",
+              u[0], A * std::cos(w * t), v[0], -A * w * std::sin(w * t), a[0], -A * w * w * std::cos(w * t),
+              std::abs(e1 - e0) / e0);
+  CHECK_CLOSE(u[0], A * std::cos(w * t), 1e-7 * A);
+  CHECK_CLOSE(v[0], -A * w * std::sin(w * t), 1e-3 * A * w);
+  CHECK_CLOSE(a[0], -A * w * w * std::cos(w * t), 1e-3 * A * w * w);
+  CHECK_MSG(std::abs(e1 - e0) <= 1e-12 * e0, "energy of the bar input is conserved");
+
+  cfg.dynamics.initial_velocity = {"0", "0"};
+  CHECK_THROWS(cmf::MakeDynamicSolidProblem(*problem, cfg), cmf::ConfigError, "dynamics.initial.velocity");
+}
+
 } // namespace
 
 int main(int argc, char *argv[])
@@ -832,5 +886,7 @@ int main(int argc, char *argv[])
   ReuseTest();
   std::cout << "stepper in physical time" << std::endl;
   StepperTest();
+  std::cout << "from a YAML input" << std::endl;
+  YamlTest();
   return cmf_test::Report("test_dynamics");
 }

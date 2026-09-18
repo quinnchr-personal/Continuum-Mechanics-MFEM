@@ -1,0 +1,34 @@
+# Free axial vibration of a fixed-free bar in its first mode. L = 10, section 1 x 1, clamped at
+# x = 0 (left), linear_elastic with E = 250, nu = 0 (no lateral contraction, so the clamp leaves
+# the motion one-dimensional) and rho0 = 2.5: bar wave speed c = sqrt(E / rho0) = 10. Released
+# from rest in the first mode shape,
+#   u(X, t) = A sin(pi X / 2L) cos(w_1 t),   w_1 = pi c / (2L) = pi / 2,   period 4L/c = 4,
+# and followed for five periods with the trapezoidal rule. Its numerical frequency obeys
+# tan(w~ dt / 2) = w dt / 2, a period elongation of (w dt)^2 / 12: 2e-5 at this dt, a phase
+# error of 6e-4 rad after five periods. The problem is linear: K + c_M M is formed and the AMG
+# hierarchy built once for the 2000 steps, and the energy is conserved to round-off.
+# tests/test_dynamic_verification.cpp checks the tip history; apps/dynamics_compare.py plots it.
+# Run from the repository root:  build/apps/solid_mechanics -i apps/input/dynamics/bar_free_vibration.yaml
+mesh:
+  file: apps/mesh/beam.msh        # 10 x 1 x 1, 20 x 2 x 2 hexahedra (apps/mesh/box.geo)
+  order: 2
+material: { model: linear_elastic, E: 250.0, nu: 0.0, rho0: 2.5 }
+bcs:
+  dirichlet: [ { attr: [left], name: wall, expression: ["0", "0", "0"] } ]
+dynamics:
+  t_final: 20.0
+  dt: 0.01
+  scheme: newmark                 # beta 1/4, gamma 1/2: the trapezoidal rule
+  initial:
+    displacement: ["0.01*sin(pi*x/20)", "0", "0"]
+solver:
+  newton: { rtol: 1e-8, atol: 1e-16, max_it: 5, print_level: 0 }
+  linear: { type: cg_amg, amg: systems, rtol: 1e-13, max_it: 1000 }
+output:
+  paraview: out/dynamics/bar_free_vibration
+  fields: [displacement, velocity, acceleration, cauchy_stress]
+  every: 20
+  probes: [ { name: tip, point: [10.0, 0.5, 0.5] } ]
+  probe_every_step: true
+  reactions: true
+  energy: true

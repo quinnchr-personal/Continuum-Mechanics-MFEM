@@ -66,6 +66,21 @@ void DynamicSolidProblem::ZeroEssentialRows(mfem::Vector &y) const
   for (int i = 0; i < ess.Size(); i++) { y(ess[i]) = 0.0; }
 }
 
+void DynamicSolidProblem::FullBalance(const mfem::Vector &x, const mfem::Vector &a,
+                                      mfem::Vector &balance) const
+{
+  problem_.FullResidual(x, balance);
+  M_->Mult(a, Mw_);
+  mfem::Vector balance_u = Head(balance, n_u_);
+  balance_u += Mw_;
+}
+
+double DynamicSolidProblem::ExternalWork() const
+{
+  MFEM_VERIFY(track_work_, "DynamicSolidProblem: the external work is not tracked (TrackExternalWork)");
+  return external_work_;
+}
+
 double DynamicSolidProblem::Initialize(mfem::Vector &x, double t0)
 {
   MFEM_VERIFY(x.Size() == Height(), "DynamicSolidProblem: the unknown has the wrong size");
@@ -127,6 +142,8 @@ double DynamicSolidProblem::Initialize(mfem::Vector &x, double t0)
   M_->Mult(a_n_, Mw_);
   mfem::Vector balance_u = Head(balance_n_, n_u_);
   balance_u += Mw_;
+  balance_valid_ = true;
+  x_n_ = x;
   f_ext_n_ = problem_.Loads().ExternalLoad();
   external_work_ = 0.0;
   steps_ = 0;
@@ -235,35 +252,46 @@ void DynamicSolidProblem::AcceptStep(const mfem::Vector &x)
   du -= u_n_;
 
   // The full balance S_full + M a of the new state: its essential rows are the
-  // support forces; with those rows zeroed the static part is S_{n+1}.
-  mfem::Vector balance;
-  problem_.FullResidual(x, balance);
-  S_n_ = balance;
-  ZeroEssentialRows(S_n_);
-  M_->Mult(a_new, Mw_);
-  mfem::Vector balance_u = Head(balance, n_u_);
-  balance_u += Mw_;
-
-  // External work over the step by the trapezoidal rule: dead loads on every
-  // dof, support forces through the prescribed motion.
-  const mfem::Vector &f_new = problem_.Loads().ExternalLoad();
-  double work = 0.5 * (mfem::InnerProduct(Comm(), f_ext_n_, du) +
-                       mfem::InnerProduct(Comm(), f_new, du));
-  const mfem::Array<int> &ess = problem_.EssentialTrueDofs();
-  double support = 0.0, global_support = 0.0;
-  for (int k = 0; k < ess.Size(); k++)
+  // support forces; with those rows zeroed the static part is S_{n+1}, which
+  // the next step interpolates when alpha_f is not zero.
+  if (track_work_ || ti_.alpha_f != 0.0)
   {
-    const int i = ess[k];
-    support += 0.5 * (balance_n_(i) + balance(i)) * du(i);
+    mfem::Vector balance;
+    problem_.FullResidual(x, balance);
+    S_n_ = balance;
+    ZeroEssentialRows(S_n_);
+    M_->Mult(a_new, Mw_);
+    mfem::Vector balance_u = Head(balance, n_u_);
+    balance_u += Mw_;
+
+    // External work over the step by the trapezoidal rule: dead loads on every
+    // dof, support forces through the prescribed motion.
+    if (track_work_)
+    {
+      MFEM_VERIFY(balance_valid_, "DynamicSolidProblem: TrackExternalWork must be set before Initialize");
+      const mfem::Vector &f_new = problem_.Loads().ExternalLoad();
+      const double work = 0.5 * (mfem::InnerProduct(Comm(), f_ext_n_, du) +
+                                 mfem::InnerProduct(Comm(), f_new, du));
+      const mfem::Array<int> &ess = problem_.EssentialTrueDofs();
+      double support = 0.0, global_support = 0.0;
+      for (int k = 0; k < ess.Size(); k++)
+      {
+        const int i = ess[k];
+        support += 0.5 * (balance_n_(i) + balance(i)) * du(i);
+      }
+      MPI_Allreduce(&support, &global_support, 1, MPI_DOUBLE, MPI_SUM, Comm());
+      external_work_ += work + global_support;
+      f_ext_n_ = f_new;
+    }
+    balance_n_ = balance;
+    balance_valid_ = true;
   }
-  MPI_Allreduce(&support, &global_support, 1, MPI_DOUBLE, MPI_SUM, Comm());
-  external_work_ += work + global_support;
+  else { balance_valid_ = false; }
 
   u_n_ = x_u;
   v_n_ = v_new;
   a_n_ = a_new;
-  balance_n_ = balance;
-  f_ext_n_ = f_new;
+  x_n_ = x;
   t_n_ = t_;
   stepping_ = false;
   steps_++;
@@ -291,6 +319,11 @@ std::vector<double> DynamicSolidProblem::InertialForce() const
 std::vector<Reaction> DynamicSolidProblem::Reactions() const
 {
   MFEM_VERIFY(initialized_, "DynamicSolidProblem: call Initialize() first");
+  if (!balance_valid_)
+  {
+    FullBalance(x_n_, a_n_, balance_n_);
+    balance_valid_ = true;
+  }
   return problem_.ReactionsFrom(balance_n_, u_n_);
 }
 
@@ -355,6 +388,52 @@ std::unique_ptr<DynamicSolidProblem> MakeDynamicSolidProblem(SolidProblem &probl
       std::make_unique<ExpressionVectorCoefficient>(cfg.dynamics.initial_velocity)));
   }
   return dynamic;
+}
+
+std::vector<std::string> DescribeDynamics(const AppConfig &cfg)
+{
+  const DynamicsConfig &d = cfg.dynamics;
+  const TimeIntegration ti = MakeTimeIntegration(d);
+  double smallest = d.t_final, largest = 0.0, t_prev = 0.0;
+  for (double t : d.breakpoints)
+  {
+    smallest = std::min(smallest, t - t_prev);
+    largest = std::max(largest, t - t_prev);
+    t_prev = t;
+  }
+  std::vector<std::string> lines;
+  char buf[256];
+  if (largest - smallest <= 1e-9 * largest)
+  {
+    std::snprintf(buf, sizeof(buf), "dynamics: %s, t_final %g, %zu time steps of %g",
+                  ti.Description().c_str(), d.t_final, d.breakpoints.size(), largest);
+  }
+  else
+  {
+    std::snprintf(buf, sizeof(buf), "dynamics: %s, t_final %g, %zu time steps from %g to %g",
+                  ti.Description().c_str(), d.t_final, d.breakpoints.size(), smallest, largest);
+  }
+  lines.push_back(buf);
+  for (const BoundaryCondition &bc : cfg.bcs.dirichlet)
+  {
+    lines.push_back("  dirichlet " + bc.name + ": " + DescribeTimeDependence(bc.schedule, bc.expression));
+  }
+  for (const BoundaryCondition &bc : cfg.bcs.traction)
+  {
+    lines.push_back("  traction " + bc.name + " (" + bc.type + "): " +
+                    DescribeTimeDependence(bc.schedule, bc.expression));
+  }
+  if (!cfg.body_force.Empty())
+  {
+    lines.push_back("  body force: " +
+                    DescribeTimeDependence(cfg.body_force.schedule, cfg.body_force.expression));
+  }
+  if (!ti.UnconditionallyStable())
+  {
+    lines.push_back("  warning: this parameter pair is only conditionally stable "
+                    "(unconditional stability needs 2 beta >= gamma >= 1/2)");
+  }
+  return lines;
 }
 
 } // namespace cmf

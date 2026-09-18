@@ -144,6 +144,13 @@ struct BCConfig
   std::vector<BoundaryCondition> traction;
 };
 
+// In a dynamic analysis (the `dynamics` block) t is the physical time: ramps
+// and tables are given on [0, t_final] (a ramp defaults to that interval), the
+// value at t = 0 is the right limit, and an entry without a schedule is
+// constant, i.e. its data is the expression as it stands, a step load when the
+// expression does not mention t. The quasi-static default ramp over the
+// pseudo-time has no meaning there.
+//
 // Body force per unit mass (rho0 b enters the weak form): an expression per
 // component, with a schedule (same default rule as the boundary entries).
 struct BodyForceConfig
@@ -190,7 +197,8 @@ struct LinearSolverConfig
 // Recovery from a load step whose Newton solve fails: restore the last
 // converged state, halve the increment (at most max_bisections times, never
 // below min_dt) and retry; after a converged reduced step the stepper aims at
-// the planned breakpoint again (no growth beyond the planned grid).
+// the planned breakpoint again (no growth beyond the planned grid). In a
+// dynamic analysis min_dt is a time (default: 1e-3 of the smallest planned step).
 struct SubstepConfig
 {
   bool on_failure = false;
@@ -224,7 +232,14 @@ struct SolverConfig
 // time_integration.hpp): newmark (beta, gamma; the default 1/4, 1/2 is the
 // trapezoidal rule), hht (alpha in [0, 1/3]) and generalized_alpha (rho_inf in
 // [0, 1], the spectral radius at infinite frequency: 1 no dissipation, 0
-// asymptotic annihilation).
+// asymptotic annihilation). YAML:
+//   dynamics:
+//     t_final: 2.0e-2
+//     dt: 1.0e-5            # or steps: [ { to: 5.0e-3, n: 1000 }, { to: 2.0e-2, n: 300 } ]
+//     scheme: newmark       # newmark (beta, gamma) | hht (alpha) | generalized_alpha (rho_inf)
+//     initial: { displacement: ["0", "0"], velocity: ["0", "1.5*x"] }   # f(x, y, z)
+// dt is reduced to t_final / n when t_final is not a multiple of it. With the
+// block present solver.load_steps, solver.steps and solver.predictor are errors.
 struct DynamicsConfig
 {
   bool enabled = false;
@@ -274,6 +289,12 @@ struct OutputConfig
   // Resultant force and moment (about the origin, current positions) that
   // each Dirichlet entry exerts on the body, after every step and at the end.
   bool reactions = false;
+  // ParaView stride: every n-th step is written (and always the last one);
+  // the probe, reaction and energy lines stay per step.
+  int every = 1;
+  // Dynamic analysis: after every step a line with the kinetic and the
+  // internal energy, the external work and their balance.
+  bool energy = false;
 };
 
 struct AppConfig
@@ -303,12 +324,30 @@ AppConfig LoadConfig(const std::string &path);
 void ValidateMaterialConfig(const MaterialConfig &cfg, const std::string &path = "material");
 
 // Individual section parsers, exposed so tests and other physics can reuse them.
+// t_final > 0 (a dynamic analysis) puts the schedules in physical time, see
+// BoundaryCondition; `dynamics` enabled makes the pseudo-time keys of the
+// solver section errors and admits the dynamic output keys.
 MeshConfig ParseMeshConfig(const YAML::Node &node, const std::string &path);
 MaterialConfig ParseMaterialConfig(const YAML::Node &node, const std::string &path);
-BCConfig ParseBCConfig(const YAML::Node &node, const std::string &path);
-BodyForceConfig ParseBodyForceConfig(const YAML::Node &node, const std::string &path);
-Schedule ParseSchedule(const YAML::Node &node, const std::string &path);
-SolverConfig ParseSolverConfig(const YAML::Node &node, const std::string &path);
-OutputConfig ParseOutputConfig(const YAML::Node &node, const std::string &path);
+DynamicsConfig ParseDynamicsConfig(const YAML::Node &node, const std::string &path);
+BCConfig ParseBCConfig(const YAML::Node &node, const std::string &path, double t_final = 0.0);
+BodyForceConfig ParseBodyForceConfig(const YAML::Node &node, const std::string &path,
+                                     double t_final = 0.0);
+Schedule ParseSchedule(const YAML::Node &node, const std::string &path, double t_final = 0.0);
+SolverConfig ParseSolverConfig(const YAML::Node &node, const std::string &path,
+                               const DynamicsConfig &dynamics = DynamicsConfig());
+OutputConfig ParseOutputConfig(const YAML::Node &node, const std::string &path,
+                               bool dynamic = false);
+
+// Parameter ranges of cfg.scheme (unknown scheme, beta <= 0, gamma < 1/2,
+// alpha outside [0, 1/3], rho_inf outside [0, 1]); errors name the key under path.
+void ValidateDynamicsScheme(const DynamicsConfig &cfg, const std::string &path = "dynamics");
+
+// "constant", "ramp over [a, b]" or "table of n points", with a note when the
+// expression itself depends on t: the time dependence of an entry, for the
+// header of a dynamic run (where the default schedule differs from the
+// quasi-static one).
+std::string DescribeTimeDependence(const Schedule &schedule,
+                                   const std::vector<std::string> &expression);
 
 } // namespace cmf

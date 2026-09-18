@@ -7,7 +7,7 @@ trailers). This extends the framework of `doc/hyperelasticity_implementation_pla
 mesh never moves, thin `apps/`, `myapps/` untouched, materials are stateless value types, no
 per-exercise drivers) still hold.
 
-**Status (2026-09-18):** DY1 complete.
+**Status (2026-09-18):** DY1 and DY2 complete.
 DY1 complete: `tests/test_dynamics.cpp` (177 checks, 5.5 s, in `make check`); every existing
 test line and the logs of `cook.yaml`, `bar_linear.yaml` and `cook_linear_incompressible.yaml`
 are identical to those of the commit before. Measured: total mass `1.M.1 = sum rho_r V_r` to
@@ -40,6 +40,21 @@ check is that it never exceeds `E_0` and is lower at the end. (c) Equal steps `t
 differ in the last digits of `t_{k+1} - t_k`, which would give a new `c_M`, a new sum and a new
 AMG setup at every step of a linear problem: the decorator keeps the previous increment when
 the new one agrees with it to 1e-12. (d) The np 2 / 4 comparison needs inputs and moves to DY3.
+DY2 complete: the `dynamics` block, schedules in physical time, `output.every` / `energy`, the
+fields `velocity` and `acceleration`, the app branch; 85 new parser checks in `test_base` (every
+error of Section 3) and a YAML-driven run in `test_dynamics` (189 checks). First input,
+`apps/input/dynamics/bar_free_vibration.yaml`: the tip displacement after 20 steps of 0.02
+equals `A cos(w~ t)` with the trapezoidal rule's own dispersion `tan(w~ dt/2) = w dt/2` to
+1e-9 A (against the continuum frequency it is off by the predicted 3e-5 A); energy balance
+1e-16 over the 2000 steps of the input; serial and np 4 agree to 12 digits. `make check` green,
+the three reference logs unchanged. Deviations: `output.every` is honoured by both analyses
+(default 1, so nothing changes); a `dt` that does not divide `t_final` is shortened to
+`t_final / n` instead of being an error; `substep.min_dt` defaults to 1e-3 of the smallest
+planned step under dynamics; the full static residual that `AcceptStep` evaluates (support
+forces, `S_n`) is skipped when neither the external work is tracked (`output.energy`) nor the
+scheme interpolates forces, and `Reactions()` then forms it on demand: a linear run is
+residual-bound (16 ms per step on the 3075-dof bar, three residual evaluations against one
+AMG-CG solve), so this is a third of the time.
 
 **Goal:** an optional top-level `dynamics:` block turns the quasi-static problem into
 

@@ -1,4 +1,5 @@
-// Quasi-static total Lagrangian solid mechanics: YAML in, ParaView out.
+// Total Lagrangian solid mechanics, quasi-static or (with a `dynamics` block
+// in the input) dynamic: YAML in, ParaView out.
 // This executable only parses input and wires library objects together.
 #include <cstdio>
 #include <iostream>
@@ -10,6 +11,7 @@
 #include "base/output.hpp"
 #include "base/probes.hpp"
 #include "mfem.hpp"
+#include "physics/dynamic_solid_problem.hpp"
 #include "physics/solid_problem.hpp"
 #include "solvers/quasi_static.hpp"
 
@@ -36,6 +38,13 @@ int main(int argc, char *argv[])
     std::unique_ptr<cmf::SolidProblem> problem = cmf::MakeSolidProblem(*pmesh, cfg);
     cmf::SolidProblem &physics = *problem;
     physics.Finalize();
+    // With a dynamics block: the same problem with inertia, stepped in time.
+    std::unique_ptr<cmf::DynamicSolidProblem> dynamic;
+    if (cfg.dynamics.enabled)
+    {
+      dynamic = cmf::MakeDynamicSolidProblem(physics, cfg);
+      dynamic->TrackExternalWork(cfg.output.energy);
+    }
 
     const HYPRE_BigInt global_ne = pmesh->GetGlobalNE();
     const HYPRE_BigInt global_tdofs = physics.GlobalTrueVSize();
@@ -46,21 +55,42 @@ int main(int argc, char *argv[])
                 << ", " << physics.Description() << std::endl;
       std::cout << "  element attributes: " << cmf::DescribeAttributes(*pmesh, false)
                 << "; boundary attributes: " << cmf::DescribeAttributes(*pmesh, true) << std::endl;
+      if (dynamic)
+      {
+        for (const std::string &line : cmf::DescribeDynamics(cfg)) { std::cout << line << std::endl; }
+      }
     }
 
-    std::unique_ptr<mfem::Solver> linear = physics.MakeLinearSolver(cfg.solver.linear);
+    std::unique_ptr<mfem::Solver> linear = dynamic ? dynamic->MakeLinearSolver(cfg.solver.linear)
+                                                   : physics.MakeLinearSolver(cfg.solver.linear);
     mfem::Vector u(physics.Height());
     u = 0.0;
 
     cmf::FieldRegistry fields;
-    physics.RegisterFields(fields);
+    if (dynamic) { dynamic->RegisterFields(fields); }
+    else { physics.RegisterFields(fields); }
+    auto update_fields = [&](const mfem::Vector &x)
+    {
+      if (dynamic) { dynamic->UpdateFields(x); }
+      else { physics.UpdateFields(x); }
+    };
+    if (dynamic)
+    {
+      // u_0, the Dirichlet data of t = 0, v_0 and the consistent a_0.
+      const double change = dynamic->Initialize(u);
+      if (root && change > 1e-12)
+      {
+        std::printf("  warning: the Dirichlet data at t = 0 changed the initial displacement by up "
+                    "to %.3e on the prescribed dofs\n", change);
+      }
+    }
     std::unique_ptr<cmf::ParaViewWriter> writer;
     if (!cfg.output.paraview.empty())
     {
       writer = std::make_unique<cmf::ParaViewWriter>(
         cfg.output.paraview, *pmesh, cfg.mesh.order, cfg.output.high_order);
       writer->RegisterAll(cfg.output, fields);
-      physics.UpdateFields(u);
+      update_fields(u);
       writer->Save(0, 0.0);
     }
 
@@ -90,11 +120,12 @@ int main(int argc, char *argv[])
       }
     };
 
-    // Resultant force and moment of every Dirichlet entry (output.reactions).
+    // Resultant force and moment of every Dirichlet entry (output.reactions);
+    // in a dynamic analysis of the balance with inertia at the accepted state.
     auto print_reactions = [&](const std::string &prefix, const mfem::Vector &x)
     {
       if (!cfg.output.reactions) { return; }
-      for (const cmf::Reaction &rx : physics.Reactions(x))
+      for (const cmf::Reaction &rx : dynamic ? dynamic->Reactions() : physics.Reactions(x))
       {
         if (root)
         {
@@ -107,26 +138,58 @@ int main(int argc, char *argv[])
       }
     };
 
-    const cmf::QuasiStaticReport report = cmf::SolveQuasiStatic(
-      physics, *linear, cfg.solver, u,
-      [&](const cmf::LoadStepReport &step, const mfem::Vector &x)
+    // Kinetic and internal energy, external work and their balance
+    // (output.energy, dynamic analysis).
+    double energy_0 = 0.0;
+    auto print_energy = [&](const std::string &prefix, const mfem::Vector &x)
+    {
+      if (!dynamic || !cfg.output.energy) { return; }
+      const double kinetic = dynamic->KineticEnergy(), internal = physics.InternalEnergy(x);
+      if (dynamic->Steps() == 0) { energy_0 = kinetic + internal; }
+      if (root)
       {
-        if (!step.newton.converged) { return; }
-        if (writer || cfg.output.probe_every_step) { physics.UpdateFields(x); }
-        if (writer) { writer->Save(step.step, step.load_factor); }
-        char prefix[64];
-        std::snprintf(prefix, sizeof(prefix), "step %d t = %.6f ", step.step, step.load_factor);
-        if (cfg.output.probe_every_step) { print_probes(prefix); }
-        print_reactions(prefix, x);
-      });
+        std::printf("%senergy: kinetic = %.12e internal = %.12e external_work = %.12e balance = %.12e\n",
+                    prefix.c_str(), kinetic, internal, dynamic->ExternalWork(),
+                    kinetic + internal - dynamic->ExternalWork() - energy_0);
+        // balance: kinetic + internal - external work - (kinetic + internal)(t = 0)
+      }
+    };
+    if (dynamic) { print_energy("step 0 t = 0.000000000e+00 ", u); }
 
-    physics.UpdateFields(u);
+    // Every output.every-th step is written, and always the last one.
+    const double t_end = dynamic ? cfg.dynamics.t_final : 1.0;
+    const cmf::LoadStepCallback on_step = [&](const cmf::LoadStepReport &step, const mfem::Vector &x)
+    {
+      if (!step.newton.converged) { return; }
+      const bool write = writer && (step.step % cfg.output.every == 0 || step.load_factor >= t_end);
+      if (write || cfg.output.probe_every_step) { update_fields(x); }
+      if (write) { writer->Save(step.step, step.load_factor); }
+      char prefix[64];
+      std::snprintf(prefix, sizeof(prefix), dynamic ? "step %d t = %.9e " : "step %d t = %.6f ",
+                    step.step, step.load_factor);
+      if (cfg.output.probe_every_step) { print_probes(prefix); }
+      print_reactions(prefix, x);
+      print_energy(prefix, x);
+    };
+    const cmf::QuasiStaticReport report =
+      dynamic ? cmf::SolveDynamic(*dynamic, *linear, cfg.solver, cfg.dynamics.breakpoints, 0.0, u, on_step)
+              : cmf::SolveQuasiStatic(physics, *linear, cfg.solver, u, on_step);
+
+    update_fields(u);
     mfem::Vector zero(pmesh->Dimension());
     zero = 0.0;
     mfem::VectorConstantCoefficient zero_coef(zero);
     const double u_l2 = physics.Displacement().ComputeL2Error(zero_coef);
     const double energy = physics.InternalEnergy(u);
-    if (root)
+    const double kinetic = dynamic ? dynamic->KineticEnergy() : 0.0; // collective
+    if (root && dynamic)
+    {
+      std::printf("result: converged %s, time steps %zu, t = %.9e, |u|_L2 = %.12e, "
+                  "internal energy = %.12e, kinetic energy = %.12e\n",
+                  report.converged ? "yes" : "no", report.steps.size(), dynamic->Time(), u_l2,
+                  energy, kinetic);
+    }
+    else if (root)
     {
       std::printf("result: converged %s, load steps %zu, |u|_L2 = %.12e, "
                   "internal energy = %.12e\n",

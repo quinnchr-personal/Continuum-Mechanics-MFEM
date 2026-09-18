@@ -54,51 +54,27 @@ std::string TimeIntegration::Description() const
 
 TimeIntegration MakeTimeIntegration(const DynamicsConfig &cfg, const std::string &path)
 {
+  ValidateDynamicsScheme(cfg, path);
   TimeIntegration ti;
   ti.scheme = cfg.scheme;
   if (cfg.scheme == "newmark")
   {
-    if (!(cfg.beta > 0.0))
-    {
-      throw ConfigError("key '" + path + ".beta' must be positive (the displacement form "
-                        "divides by beta dt^2), got " + std::to_string(cfg.beta));
-    }
-    if (!(cfg.gamma >= 0.5))
-    {
-      throw ConfigError("key '" + path + ".gamma' must be >= 0.5 (negative numerical damping "
-                        "below), got " + std::to_string(cfg.gamma));
-    }
     ti.beta = cfg.beta;
     ti.gamma = cfg.gamma;
   }
   else if (cfg.scheme == "hht")
   {
-    if (!(cfg.alpha >= 0.0 && cfg.alpha <= 1.0 / 3.0 + 1e-14))
-    {
-      throw ConfigError("key '" + path + ".alpha' must lie in [0, 1/3], got " +
-                        std::to_string(cfg.alpha));
-    }
     ti.alpha_f = cfg.alpha;
     ti.beta = 0.25 * (1.0 + cfg.alpha) * (1.0 + cfg.alpha);
     ti.gamma = 0.5 + cfg.alpha;
   }
-  else if (cfg.scheme == "generalized_alpha")
+  else
   {
-    if (!(cfg.rho_inf >= 0.0 && cfg.rho_inf <= 1.0))
-    {
-      throw ConfigError("key '" + path + ".rho_inf' must lie in [0, 1], got " +
-                        std::to_string(cfg.rho_inf));
-    }
     const double r = cfg.rho_inf;
     ti.alpha_m = (2.0 * r - 1.0) / (r + 1.0);
     ti.alpha_f = r / (r + 1.0);
     ti.beta = 0.25 * (1.0 - ti.alpha_m + ti.alpha_f) * (1.0 - ti.alpha_m + ti.alpha_f);
     ti.gamma = 0.5 - ti.alpha_m + ti.alpha_f;
-  }
-  else
-  {
-    throw ConfigError("key '" + path + ".scheme': unknown scheme '" + cfg.scheme +
-                      "' (expected newmark, hht, or generalized_alpha)");
   }
   return ti;
 }

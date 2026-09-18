@@ -106,7 +106,12 @@ public:
   // constant when the problem is linear and the scheme the trapezoidal rule.
   // Follower pressures are not dead loads and are not counted.
   double KineticEnergy() const;
-  double ExternalWork() const { return external_work_; }
+  double ExternalWork() const;
+  // The external work costs one evaluation of the full static residual per
+  // accepted step (it needs the support forces of every step). Without it,
+  // and with a scheme that does not interpolate the forces (alpha_f = 0), that
+  // evaluation is left to the first call of Reactions() for a state. On by default.
+  void TrackExternalWork(bool on) { track_work_ = on; }
   // Resultant of M a_n per component (the rate of linear momentum), global.
   std::vector<double> InertialForce() const;
   // Reactions of the full balance S_full + M a at the accepted state: a
@@ -121,6 +126,8 @@ public:
 private:
   void AssembleMass();
   void ZeroEssentialRows(mfem::Vector &y) const;
+  // S_full(x) + M a on the displacement block.
+  void FullBalance(const mfem::Vector &x, const mfem::Vector &a, mfem::Vector &balance) const;
 
   SolidProblem &problem_;
   TimeIntegration ti_;
@@ -141,8 +148,13 @@ private:
   bool stepping_ = false;
   int steps_ = 0;
   mfem::Vector u_n_, v_n_, a_n_;   // displacement true dofs
+  mfem::Vector x_n_;               // the accepted unknown (with the pressure block, if any)
   mfem::Vector S_n_;               // static residual of the unknown, essential rows zero
-  mfem::Vector balance_n_;         // S_full + M a of the unknown (reactions, support work)
+  // S_full + M a of the unknown (reactions, support work); formed on demand
+  // when the step did not need it.
+  mutable mfem::Vector balance_n_;
+  mutable bool balance_valid_ = false;
+  bool track_work_ = true;
   mfem::Vector f_ext_n_;           // dead load at t_n
   mfem::Vector u_pred_, v_pred_, h_n_;
   double external_work_ = 0.0;
@@ -167,5 +179,12 @@ private:
 // (evaluated in Initialize; the coefficients are owned by the returned object).
 std::unique_ptr<DynamicSolidProblem> MakeDynamicSolidProblem(SolidProblem &problem,
                                                              const AppConfig &cfg);
+
+// The header of a dynamic run, one line per entry: the scheme and the time
+// steps, the resolved time dependence of every Dirichlet entry, traction and
+// the body force (the default schedule differs from the quasi-static one, so
+// nothing about it is left implicit), and warnings (a conditionally stable
+// Newmark pair).
+std::vector<std::string> DescribeDynamics(const AppConfig &cfg);
 
 } // namespace cmf

@@ -4,9 +4,11 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <fstream>
 #include <set>
 #include <sstream>
+#include <utility>
 
 namespace cmf
 {
@@ -109,9 +111,11 @@ private:
   std::set<std::string> used_;
 };
 
-// Ramp s = t, unless the data already depends on t (then constant).
-Schedule DefaultSchedule(const std::vector<std::string> &expression)
+// Ramp s = t, unless the data already depends on t (then constant). In a
+// dynamic analysis (t_final > 0) always constant: the data is the expression.
+Schedule DefaultSchedule(const std::vector<std::string> &expression, double t_final)
 {
+  if (t_final > 0.0) { return Schedule::Constant(); }
   for (const std::string &e : expression)
   {
     if (Expression::Parse(e).UsesTime()) { return Schedule::Constant(); }
@@ -119,8 +123,46 @@ Schedule DefaultSchedule(const std::vector<std::string> &expression)
   return Schedule::Ramp();
 }
 
+// steps: [ { to: t_1, n: n_1 }, ... ], t_k increasing, the last one `end`
+// (1 for the pseudo-time, named "1" / "1.0" in the messages; t_final otherwise).
+std::vector<double> ParseStepSegments(const YAML::Node &steps, const std::string &spath,
+                                      double end, const std::string &end_name,
+                                      const std::string &end_value)
+{
+  if (!steps.IsSequence() || steps.size() == 0)
+  {
+    throw ConfigError("'" + spath + "' must be a non-empty list of {to, n} maps");
+  }
+  std::vector<double> breakpoints;
+  double t_prev = 0.0;
+  for (std::size_t i = 0; i < steps.size(); i++)
+  {
+    NodeReader seg(steps[i], spath + "[" + std::to_string(i) + "]");
+    const double to = seg.Require<double>("to");
+    const int n = seg.Require<int>("n");
+    if (!(to > t_prev) || to > end * (1.0 + 1e-12))
+    {
+      throw ConfigError("key '" + seg.Path("to") + "' must increase and end at " + end_name);
+    }
+    if (n < 1) { throw ConfigError("key '" + seg.Path("n") + "' must be >= 1"); }
+    for (int k = 1; k <= n; k++)
+    {
+      breakpoints.push_back(t_prev + (to - t_prev) * double(k) / double(n));
+    }
+    t_prev = to;
+    seg.Finish();
+  }
+  if (std::abs(t_prev - end) > 1e-12 * end)
+  {
+    throw ConfigError("'" + spath + "': the last segment must end at to: " + end_value);
+  }
+  breakpoints.back() = end;
+  return breakpoints;
+}
+
 std::vector<BoundaryCondition> ParseBCList(const YAML::Node &node,
-                                           const std::string &path, bool dirichlet)
+                                           const std::string &path, bool dirichlet,
+                                           double t_final)
 {
   std::vector<BoundaryCondition> list;
   if (!node.IsDefined() || node.IsNull()) { return list; }
@@ -232,11 +274,14 @@ std::vector<BoundaryCondition> ParseBCList(const YAML::Node &node,
       }
     }
     else { item.Optional<int>("components", 0); }
-    if (item.Has("schedule")) { bc.schedule = ParseSchedule(item.Raw("schedule"), item_path + ".schedule"); }
+    if (item.Has("schedule"))
+    {
+      bc.schedule = ParseSchedule(item.Raw("schedule"), item_path + ".schedule", t_final);
+    }
     else
     {
       item.Optional<int>("schedule", 0);
-      bc.schedule = DefaultSchedule(bc.expression);
+      bc.schedule = DefaultSchedule(bc.expression, t_final);
     }
     for (int a : bc.attr)
     {
@@ -334,17 +379,21 @@ Schedule Schedule::Table(const std::vector<double> &t, const std::vector<double>
 
 // schedule: { type: ramp, from: 0.0, to: 1.0 } | { type: constant }
 //         | { type: table, t: [..], s: [..] }
-Schedule ParseSchedule(const YAML::Node &node, const std::string &path)
+Schedule ParseSchedule(const YAML::Node &node, const std::string &path, double t_final)
 {
   NodeReader r(node, path);
   Schedule sch;
+  // The pseudo-time runs over [0, 1], the physical time over [0, t_final].
+  const bool physical = t_final > 0.0;
+  const double end = physical ? t_final : 1.0;
+  const std::string end_name = physical ? "t_final" : "1";
   const std::string type = r.Require<std::string>("type");
   if (type == "ramp")
   {
-    sch = Schedule::Ramp(r.Optional<double>("from", 0.0), r.Optional<double>("to", 1.0));
-    if (!(sch.from >= 0.0 && sch.to <= 1.0 && sch.from < sch.to))
+    sch = Schedule::Ramp(r.Optional<double>("from", 0.0), r.Optional<double>("to", end));
+    if (!(sch.from >= 0.0 && sch.to <= end * (1.0 + 1e-12) && sch.from < sch.to))
     {
-      throw ConfigError("keys '" + r.Path("from") + "'/'to' must satisfy 0 <= from < to <= 1");
+      throw ConfigError("keys '" + r.Path("from") + "'/'to' must satisfy 0 <= from < to <= " + end_name);
     }
   }
   else if (type == "constant") { sch = Schedule::Constant(); }
@@ -357,9 +406,9 @@ Schedule ParseSchedule(const YAML::Node &node, const std::string &path)
     }
     for (std::size_t i = 0; i < sch.t.size(); i++)
     {
-      if (sch.t[i] < 0.0 || sch.t[i] > 1.0 || (i > 0 && !(sch.t[i] > sch.t[i - 1])))
+      if (sch.t[i] < 0.0 || sch.t[i] > end * (1.0 + 1e-12) || (i > 0 && !(sch.t[i] > sch.t[i - 1])))
       {
-        throw ConfigError("key '" + r.Path("t") + "' must increase strictly within [0, 1]");
+        throw ConfigError("key '" + r.Path("t") + "' must increase strictly within [0, " + end_name + "]");
       }
     }
   }
@@ -694,19 +743,20 @@ MaterialConfig ParseMaterialConfig(const YAML::Node &node,
   return cfg;
 }
 
-BCConfig ParseBCConfig(const YAML::Node &node, const std::string &path)
+BCConfig ParseBCConfig(const YAML::Node &node, const std::string &path, double t_final)
 {
   BCConfig cfg;
   if (!node.IsDefined() || node.IsNull()) { return cfg; }
   NodeReader r(node, path);
-  cfg.dirichlet = ParseBCList(r.Raw("dirichlet"), r.Path("dirichlet"), true);
-  cfg.traction = ParseBCList(r.Raw("traction"), r.Path("traction"), false);
+  cfg.dirichlet = ParseBCList(r.Raw("dirichlet"), r.Path("dirichlet"), true, t_final);
+  cfg.traction = ParseBCList(r.Raw("traction"), r.Path("traction"), false, t_final);
   r.Finish();
   return cfg;
 }
 
 // body_force: { expression: ["bx", "by", "bz"], schedule: {..} }.
-BodyForceConfig ParseBodyForceConfig(const YAML::Node &node, const std::string &path)
+BodyForceConfig ParseBodyForceConfig(const YAML::Node &node, const std::string &path,
+                                     double t_final)
 {
   BodyForceConfig cfg;
   if (!node.IsDefined() || node.IsNull()) { return cfg; }
@@ -724,21 +774,41 @@ BodyForceConfig ParseBodyForceConfig(const YAML::Node &node, const std::string &
       throw ConfigError("key '" + path + ".expression[" + std::to_string(k) + "]': " + e.what());
     }
   }
-  if (r.Has("schedule")) { cfg.schedule = ParseSchedule(r.Raw("schedule"), r.Path("schedule")); }
+  if (r.Has("schedule")) { cfg.schedule = ParseSchedule(r.Raw("schedule"), r.Path("schedule"), t_final); }
   else
   {
     r.Optional<int>("schedule", 0);
-    cfg.schedule = DefaultSchedule(cfg.expression);
+    cfg.schedule = DefaultSchedule(cfg.expression, t_final);
   }
   r.Finish();
   return cfg;
 }
 
-SolverConfig ParseSolverConfig(const YAML::Node &node, const std::string &path)
+SolverConfig ParseSolverConfig(const YAML::Node &node, const std::string &path,
+                               const DynamicsConfig &dynamics)
 {
   SolverConfig cfg;
+  // A failed time step may be halved down to 1e-3 of the smallest planned one.
+  if (dynamics.enabled)
+  {
+    double smallest = dynamics.t_final, t_prev = 0.0;
+    for (double t : dynamics.breakpoints) { smallest = std::min(smallest, t - t_prev); t_prev = t; }
+    cfg.substep.min_dt = 1e-3 * smallest;
+  }
   if (!node.IsDefined() || node.IsNull()) { return cfg; }
   NodeReader r(node, path);
+  if (dynamics.enabled)
+  {
+    for (const char *key : {"load_steps", "steps", "predictor"})
+    {
+      if (r.Has(key))
+      {
+        throw ConfigError("key '" + r.Path(key) + "' is not used in a dynamic analysis (the time "
+                          "steps are dynamics.dt or dynamics.steps; Newton starts each step from "
+                          "the last converged state)");
+      }
+    }
+  }
   cfg.predictor = r.Optional<std::string>("predictor", cfg.predictor);
   if (cfg.predictor != "none" && cfg.predictor != "tangent")
   {
@@ -758,35 +828,7 @@ SolverConfig ParseSolverConfig(const YAML::Node &node, const std::string &path)
       throw ConfigError("keys '" + r.Path("load_steps") + "' and '" + r.Path("steps") +
                         "': give one, not both");
     }
-    YAML::Node steps = r.Raw("steps");
-    const std::string spath = r.Path("steps");
-    if (!steps.IsSequence() || steps.size() == 0)
-    {
-      throw ConfigError("'" + spath + "' must be a non-empty list of {to, n} maps");
-    }
-    double t_prev = 0.0;
-    for (std::size_t i = 0; i < steps.size(); i++)
-    {
-      NodeReader seg(steps[i], spath + "[" + std::to_string(i) + "]");
-      const double to = seg.Require<double>("to");
-      const int n = seg.Require<int>("n");
-      if (!(to > t_prev) || to > 1.0 + 1e-12)
-      {
-        throw ConfigError("key '" + seg.Path("to") + "' must increase and end at 1");
-      }
-      if (n < 1) { throw ConfigError("key '" + seg.Path("n") + "' must be >= 1"); }
-      for (int k = 1; k <= n; k++)
-      {
-        cfg.breakpoints.push_back(t_prev + (to - t_prev) * double(k) / double(n));
-      }
-      t_prev = to;
-      seg.Finish();
-    }
-    if (std::abs(t_prev - 1.0) > 1e-12)
-    {
-      throw ConfigError("'" + spath + "': the last segment must end at to: 1.0");
-    }
-    cfg.breakpoints.back() = 1.0;
+    cfg.breakpoints = ParseStepSegments(r.Raw("steps"), r.Path("steps"), 1.0, "1", "1.0");
     cfg.load_steps = int(cfg.breakpoints.size());
   }
   if (r.Has("substep"))
@@ -800,7 +842,11 @@ SolverConfig ParseSolverConfig(const YAML::Node &node, const std::string &path)
     {
       throw ConfigError("key '" + ss.Path("max_bisections") + "' must be >= 1");
     }
-    if (!(sc.min_dt > 0.0 && sc.min_dt <= 1.0))
+    if (dynamics.enabled)
+    {
+      if (!(sc.min_dt > 0.0)) { throw ConfigError("key '" + ss.Path("min_dt") + "' must be positive"); }
+    }
+    else if (!(sc.min_dt > 0.0 && sc.min_dt <= 1.0))
     {
       throw ConfigError("key '" + ss.Path("min_dt") + "' must lie in (0, 1]");
     }
@@ -881,7 +927,7 @@ SolverConfig ParseSolverConfig(const YAML::Node &node, const std::string &path)
   return cfg;
 }
 
-OutputConfig ParseOutputConfig(const YAML::Node &node, const std::string &path)
+OutputConfig ParseOutputConfig(const YAML::Node &node, const std::string &path, bool dynamic)
 {
   OutputConfig cfg;
   if (!node.IsDefined() || node.IsNull()) { return cfg; }
@@ -892,6 +938,12 @@ OutputConfig ParseOutputConfig(const YAML::Node &node, const std::string &path)
   cfg.high_order = r.Optional<bool>("high_order", true);
   for (const std::string &f : cfg.fields)
   {
+    if (f == "velocity" || f == "acceleration")
+    {
+      if (dynamic) { continue; }
+      throw ConfigError("key '" + r.Path("fields") + "': field '" + f +
+                        "' needs a dynamic analysis (the dynamics block)");
+    }
     if (f != "displacement" && f != "pressure" && f != "cauchy_stress" && f != "pk1_stress" &&
         f != "deformation_gradient" && f != "strain" && f != "jacobian" && f != "vonmises" &&
         f != "energy_density" && f != "thickness_stretch")
@@ -947,8 +999,155 @@ OutputConfig ParseOutputConfig(const YAML::Node &node, const std::string &path)
   else { r.Optional<int>("probes", 0); }
   cfg.probe_every_step = r.Optional<bool>("probe_every_step", false);
   cfg.reactions = r.Optional<bool>("reactions", false);
+  cfg.every = r.Optional<int>("every", 1);
+  if (cfg.every < 1) { throw ConfigError("key '" + r.Path("every") + "' must be >= 1"); }
+  cfg.energy = r.Optional<bool>("energy", false);
+  if (cfg.energy && !dynamic)
+  {
+    throw ConfigError("key '" + r.Path("energy") + "' needs a dynamic analysis (the dynamics block)");
+  }
   r.Finish();
   return cfg;
+}
+
+void ValidateDynamicsScheme(const DynamicsConfig &cfg, const std::string &path)
+{
+  if (cfg.scheme == "newmark")
+  {
+    if (!(cfg.beta > 0.0))
+    {
+      throw ConfigError("key '" + path + ".beta' must be positive (the displacement form "
+                        "divides by beta dt^2), got " + std::to_string(cfg.beta));
+    }
+    if (!(cfg.gamma >= 0.5))
+    {
+      throw ConfigError("key '" + path + ".gamma' must be >= 0.5 (negative numerical damping "
+                        "below), got " + std::to_string(cfg.gamma));
+    }
+  }
+  else if (cfg.scheme == "hht")
+  {
+    if (!(cfg.alpha >= 0.0 && cfg.alpha <= 1.0 / 3.0 + 1e-14))
+    {
+      throw ConfigError("key '" + path + ".alpha' must lie in [0, 1/3], got " +
+                        std::to_string(cfg.alpha));
+    }
+  }
+  else if (cfg.scheme == "generalized_alpha")
+  {
+    if (!(cfg.rho_inf >= 0.0 && cfg.rho_inf <= 1.0))
+    {
+      throw ConfigError("key '" + path + ".rho_inf' must lie in [0, 1], got " +
+                        std::to_string(cfg.rho_inf));
+    }
+  }
+  else
+  {
+    throw ConfigError("key '" + path + ".scheme': unknown scheme '" + cfg.scheme +
+                      "' (expected newmark, hht, or generalized_alpha)");
+  }
+}
+
+DynamicsConfig ParseDynamicsConfig(const YAML::Node &node, const std::string &path)
+{
+  DynamicsConfig cfg;
+  if (!node.IsDefined() || node.IsNull()) { return cfg; }
+  NodeReader r(node, path);
+  cfg.enabled = true;
+  cfg.t_final = r.Require<double>("t_final");
+  CheckPositive(cfg.t_final, r.Path("t_final"));
+  if (r.Has("dt") == r.Has("steps"))
+  {
+    throw ConfigError("keys '" + r.Path("dt") + "' and '" + r.Path("steps") +
+                      "': give exactly one of them");
+  }
+  if (r.Has("dt"))
+  {
+    const double dt = r.Require<double>("dt");
+    CheckPositive(dt, r.Path("dt"));
+    if (dt > cfg.t_final * (1.0 + 1e-12))
+    {
+      throw ConfigError("key '" + r.Path("dt") + "' exceeds t_final");
+    }
+    // The number of steps: t_final / dt when that is an integer (to 1e-9),
+    // the next integer otherwise, which shortens dt to t_final / n.
+    const double ratio = cfg.t_final / dt;
+    const double nearest = std::round(ratio);
+    const int n = std::abs(ratio - nearest) <= 1e-9 * ratio ? int(nearest) : int(std::ceil(ratio));
+    cfg.breakpoints = UniformTimeSteps(cfg.t_final, n);
+    r.Optional<int>("steps", 0);
+  }
+  else
+  {
+    cfg.breakpoints = ParseStepSegments(r.Raw("steps"), r.Path("steps"), cfg.t_final, "t_final",
+                                        "t_final");
+    r.Optional<int>("dt", 0);
+  }
+  cfg.scheme = r.Optional<std::string>("scheme", cfg.scheme);
+  const std::vector<std::pair<std::string, std::string>> owners = {
+    {"beta", "newmark"}, {"gamma", "newmark"}, {"alpha", "hht"}, {"rho_inf", "generalized_alpha"}};
+  for (const auto &kv : owners)
+  {
+    if (r.Has(kv.first) && cfg.scheme != kv.second)
+    {
+      throw ConfigError("key '" + r.Path(kv.first) + "' is not used by scheme '" + cfg.scheme +
+                        "' (it belongs to " + kv.second + ")");
+    }
+  }
+  cfg.beta = r.Optional<double>("beta", cfg.beta);
+  cfg.gamma = r.Optional<double>("gamma", cfg.gamma);
+  cfg.alpha = r.Optional<double>("alpha", cfg.alpha);
+  cfg.rho_inf = r.Optional<double>("rho_inf", cfg.rho_inf);
+  ValidateDynamicsScheme(cfg, path);
+  if (r.Has("initial"))
+  {
+    NodeReader init(r.Raw("initial"), r.Path("initial"));
+    auto read = [&init](const std::string &key)
+    {
+      std::vector<std::string> e = init.Optional<std::vector<std::string>>(key, {});
+      for (std::size_t k = 0; k < e.size(); k++)
+      {
+        const std::string where = "key '" + init.Path(key) + "[" + std::to_string(k) + "]': ";
+        try
+        {
+          if (Expression::Parse(e[k]).UsesTime())
+          {
+            throw ConfigError("an initial state is a function of x, y, z only");
+          }
+        }
+        catch (const ConfigError &err) { throw ConfigError(where + err.what()); }
+      }
+      return e;
+    };
+    cfg.initial_displacement = read("displacement");
+    cfg.initial_velocity = read("velocity");
+    init.Finish();
+  }
+  else { r.Optional<int>("initial", 0); }
+  r.Finish();
+  return cfg;
+}
+
+std::string DescribeTimeDependence(const Schedule &schedule,
+                                   const std::vector<std::string> &expression)
+{
+  bool uses_time = false;
+  for (const std::string &e : expression) { uses_time = uses_time || Expression::Parse(e).UsesTime(); }
+  char buf[160];
+  switch (schedule.kind)
+  {
+    case Schedule::Kind::Ramp:
+      std::snprintf(buf, sizeof(buf), "ramp over [%g, %g]", schedule.from, schedule.to);
+      break;
+    case Schedule::Kind::Table:
+      std::snprintf(buf, sizeof(buf), "table of %zu points over [%g, %g]", schedule.t.size(),
+                    schedule.t.front(), schedule.t.back());
+      break;
+    default:
+      std::snprintf(buf, sizeof(buf), "%s", uses_time ? "its expression in t" : "constant in time (on from t = 0)");
+      return buf;
+  }
+  return std::string(buf) + (uses_time ? " times its expression in t" : "");
 }
 
 AppConfig ParseConfig(const YAML::Node &root)
@@ -978,10 +1177,13 @@ AppConfig ParseConfig(const YAML::Node &root)
   }
   cfg.mesh = ParseMeshConfig(r.Raw("mesh"), "mesh");
   cfg.material = ParseMaterialConfig(r.Raw("material"), "material");
-  cfg.bcs = ParseBCConfig(r.Raw("bcs"), "bcs");
-  cfg.body_force = ParseBodyForceConfig(r.Raw("body_force"), "body_force");
-  cfg.solver = ParseSolverConfig(r.Raw("solver"), "solver");
-  cfg.output = ParseOutputConfig(r.Raw("output"), "output");
+  // First of the sections that mention time: with it t is the physical time.
+  cfg.dynamics = ParseDynamicsConfig(r.Raw("dynamics"), "dynamics");
+  const double t_final = cfg.dynamics.enabled ? cfg.dynamics.t_final : 0.0;
+  cfg.bcs = ParseBCConfig(r.Raw("bcs"), "bcs", t_final);
+  cfg.body_force = ParseBodyForceConfig(r.Raw("body_force"), "body_force", t_final);
+  cfg.solver = ParseSolverConfig(r.Raw("solver"), "solver", cfg.dynamics);
+  cfg.output = ParseOutputConfig(r.Raw("output"), "output", cfg.dynamics.enabled);
   r.Finish();
   return cfg;
 }
