@@ -1,0 +1,30 @@
+# The incompressible limit of compressible_uniaxial_iso_neo_hookean_mixed.yaml: uniaxial
+# tension of the unit cube, isochoric neo-Hookean with mu = 0.5 MPa and kappa = inf
+# (incompressible: true), mixed u-p, stretch lambda_1 = 1.5 in x. Same boundary conditions
+# as the compressible family: rollers on X = 0, Y = 0, Z = 0, the face X = 1 moved in x
+# only, all other faces free, so the state is homogeneous with F = diag(lambda_1,
+# lambda_1^-1/2, lambda_1^-1/2) (J = 1 fixes the lateral stretch, sigma_22 = 0 the
+# pressure) and P_11 = mu (lambda_1 - lambda_1^-2), p = sigma_11 / 3
+# (doc/incompressible_hyperelasticity.tex, Sec. 4.1). The entry on X = 1 writes the full
+# affine field u = ((lambda_1 - 1) X, (lambda_1^-1/2 - 1) Y, (lambda_1^-1/2 - 1) Z) (only
+# its x component is applied) so that apps/homogeneous_compare.py reads the stretches from
+# it and checks the probed fields against the closed form.
+formulation: mixed
+mesh: { file: apps/mesh/cube.msh, order: 2 }
+material: { model: iso_neo_hookean, mu: 0.5, incompressible: true }
+bcs:
+  dirichlet:
+    - { attr: [left],   expression: ["0", "0", "0"], components: [x] }
+    - { attr: [front],  expression: ["0", "0", "0"], components: [y] }
+    - { attr: [bottom], expression: ["0", "0", "0"], components: [z] }
+    - { attr: [right],  expression: ["0.5*x", "-0.18350341907227397*y", "-0.18350341907227397*z"], components: [x] }
+solver:
+  load_steps: 4
+  newton: { rtol: 1e-11, atol: 1e-13, max_it: 30 }
+  linear: { type: gmres_amg, rtol: 1e-13, max_it: 400, krylov_dim: 100, inner_rtol: 1e-4, inner_max_it: 100 }
+output:
+  paraview: out/homogeneous_deformations/incompressible_uniaxial_iso_neo_hookean
+  fields: [displacement, pressure, jacobian, vonmises, pk1_stress, cauchy_stress]
+  probes:
+    - { name: corner, point: [1.0, 1.0, 1.0] }
+    - { name: center, point: [0.5, 0.5, 0.5] }

@@ -210,7 +210,8 @@ void CompressibleUniaxialTest(const std::string &name)
   cmf::AppConfig cfg = Load("homogeneous_deformations/" + name);
   cfg.output.fields = {"displacement", "pk1_stress", "cauchy_stress", "jacobian"};
   const double lam1 = 1.5;
-  // The penalty form of the decoupled models is the mixed one's P at p = kappa (J - 1).
+  // The penalty form of the decoupled models is the mixed one's P at p = U'(J)
+  // of the input's volumetric law, so the same closed form serves both.
   const cmf::Material material = cmf::MakeMaterial(cfg.material);
   auto P_of = [&](double lam2)
   {
@@ -355,6 +356,9 @@ int main(int argc, char *argv[])
   CompressibleUniaxialTest("compressible_uniaxial_neo_hookean.yaml");
   CompressibleUniaxialTest("compressible_uniaxial_st_venant_kirchhoff.yaml");
   CompressibleUniaxialTest("compressible_uniaxial_iso_neo_hookean_mixed.yaml");
+  CompressibleUniaxialTest("compressible_uniaxial_iso_neo_hookean_logarithmic.yaml");
+  CompressibleUniaxialTest("compressible_uniaxial_iso_neo_hookean_simo_taylor.yaml");
+  CompressibleUniaxialTest("compressible_uniaxial_iso_neo_hookean_j_log_j.yaml");
   KirschTest();
   EulerBucklingTest();
   ManufacturedTests();

@@ -496,7 +496,7 @@ void SymmetryCubeTest()
   problem->RegisterFields(fields);
   const std::vector<double> p_corner = cmf::ProbeVector(fields.Get("pressure"), {1.0, 1.0, 1.0});
   const std::vector<double> p_center = cmf::ProbeVector(fields.Get("pressure"), {0.5, 0.5, 0.5});
-  const double sigma11 = lam * lam - 1.0 / lam; // mu = 1
+  const double sigma11 = cfg.material.mu * (lam * lam - 1.0 / lam);
   std::printf("  symmetry cube: max nodal |u - u_exact| = %.3e, p = %.10f (exact %.10f)\n",
               err.Normlinf(), p_corner[0], sigma11 / 3.0);
   CHECK_MSG(err.Normlinf() <= 1e-10, "affine field reproduced with rollers");

@@ -1,4 +1,4 @@
-# Compressible uniaxial tension of the unit cube: St. Venant-Kirchhoff (E = 250, nu = 0.3),
+# Compressible uniaxial tension of the unit cube: St. Venant-Kirchhoff (E = 1.45 MPa, nu = 0.45: mu = 0.5 MPa, kappa = 4.8333 MPa),
 # stretch lambda_1 = 1.5 in x. Rollers on X = 0, Y = 0, Z = 0, the face X = 1 moved by
 # 0.5 t in x only, all other faces free, so the state is homogeneous with F =
 # diag(lambda_1, lambda_2, lambda_2) and the lateral stretch lambda_2 fixed by
@@ -6,7 +6,7 @@
 # with the material's own PK1 and compares the probed displacement and P_11.
 formulation: displacement
 mesh: { file: apps/mesh/cube.msh, order: 2 }
-material: { model: st_venant_kirchhoff, E: 250.0, nu: 0.3 }
+material: { model: st_venant_kirchhoff, E: 1.45, nu: 0.45 }   # mu = 0.5, kappa = 29/6 = 4.8333
 bcs:
   dirichlet:
     - { attr: [left],   expression: ["0", "0", "0"], components: [x] }

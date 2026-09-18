@@ -1,4 +1,4 @@
-# Homogeneous uniaxial tension to lambda = 2.0, incompressible neo-Hookean (mu = 1),
+# Homogeneous uniaxial tension to lambda = 2.0, incompressible neo-Hookean (mu = 0.5 MPa),
 # mixed u-p formulation (Taylor-Hood Q2-Q1) on the unit cube. The affine
 # displacement u = ((lambda - 1) X, (lambda^-1/2 - 1) Y, (lambda^-1/2 - 1) Z)
 # is prescribed on the end faces X = 0 (left) and X = 1 (right); the four
@@ -10,7 +10,7 @@ formulation: mixed
 mesh:
   file: apps/mesh/cube.msh        # unit cube, 2 x 2 x 2 hexahedra; physical groups bottom, front, right, back, left, top
   order: 2
-material: { model: iso_neo_hookean, mu: 1.0, incompressible: true }
+material: { model: iso_neo_hookean, mu: 0.5, incompressible: true }
 bcs:
   dirichlet:
     - { attr: [left, right], expression: ["x", "-0.2928932188134525*y", "-0.2928932188134525*z"] }

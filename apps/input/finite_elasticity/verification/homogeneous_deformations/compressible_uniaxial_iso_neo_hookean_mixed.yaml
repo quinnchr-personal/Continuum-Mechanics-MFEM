@@ -6,7 +6,7 @@
 # with the material's own PK1 and compares the probed displacement and P_11.
 formulation: mixed
 mesh: { file: apps/mesh/cube.msh, order: 2 }
-material: { model: iso_neo_hookean, mu: 40.0, kappa: 400.0 }
+material: { model: iso_neo_hookean, mu: 0.5, kappa: 4.833333333333333 }
 bcs:
   dirichlet:
     - { attr: [left],   expression: ["0", "0", "0"], components: [x] }

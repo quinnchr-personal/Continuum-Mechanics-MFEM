@@ -9,7 +9,7 @@ formulation: mixed
 mesh:
   file: apps/mesh/cube.msh
   order: 2
-material: { model: iso_neo_hookean, mu: 1.0, incompressible: true }
+material: { model: iso_neo_hookean, mu: 0.5, incompressible: true }
 bcs:
   dirichlet:
     - { attr: [left], expression: ["0", "0", "0"], components: [x] }   # X = 0 symmetry plane
