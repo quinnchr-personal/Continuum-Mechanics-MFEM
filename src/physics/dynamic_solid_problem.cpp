@@ -48,16 +48,24 @@ DynamicSolidProblem::DynamicSolidProblem(SolidProblem &problem, const DynamicsCo
   Mw_.SetSize(n_u_);
 }
 
-void DynamicSolidProblem::AssembleMass()
+// M once (it depends on nothing but the mesh and the density); the copy with
+// the essential rows and columns zeroed whenever Initialize is called.
+void DynamicSolidProblem::AssembleMass(bool eliminated)
 {
-  mfem::ParBilinearForm mass(&fes_);
-  mass.AddDomainIntegrator(new mfem::VectorMassIntegrator(problem_.ReferenceDensity()));
-  mass.Assemble();
-  mass.Finalize();
-  M_.reset(mass.ParallelAssemble());
-  M_e_ = std::make_unique<mfem::HypreParMatrix>(*M_);
-  M_e_->EliminateBC(problem_.EssentialTrueDofs(), mfem::Operator::DIAG_ZERO);
-  sum_.reset();
+  if (!M_)
+  {
+    mfem::ParBilinearForm mass(&fes_);
+    mass.AddDomainIntegrator(new mfem::VectorMassIntegrator(problem_.ReferenceDensity()));
+    mass.Assemble();
+    mass.Finalize();
+    M_.reset(mass.ParallelAssemble());
+  }
+  if (eliminated)
+  {
+    M_e_ = std::make_unique<mfem::HypreParMatrix>(*M_);
+    M_e_->EliminateBC(problem_.EssentialTrueDofs(), mfem::Operator::DIAG_ZERO);
+    sum_.reset();
+  }
 }
 
 void DynamicSolidProblem::ZeroEssentialRows(mfem::Vector &y) const
@@ -87,7 +95,7 @@ double DynamicSolidProblem::Initialize(mfem::Vector &x, double t0)
   problem_.SetPhysicalTime(true);
   t_n_ = t_ = t0;
   problem_.SetLoadFactor(t0); // finalizes the boundary conditions if needed
-  AssembleMass();
+  AssembleMass(true);
 
   mfem::Vector x_u = Head(x, n_u_);
   if (u0_) { ProjectTrueDofs(fes_, *u0_, t0, x_u); }
@@ -108,6 +116,42 @@ double DynamicSolidProblem::Initialize(mfem::Vector &x, double t0)
 
   mfem::Vector r;
   problem_.FullResidual(x, r);
+  if (Height() > n_u_)
+  {
+    // Mixed formulation at finite kappa: the pressure that belongs to u_0. The
+    // constraint row is affine in p, R_p(u_0, p + dp) = R_p(u_0, p) + K_pp dp,
+    // and K_pp = -M_p / kappa is definite. An incompressible material has
+    // K_pp = 0 and leaves p_0 as given (zero): its initial pressure would
+    // follow from the constraint on the acceleration, which is not enforced.
+    auto *J = dynamic_cast<mfem::BlockOperator *>(&problem_.GetGradient(x));
+    MFEM_VERIFY(J, "DynamicSolidProblem: a block unknown needs a block Jacobian");
+    auto *Kpp = J->IsZeroBlock(1, 1) ? nullptr : dynamic_cast<mfem::HypreParMatrix *>(&J->GetBlock(1, 1));
+    mfem::Vector diag;
+    if (Kpp) { Kpp->GetDiag(diag); }
+    double largest = diag.Size() ? diag.Normlinf() : 0.0, global_largest = 0.0;
+    MPI_Allreduce(&largest, &global_largest, 1, MPI_DOUBLE, MPI_MAX, Comm());
+    const int n_p = Height() - n_u_;
+    mfem::Vector r_p(r.GetData() + n_u_, n_p);
+    const double rp_norm = std::sqrt(mfem::InnerProduct(Comm(), r_p, r_p));
+    if (global_largest > 0.0 && rp_norm > 0.0)
+    {
+      mfem::HypreParMatrix C(*Kpp);
+      C *= -1.0;
+      mfem::HypreSmoother jacobi(C, mfem::HypreSmoother::Jacobi);
+      mfem::CGSolver cg(Comm());
+      cg.SetRelTol(1e-14);
+      cg.SetAbsTol(0.0);
+      cg.SetMaxIter(2000);
+      cg.SetPrintLevel(-1);
+      cg.SetPreconditioner(jacobi);
+      cg.SetOperator(C);
+      cg.iterative_mode = false;
+      mfem::Vector dp(n_p), x_p(x.GetData() + n_u_, n_p);
+      cg.Mult(r_p, dp);
+      x_p += dp;
+      problem_.FullResidual(x, r);
+    }
+  }
   S_n_ = r;
   ZeroEssentialRows(S_n_);
 
@@ -163,6 +207,7 @@ void DynamicSolidProblem::SetLoadFactor(double t)
   if (!(std::abs(dt - dt_) <= 1e-12 * dt_)) { dt_ = dt; }
   stepping_ = true;
   c_M_ = ti_.MassFactor(dt_);
+  *mass_factor_ = c_M_;
   const double am = ti_.alpha_m, af = ti_.alpha_f;
 
   u_pred_ = u_n_;
@@ -372,6 +417,16 @@ std::unique_ptr<mfem::Solver> DynamicSolidProblem::MakeLinearSolver(const Linear
   else if (auto *saddle = dynamic_cast<SaddlePointSolver *>(solver.get()))
   {
     saddle->SetOperatorStamp(stamp_);
+    // Lumped mass: the diagonal of M scaled to the total mass (positive on
+    // every element type and order, which row sums are not).
+    AssembleMass(false);
+    mfem::Vector lumped(n_u_), ones(n_u_);
+    M_->GetDiag(lumped);
+    ones = 1.0;
+    M_->Mult(ones, Mw_);
+    const double total = mfem::InnerProduct(Comm(), ones, Mw_), trace = mfem::InnerProduct(Comm(), ones, lumped);
+    lumped *= total / trace;
+    saddle->SetInertia(lumped, mass_factor_);
   }
   return solver;
 }
@@ -441,6 +496,12 @@ std::vector<std::string> DescribeDynamics(const AppConfig &cfg)
   {
     lines.push_back("  body force: " +
                     DescribeTimeDependence(cfg.body_force.schedule, cfg.body_force.expression));
+  }
+  if (cfg.formulation == "mixed" && !ti.Dissipative())
+  {
+    lines.push_back("  warning: the pressure of the mixed formulation carries no inertia, and an error in it "
+                    "returns at every step with the spectral radius at infinity, here 1: use "
+                    "generalized_alpha with rho_inf < 1 (or hht with alpha > 0)");
   }
   if (!ti.UnconditionallyStable())
   {

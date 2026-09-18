@@ -5,7 +5,7 @@ measures and draw the histories over the closed forms.
 
     python3 apps/dynamics_compare.py [--app build/apps/solid_mechanics] [--np N] [--out out/dynamics]
                                      [--cases bar_free_vibration bar_step_load cantilever_vibration
-                                              neo_hookean_block_vibration]
+                                              neo_hookean_block_vibration knowles_tube_oscillation]
                                      [--paraview] [--no-run] [--no-plot] [--check]
 
 No driver of its own is needed: with output.probe_every_step, output.reactions and
@@ -25,6 +25,9 @@ lines that begin with `step k t = ...`. For each case this script copies the inp
                                the pulse against Euler-Bernoulli
   neo_hookean_block_vibration  path of the free corner, and the energies: kinetic, internal
                                and their sum, which generalized-alpha never lets grow
+  knowles_tube_oscillation     mixed u-p, incompressible: the inner radius and the pressure at
+                               mid-wall over Knowles' ordinary differential equation, which
+                               this script integrates with scipy
 
 With --check the script fails unless the measures meet the tolerances of
 tests/test_dynamic_verification.cpp (make test): this checks the executable's own output
@@ -44,7 +47,8 @@ import time
 import yaml
 
 INPUT_DIR = "apps/input/dynamics"
-CASES = ["bar_free_vibration", "bar_step_load", "cantilever_vibration", "neo_hookean_block_vibration"]
+CASES = ["bar_free_vibration", "bar_step_load", "cantilever_vibration", "neo_hookean_block_vibration",
+         "knowles_tube_oscillation"]
 
 # Categorical slots 1-3 of the reference palette (fixed order, validated for
 # colour-vision deficiency in all pairings); text and grid wear ink tokens.
@@ -70,7 +74,7 @@ def prepare_input(case, variant, overrides, args):
     else:
         out.pop("paraview", None)
         out["fields"] = [f for f in out.get("fields", ["displacement"])
-                         if f in ("displacement", "velocity", "acceleration")]
+                         if f in ("displacement", "velocity", "acceleration", "pressure")]
     path = os.path.join(args.out, "inputs", variant + ".yaml")
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w") as f:
@@ -339,6 +343,61 @@ def neo_hookean_block_vibration(args, failures):
     axes[1].set_xlabel("time", color=INK_2, fontsize=9)
     axes[1].set_ylim(0.0, 1.35 * e0)
     legend(axes[1], loc="upper right", ncol=3)
+    finish(plt, fig, axes, os.path.join(args.out, case + ".png"), 2)
+
+
+def knowles_tube_oscillation(args, failures):
+    """r^2 = R^2 + c(t); rho [(c''/2) ln(b/a) - (c'^2/8)(1/a^2 - 1/b^2)]
+    = -(mu/2) [ln(B^2 a^2 / (A^2 b^2)) + c (1/a^2 - 1/b^2)], a^2 = A^2 + c, b^2 = B^2 + c."""
+    from scipy.integrate import solve_ivp
+
+    case = "knowles_tube_oscillation"
+    history = args.histories(case, case, {})
+    A, B, mu, rho, k, R_mid = 1.0, 2.0, 1.0, 1.0, 0.4, 1.5
+
+    def acceleration(c, cd):
+        a2, b2 = A * A + c, B * B + c
+        elastic = 0.5 * mu * (math.log(B * B * a2 / (A * A * b2)) + c * (1.0 / a2 - 1.0 / b2))
+        return (-2.0 * elastic / rho + 0.25 * cd * cd * (1.0 / a2 - 1.0 / b2)) / (0.5 * math.log(b2 / a2))
+
+    def pressure(R, c, cd):
+        a2, r2 = A * A + c, R * R + c
+        sigma_rr = (rho * (0.25 * acceleration(c, cd) * math.log(r2 / a2) + 0.125 * cd * cd * (1.0 / r2 - 1.0 / a2))
+                    + 0.5 * mu * (math.log((r2 - c) * a2 / (r2 * A * A)) - c / r2 + c / a2))
+        return sigma_rr - mu * (2.0 * R * R / r2 - r2 / (R * R) - 1.0) / 3.0
+
+    t = history["t"]
+    sol = solve_ivp(lambda _, y: [y[1], acceleration(y[0], y[1])], [0.0, t[-1]], [0.0, 2.0 * k], t_eval=t,
+                    rtol=1e-11, atol=1e-13)
+    a_exact = [math.sqrt(A * A + c) - A for c in sol.y[0]]
+    p_exact = [pressure(R_mid, c, cd) for c, cd in zip(sol.y[0], sol.y[1])]
+    u, p = history["inner displacement 0"], history["mid pressure 0"]
+    amplitude, p_scale = max(abs(v) for v in a_exact), max(abs(v) for v in p_exact)
+    worst = max(abs(x - y) for x, y in zip(u, a_exact)) / amplitude
+    p_worst = max(abs(x - y) for x, y, time in zip(p, p_exact, t) if time > 0.5) / p_scale
+    print("  inner radius against Knowles' equation: max difference %.2e of the amplitude %.4f; mid-wall pressure "
+          "within %.2e of its maximum %.4f (after t = 0.5)" % (worst, amplitude, p_worst, p_scale))
+    if worst > 5e-3:
+        failures.append(case + ": inner radius more than 0.5 percent from Knowles' equation")
+    if p_worst > 0.02:
+        failures.append(case + ": mid-wall pressure more than 2 percent from Knowles' equation")
+    if args.no_plot:
+        return
+    plt, fig, axes = new_figure(2, "Radial oscillation of an incompressible tube (mixed u-p)",
+                                "Displacement of the inner wall (top) and pressure unknown at mid-wall (bottom) over "
+                                "Knowles' equation.\nLargest differences: %.1e of the amplitude; %.1e of the largest "
+                                "pressure, which the inertia of the inner half carries." % (worst, p_worst))
+    reference(axes[0], t, a_exact, "Knowles' equation")
+    series(axes[0], t, u, SERIES[0], "finite elements")
+    reference(axes[1], t, p_exact, "Knowles' equation")
+    series(axes[1], t, p, SERIES[0], "finite elements")
+    axes[0].set_ylabel("inner wall displacement", color=INK_2, fontsize=9)
+    axes[1].set_ylabel("pressure at R = 1.5", color=INK_2, fontsize=9)
+    axes[1].set_xlabel("time", color=INK_2, fontsize=9)
+    axes[0].set_ylim(min(a_exact) - 0.03, max(a_exact) + 0.14)      # head room for the legend
+    axes[1].set_ylim(min(p_exact) - 0.04, max(p_exact) + 0.18)
+    legend(axes[0], ncol=2)
+    legend(axes[1], ncol=2)
     finish(plt, fig, axes, os.path.join(args.out, case + ".png"), 2)
 
 

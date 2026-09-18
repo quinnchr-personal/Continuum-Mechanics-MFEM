@@ -13,6 +13,19 @@
 //   p = -S~^{-1} r_p,   u = K~^{-1} (r_u - B~ p),
 // S~ = M_p (kappa + mu) / (kappa (mu + gamma)) by CG + Jacobi, and K~^{-1}
 // by an inner GMRES + BoomerAMG (systems options) to inner_rtol.
+//
+// Dynamic analysis (SetInertia): the displacement block is K + c_M M, and for
+// small time steps the mass dominates it. The Schur complement of a
+// mass-dominated block is a pressure Laplacian, Bt (c_M M)^{-1} B, which a
+// scaled pressure mass does not represent: measured on the quarter annulus,
+// the outer iterations rise from 18 (quasi-static) to 43 and, one refinement
+// on, to 81 at dt = 0.002. Following Cahouet and Chabard the two limits are
+// added,
+//   S~^{-1} = [M_p (kappa + mu) / (kappa (mu + gamma))]^{-1} + [Bt D^{-1} B / c_M + C]^{-1},
+// with D the lumped mass (diagonal of M scaled to the total mass), formed from
+// the blocks of the Jacobian, so that it carries their boundary conditions
+// (prescribed displacements: Neumann; free surfaces: Dirichlet), and solved by
+// CG + BoomerAMG. Without SetInertia nothing of this exists.
 #pragma once
 
 #include <memory>
@@ -37,6 +50,14 @@ public:
   // unchanged stamp (linear_solver.hpp: a linear problem).
   void SetOperator(const mfem::Operator &op) override;
   void SetOperatorStamp(OperatorStamp stamp) { stamp_ = std::move(stamp); }
+  // The displacement block of the operators to come is K + c_M M: lumped_mass
+  // is the diagonal D of the displacement true dofs, *mass_factor the current
+  // c_M (read at every setup; the owner changes it with the time step).
+  void SetInertia(const mfem::Vector &lumped_mass, std::shared_ptr<const double> mass_factor)
+  {
+    lumped_mass_ = lumped_mass;
+    mass_factor_ = std::move(mass_factor);
+  }
   // Number of setups so far (augmented blocks + AMG hierarchy).
   int Setups() const { return setups_; }
   void Mult(const mfem::Vector &b, mfem::Vector &x) const override;
@@ -71,6 +92,13 @@ private:
   std::unique_ptr<mfem::HypreParMatrix> K_aug_;  // K + gamma B W Bt
   std::unique_ptr<mfem::HypreParMatrix> B_aug_;  // B - gamma B W C (or null: use B)
   std::unique_ptr<mfem::BlockOperator> A_aug_;
+
+  // Inertial part of the Schur complement approximation (dynamic analysis).
+  mfem::Vector lumped_mass_;
+  std::shared_ptr<const double> mass_factor_;
+  std::unique_ptr<mfem::HypreParMatrix> inertial_schur_; // Bt D^{-1} B / c_M + C
+  std::unique_ptr<mfem::HypreBoomerAMG> inertial_amg_;
+  std::unique_ptr<mfem::CGSolver> inertial_solver_;
 
   std::unique_ptr<LinearSolver> stiffness_;
   std::unique_ptr<mfem::HypreParMatrix> scaled_mass_;

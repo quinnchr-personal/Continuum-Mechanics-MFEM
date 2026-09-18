@@ -5,14 +5,19 @@
 //   cantilever_vibration         first bending frequency against Euler-Bernoulli
 //   mms_dynamic_2d, mms_dynamic_3d   order p + 1 in h at a small dt, order 2 in dt (self-convergence)
 //   neo_hookean_block_vibration  self-convergence in dt, energy of the two schemes
-// With --write FILE / --check FILE only short runs of the two bar inputs are
-// made and their norms written or compared to 1e-12 (np 2 and 4 against serial).
+//   knowles_tube_oscillation     mixed u-p, incompressible: inner radius, period and mid-wall
+//                                pressure against Knowles' ordinary differential equation
+// With --write FILE / --check FILE only short runs of the two bar inputs and of
+// the tube are made and their norms written or compared (np 2 and 4 against
+// serial: 1e-12, and 1e-9 for the mixed run, whose pressure carries the
+// tolerance of the solves multiplied by c_M).
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <fstream>
 #include <functional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "base/config.hpp"
@@ -20,6 +25,7 @@
 #include "base/probes.hpp"
 #include "mfem.hpp"
 #include "physics/dynamic_solid_problem.hpp"
+#include "physics/mixed_solid_mechanics_tl.hpp"
 #include "physics/solid_problem.hpp"
 #include "solvers/quasi_static.hpp"
 #include "test_util.hpp"
@@ -387,6 +393,105 @@ void NeoHookeanBlock()
 }
 
 // ---------------------------------------------------------------------------
+// Knowles' equation for the radial oscillation of an incompressible
+// neo-Hookean tube, r^2 = R^2 + c(t) (doc/verification_manual.tex):
+//   rho [(c''/2) ln(b/a) - (c'^2/8)(1/a^2 - 1/b^2)] = -(mu/2) [ln(B^2 a^2 / (A^2 b^2)) + c (1/a^2 - 1/b^2)].
+struct KnowlesTube
+{
+  double A = 1.0, B = 2.0, mu = 1.0, rho = 1.0;
+
+  double Acceleration(double c, double cd) const
+  {
+    const double a2 = A * A + c, b2 = B * B + c;
+    const double elastic = 0.5 * mu * (std::log(B * B * a2 / (A * A * b2)) + c * (1.0 / a2 - 1.0 / b2));
+    return (-2.0 * elastic / rho + 0.25 * cd * cd * (1.0 / a2 - 1.0 / b2)) / (0.5 * std::log(b2 / a2));
+  }
+  // One classical Runge-Kutta step of (c, c').
+  void Step(double h, double &c, double &cd) const
+  {
+    const double k1c = cd, k1d = Acceleration(c, cd);
+    const double k2c = cd + 0.5 * h * k1d, k2d = Acceleration(c + 0.5 * h * k1c, cd + 0.5 * h * k1d);
+    const double k3c = cd + 0.5 * h * k2d, k3d = Acceleration(c + 0.5 * h * k2c, cd + 0.5 * h * k2d);
+    const double k4c = cd + h * k3d, k4d = Acceleration(c + h * k3c, cd + h * k3d);
+    c += h * (k1c + 2.0 * k2c + 2.0 * k3c + k4c) / 6.0;
+    cd += h * (k1d + 2.0 * k2d + 2.0 * k3d + k4d) / 6.0;
+  }
+  // The pressure unknown p = sigma_rr - mu dev(B)_rr at the material radius R.
+  double Pressure(double R, double c, double cd) const
+  {
+    const double cdd = Acceleration(c, cd);
+    const double a2 = A * A + c, r2 = R * R + c;
+    const double sigma_rr = rho * (0.25 * cdd * std::log(r2 / a2) + 0.125 * cd * cd * (1.0 / r2 - 1.0 / a2)) +
+                            0.5 * mu * (std::log((r2 - c) * a2 / (r2 * A * A)) - c / r2 + c / a2);
+    return sigma_rr - mu * (2.0 * R * R / r2 - r2 / (R * R) - 1.0) / 3.0;
+  }
+};
+
+// Times and values of the local maxima of the sampled y(t) (parabola through three samples).
+std::vector<std::pair<double, double>> Maxima(const std::vector<double> &t, const std::vector<double> &y)
+{
+  std::vector<std::pair<double, double>> m;
+  for (std::size_t k = 1; k + 1 < t.size(); k++)
+  {
+    if (!(y[k] > y[k - 1] && y[k] >= y[k + 1])) { continue; }
+    const double d = y[k - 1] - 2.0 * y[k] + y[k + 1], s = 0.5 * (y[k - 1] - y[k + 1]) / d;
+    m.push_back({t[k] + s * (t[k + 1] - t[k]), y[k] - 0.25 * (y[k - 1] - y[k + 1]) * s});
+  }
+  return m;
+}
+
+void KnowlesTubeOscillation()
+{
+  const KnowlesTube tube;
+  cmf::AppConfig cfg = cmf::LoadConfig(kDir + "knowles_tube_oscillation.yaml");
+  cfg.output.fields = {"displacement", "pressure"};
+  std::vector<double> ts{0.0}, inner{0.0}, exact{0.0}, p_mid, p_exact;
+  double c = 0.0, cd = 2.0 * 0.4, t_ode = 0.0, worst_outer = 0.0;
+  std::unique_ptr<DynamicRun> run = Run(cfg, [&](double t, DynamicRun &r)
+  {
+    const int sub = 40;
+    const double h = (t - t_ode) / sub;
+    for (int k = 0; k < sub; k++) { tube.Step(h, c, cd); }
+    t_ode = t;
+    ts.push_back(t);
+    inner.push_back(r.Probe({1.0, 0.0})[0]);
+    exact.push_back(std::sqrt(tube.A * tube.A + c) - tube.A);
+    worst_outer = std::max(worst_outer, std::abs(r.Probe({2.0, 0.0})[0] - (std::sqrt(tube.B * tube.B + c) - tube.B)));
+    auto &mixed = dynamic_cast<cmf::MixedSolidMechanicsTL &>(*r.problem);
+    p_mid.push_back(cmf::ProbeVector(mixed.Pressure(), {1.5, 0.0})[0]);
+    p_exact.push_back(tube.Pressure(1.5, c, cd));
+  });
+  CHECK_MSG(run->converged, "Knowles tube: converged");
+  double amplitude = 0.0, worst = 0.0, p_scale = 0.0, p_worst = 0.0;
+  for (std::size_t k = 0; k < ts.size(); k++)
+  {
+    amplitude = std::max(amplitude, std::abs(exact[k]));
+    worst = std::max(worst, std::abs(inner[k] - exact[k]));
+  }
+  for (std::size_t k = 0; k < p_mid.size(); k++)
+  {
+    p_scale = std::max(p_scale, std::abs(p_exact[k]));
+    if (ts[k + 1] > 0.5) { p_worst = std::max(p_worst, std::abs(p_mid[k] - p_exact[k])); } // after the start-up
+  }
+  const std::vector<std::pair<double, double>> fe = Maxima(ts, inner), ode = Maxima(ts, exact);
+  CHECK_MSG(fe.size() >= 2 && ode.size() >= 2, "Knowles tube: two maxima of the inner radius");
+  if (fe.size() >= 2 && ode.size() >= 2)
+  {
+    const double period = fe[1].first - fe[0].first, period_ode = ode[1].first - ode[0].first;
+    if (Root())
+    {
+      std::printf("  Knowles tube: inner displacement peaks at %.6f (equation %.6f); max difference over two periods "
+                  "%.2e of it, at the outer wall %.2e; period %.4f (equation %.4f); mid-wall pressure within "
+                  "%.2e of its maximum %.4f\n", fe[0].second, ode[0].second, worst / amplitude,
+                  worst_outer / amplitude, period, period_ode, p_worst / p_scale, p_scale);
+    }
+    CHECK_MSG(worst <= 5e-3 * amplitude, "Knowles tube: inner radius within 0.5 percent over two periods");
+    CHECK_MSG(std::abs(period / period_ode - 1.0) <= 5e-3, "Knowles tube: period within 0.5 percent");
+    CHECK_MSG(p_worst <= 0.02 * p_scale, "Knowles tube: mid-wall pressure within 2 percent after the start-up");
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Parallel consistency: 130 steps of the two bar inputs (not 100: at t = 1 the
 // free vibration passes through zero, and the tip displacement, the strain
 // energy and the wall reaction are then small differences of large numbers).
@@ -406,6 +511,18 @@ std::vector<double> ParallelNorms()
     norms.push_back(run->problem->InternalEnergy(run->x));
     norms.push_back(run->dyn->ExternalWork());
     norms.push_back(run->dyn->Reactions()[0].force[0]);
+  }
+  // The mixed formulation: 20 steps of the tube.
+  {
+    cmf::AppConfig cfg = cmf::LoadConfig(kDir + "knowles_tube_oscillation.yaml");
+    cfg.solver.linear.rtol = 1e-14;
+    cfg.solver.newton.rtol = 1e-12;
+    SetSteps(cfg, 20 * cfg.dynamics.breakpoints[0], 20);
+    std::unique_ptr<DynamicRun> run = Run(cfg, StepFn(), true);
+    CHECK_MSG(run->converged, "knowles_tube_oscillation.yaml: converged");
+    norms.push_back(run->Probe({1.0, 0.0})[0]);
+    norms.push_back(cmf::ProbeVector(dynamic_cast<cmf::MixedSolidMechanicsTL &>(*run->problem).Pressure(), {1.5, 0.0})[0]);
+    norms.push_back(run->dyn->KineticEnergy());
   }
   return norms;
 }
@@ -447,7 +564,8 @@ int main(int argc, char *argv[])
         // Quantities that vanish identically (no external work in free vibration) compare absolutely.
         const double diff = std::abs(norms[k] - ref), scale = std::max(std::abs(ref), 1e-30);
         if (Root()) { std::printf("  np %d, norm %zu: %.15e, reference %.15e, relative difference %.2e\n", mfem::Mpi::WorldSize(), k, norms[k], ref, diff / scale); }
-        CHECK_MSG(diff <= 1e-12 * scale || diff <= 1e-25, "parallel run matches the serial reference to 1e-12");
+        const double tol = k >= 10 ? 1e-9 : 1e-12; // norms 10.. belong to the mixed run
+        CHECK_MSG(diff <= tol * scale || diff <= 1e-25, "parallel run matches the serial reference");
       }
     }
   }
@@ -468,6 +586,8 @@ int main(int argc, char *argv[])
     Manufactured();
     std::cout << "neo-Hookean block" << std::endl;
     NeoHookeanBlock();
+    std::cout << "Knowles tube (mixed u-p)" << std::endl;
+    KnowlesTubeOscillation();
   }
   int code = cmf_test::Report(Root() ? "test_dynamic_verification" : "test_dynamic_verification (rank)");
   int global = 0;

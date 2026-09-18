@@ -112,6 +112,31 @@ void SaddlePointSolver::SetOperator(const mfem::Operator &op)
   A_aug_->SetBlock(1, 0, const_cast<mfem::HypreParMatrix *>(Bt));
   A_aug_->SetBlock(1, 1, const_cast<mfem::HypreParMatrix *>(Cneg));
 
+  // Dynamic analysis: the Laplacian that the mass-dominated displacement block
+  // leaves as its Schur complement, from the blocks at hand.
+  inertial_solver_.reset();
+  if (mass_factor_ && *mass_factor_ > 0.0)
+  {
+    mfem::HypreParMatrix DinvB(*B);
+    DinvB.InvScaleRows(lumped_mass_);
+    inertial_schur_.reset(mfem::ParMult(Bt, &DinvB, true));
+    *inertial_schur_ *= 1.0 / *mass_factor_;
+    if (std::isfinite(kappa_))
+    {
+      inertial_schur_.reset(mfem::Add(1.0, *inertial_schur_, -1.0, *Cneg));
+    }
+    inertial_amg_ = std::make_unique<mfem::HypreBoomerAMG>(*inertial_schur_);
+    inertial_amg_->SetPrintLevel(0);
+    inertial_solver_ = std::make_unique<mfem::CGSolver>(comm_);
+    inertial_solver_->SetRelTol(1e-3);
+    inertial_solver_->SetAbsTol(0.0);
+    inertial_solver_->SetMaxIter(50);
+    inertial_solver_->SetPrintLevel(-1);
+    inertial_solver_->SetPreconditioner(*inertial_amg_);
+    inertial_solver_->SetOperator(*inertial_schur_);
+    inertial_solver_->iterative_mode = false;
+  }
+
   stiffness_->SetOperator(*K_aug_);
   outer_->SetOperator(*A_aug_);
 }
@@ -129,6 +154,12 @@ void SaddlePointSolver::BlockPreconditioner::Mult(const mfem::Vector &r,
   // p = -S~^{-1} r_p
   z_p = 0.0;
   owner_.mass_solver_->Mult(r_p, z_p);
+  if (owner_.inertial_solver_)
+  {
+    mfem::Vector z_inertial(n_p);
+    owner_.inertial_solver_->Mult(r_p, z_inertial);
+    z_p += z_inertial;
+  }
   z_p *= -1.0;
 
   // u = K~^{-1} (r_u - B~ p)

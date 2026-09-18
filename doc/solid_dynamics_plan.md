@@ -7,7 +7,7 @@ trailers). This extends the framework of `doc/hyperelasticity_implementation_pla
 mesh never moves, thin `apps/`, `myapps/` untouched, materials are stateless value types, no
 per-exercise drivers) still hold.
 
-**Status (2026-09-18):** DY1, DY2 and DY3 complete.
+**Status (2026-09-18):** DY1 to DY4 complete.
 DY1 complete: `tests/test_dynamics.cpp` (177 checks, 5.5 s, in `make check`); every existing
 test line and the logs of `cook.yaml`, `bar_linear.yaml` and `cook_linear_incompressible.yaml`
 are identical to those of the commit before. Measured: total mass `1.M.1 = sum rho_r V_r` to
@@ -76,6 +76,44 @@ unrefined mesh with 800 steps and more: on the refined one the ratios are 3.74-3
 `dt = 5e-4` down: one level coarser gives 3.65), for the reason of DY1's deviation (a). (c) The
 block input runs a cycle and a half (`t_final` 1.6) rather than the 0.16 of the convergence
 study, so that its plot shows a vibration.
+DY4 complete: the decorator on the block unknown needed no change; what was added is the
+initial pressure of `u_0` at finite kappa (one solve with `K_pp`), the warning for a scheme
+without dissipation, and the solver extension the measurement asked for. Outer FGMRES
+iterations of the first Newton solve, quarter annulus, incompressible neo-Hookean (the
+quasi-static inflation on the same mesh needs 18):
+
+    dt                  0.125   0.02   0.0125   0.002
+    refine 1, before      28     33      38      43
+    refine 2, before      33     47      59      81
+    refine 1, after       14      8       8       6
+    refine 2, after       16      9       7       6
+
+"After" is the Cahouet-Chabard sum `S~^{-1} = [scaled M_p]^{-1} + [Bt D^{-1} B / c_M + C]^{-1}`
+in `SaddlePointSolver`, with `D` the diagonal of `M` scaled to the total mass and the second
+inverse by CG + BoomerAMG; it is formed from the Jacobian's own blocks, which gives it the right
+boundary conditions without a pressure Laplacian being assembled. It exists only when the
+decorator hands the solver `c_M` (`SetInertia`): `test_mixed` and the mixed app logs are
+unchanged to the last digit. Measured (`test_dynamics`, now 221 checks in 6.6 s): Herrmann
+problem whose `u` (quadratic) and `p` (linear) the Taylor-Hood pair holds exactly, at
+`nu = 0.4999` and incompressible: order 2.00 / 1.99 and 1.95 / 1.99 for `u`, 1.97 / 2.11 and
+2.06 / 2.01 for `p`; the pressure mode: two runs that differ in `p_0` alone differ at every later
+step by exactly `rho_inf` times the step before (0.6000 seven times for `rho_inf = 0.6`), which
+is decision 13(a) to four digits; `p_0 = kappa div u_0` to 6e-14. Verification case
+`knowles_tube_oscillation.yaml` (in `test_dynamic_verification`, now 54 checks in 2 min, and in
+`dynamics_compare.py`): inner displacement peak 0.280754 against 0.280749 of Knowles' equation,
+largest difference over two periods 2.3e-3 of it, period 4.2431 against 4.2428, and the pressure
+unknown at mid-wall, which the inertia of the inner half carries, within 2.0e-3 of its largest
+value after the start-up; np 2 and 4 against serial to 1e-15 (displacement, kinetic energy) and
+2e-12 (pressure).
+Deviations. (a) The order of `p` can only be seen where its temporal error stands above the
+noise of the solves: the pressure balances `M a`, and `a = (u - u*) / (beta dt^2)` multiplies the
+error of a solve by `c_M = O(1/dt^2)`. With `newton.rtol` 1e-10 that noise is 4e-5 on the unit
+square and hides the order from 400 steps on; the study uses 50-400 steps and tight solves.
+The same holds for a user: in a mixed dynamic analysis the pressure output carries the solver
+tolerance times `c_M`. (b) "Mixed and displacement formulations agree to 1e-6" is dropped: they
+are different discretisations of the same problem, and the exact-in-space order study says more.
+(c) The pressure check of the tube is made at mid-wall, where inertia carries it, not at the
+wall, where the free surface ties it to the kinematics.
 
 **Goal:** an optional top-level `dynamics:` block turns the quasi-static problem into
 

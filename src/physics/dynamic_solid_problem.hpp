@@ -125,7 +125,7 @@ public:
   void UpdateFields(const mfem::Vector &x);
 
 private:
-  void AssembleMass();
+  void AssembleMass(bool eliminated);
   void ZeroEssentialRows(mfem::Vector &y) const;
   // S_full(x) + M a on the displacement block.
   void FullBalance(const mfem::Vector &x, const mfem::Vector &a, mfem::Vector &balance) const;
@@ -146,6 +146,9 @@ private:
 
   // History of the accepted state and the step under way.
   double t_n_ = 0.0, t_ = 0.0, dt_ = 0.0, c_M_ = 0.0;
+  // c_M again, shared with the saddle-point solver of the mixed formulation
+  // (the inertial part of its Schur complement approximation).
+  std::shared_ptr<double> mass_factor_ = std::make_shared<double>(0.0);
   bool stepping_ = false;
   int steps_ = 0;
   mfem::Vector u_n_, v_n_, a_n_;   // displacement true dofs

@@ -4,7 +4,8 @@
 // numerical dissipation, the energy and momentum balances with loads and a
 // moving support, the nonlinear path (manufactured solution, Newton order,
 // self-convergence), one Jacobian and one solver setup per run of a linear
-// problem, the stepper in physical time, and the path from a YAML input.
+// problem, the stepper in physical time, the path from a YAML input, and the
+// mixed u-p formulation (DY4): orders of u and p, the pressure mode, p_0.
 #include <cmath>
 #include <cstdio>
 #include <functional>
@@ -20,6 +21,7 @@
 #include "materials/materials.hpp"
 #include "mfem.hpp"
 #include "physics/dynamic_solid_problem.hpp"
+#include "physics/mixed_solid_mechanics_tl.hpp"
 #include "physics/solid_mechanics_tl.hpp"
 #include "physics/solid_problem.hpp"
 #include "solvers/linear_solver.hpp"
@@ -844,6 +846,252 @@ void StepperTest()
   }
 }
 
+// ---------------------------------------------------------------------------
+// 11. Mixed u-p formulation (DY4): M on the displacement block, the constraint
+// row unweighted, a differential-algebraic system. Small strain (Herrmann), so
+// that u = sin(w t) U with U quadratic and p = sin(w t) P with P linear are
+// held exactly by the Taylor-Hood pair and the errors are those of the time
+// integrator. Nearly incompressible: U of QuadraticField, P = kappa div U.
+// Incompressible: U = (0.02 x^2, -0.04 x y), divergence free and zero on the
+// left side, P = 0.3 x - 0.2 y + 0.1.
+struct IncompressibleField
+{
+  double w = 5.0, mu, rho;
+  static void U(const mfem::Vector &X, mfem::Vector &u)
+  {
+    u.SetSize(2);
+    u(0) = 0.02 * X(0) * X(0);
+    u(1) = -0.04 * X(0) * X(1);
+  }
+  static double P(const mfem::Vector &X) { return 0.3 * X(0) - 0.2 * X(1) + 0.1; }
+  // sigma = 2 mu eps(U) + P I (tr eps = 0); Div sigma = mu lap(U) + grad P = (0.04 mu + 0.3, -0.2).
+  void BodyForce(const mfem::Vector &X, double t, mfem::Vector &b) const
+  {
+    mfem::Vector u;
+    U(X, u);
+    const double div_sigma[2] = {0.04 * mu + 0.3, -0.2};
+    b.SetSize(2);
+    for (int i = 0; i < 2; i++) { b(i) = std::sin(w * t) * (-w * w * u(i) - div_sigma[i] / rho); }
+  }
+  void Traction(const mfem::Vector &X, double t, mfem::Vector &T) const
+  {
+    const double x = X(0), y = X(1);
+    const double H[2][2] = {{0.04 * x, 0.0}, {-0.04 * y, -0.04 * x}};
+    double N[2] = {0.0, 0.0};
+    if (y < 1e-12) { N[1] = -1.0; }
+    else if (y > 1.0 - 1e-12) { N[1] = 1.0; }
+    else { N[0] = 1.0; }
+    T.SetSize(2);
+    for (int i = 0; i < 2; i++)
+    {
+      T(i) = P(X) * N[i];
+      for (int j = 0; j < 2; j++) { T(i) += mu * (H[i][j] + H[j][i]) * N[j]; }
+      T(i) *= std::sin(w * t);
+    }
+  }
+};
+
+mfem::Vector PressureTrueDofs(cmf::MixedSolidMechanicsTL &mixed, mfem::Coefficient &c, double t)
+{
+  c.SetTime(t);
+  mfem::ParGridFunction g(&mixed.PressureSpace());
+  g.ProjectCoefficient(c);
+  mfem::Vector tv;
+  g.GetTrueDofs(tv);
+  return tv;
+}
+
+void MixedTest()
+{
+  const double t_final = 0.8;
+  for (int incompressible = 0; incompressible < 2; incompressible++)
+  {
+    const double nu = 0.4999;
+    const cmf::LameParameters lame = cmf::LameFromYoungPoisson(kE, nu);
+    QuadraticField f;
+    f.lambda = lame.lambda;
+    f.mu = lame.mu;
+    f.rho = kRho;
+    const double kappa = lame.lambda + 2.0 * lame.mu / 3.0;
+    IncompressibleField g;
+    g.mu = lame.mu;
+    g.rho = kRho;
+    const double w = f.w;
+    mfem::VectorFunctionCoefficient exact_u(2, [&](const mfem::Vector &X, double t, mfem::Vector &u)
+    {
+      if (incompressible) { IncompressibleField::U(X, u); }
+      else { QuadraticField::U(X, u); }
+      u *= std::sin(w * t);
+    });
+    mfem::VectorFunctionCoefficient exact_v(2, [&](const mfem::Vector &X, double t, mfem::Vector &u)
+    {
+      if (incompressible) { IncompressibleField::U(X, u); }
+      else { QuadraticField::U(X, u); }
+      u *= w * std::cos(w * t);
+    });
+    mfem::FunctionCoefficient exact_p([&](const mfem::Vector &X, double t)
+    {
+      const double P = incompressible ? IncompressibleField::P(X) : kappa * (0.055 * X(0) + 0.01 * X(1));
+      return std::sin(w * t) * P;
+    });
+    mfem::VectorFunctionCoefficient body(2, [&](const mfem::Vector &X, double t, mfem::Vector &b)
+    { if (incompressible) { g.BodyForce(X, t, b); } else { f.BodyForce(X, t, b); } });
+    mfem::VectorFunctionCoefficient traction(2, [&](const mfem::Vector &X, double t, mfem::Vector &T)
+    { if (incompressible) { g.Traction(X, t, T); } else { f.Traction(X, t, T); } });
+
+    std::vector<double> err_u, err_p;
+    for (int level = 0; level < 3; level++)
+    {
+      cmf::AppConfig cfg = BaseConfig(2, "quad", 2, 2, 0.0, "linear_elastic");
+      cfg.formulation = "mixed";
+      cfg.material.nu = nu;
+      if (incompressible)
+      {
+        cfg.material.E = std::numeric_limits<double>::quiet_NaN();
+        cfg.material.nu = std::numeric_limits<double>::quiet_NaN();
+        cfg.material.mu = lame.mu;
+        cfg.material.incompressible = true;
+      }
+      // The pressure balances M a, and a = (u - u*) / (beta dt^2) carries the
+      // error of the solve multiplied by c_M = O(1 / dt^2): with the usual
+      // tolerances that noise (4e-5 here) hides the temporal error of p from
+      // 400 steps on, so the solves are tight and the steps not too small.
+      cfg.solver.linear.rtol = 1e-15;
+      cfg.solver.newton.rtol = 1e-13;
+      cfg.solver.linear.inner_rtol = 1e-4;
+      std::unique_ptr<mfem::ParMesh> mesh = BuildMesh(cfg, false);
+      std::unique_ptr<cmf::SolidProblem> problem = cmf::MakeSolidProblem(*mesh, cfg);
+      auto &mixed = dynamic_cast<cmf::MixedSolidMechanicsTL &>(*problem);
+      problem->AddDirichlet({4}, exact_u, Constant());
+      problem->AddTraction({1, 2, 3}, traction, Constant(true));
+      problem->SetBodyForce(body, Constant(true));
+      cmf::DynamicSolidProblem dyn(*problem, Scheme("generalized_alpha", 0.8));
+      dyn.SetInitialVelocity(exact_v);
+      mfem::Vector x(problem->Height());
+      x = 0.0;
+      dyn.Initialize(x);
+      std::unique_ptr<mfem::Solver> linear = dyn.MakeLinearSolver(cfg.solver.linear);
+      const cmf::QuasiStaticReport report = cmf::SolveDynamic(
+        dyn, *linear, cfg.solver, cmf::UniformTimeSteps(t_final, (incompressible ? 100 : 50) << level), 0.0, x);
+      CHECK_MSG(report.converged, "mixed: every time step converged");
+      const int n_u = problem->DisplacementSpace().GetTrueVSize();
+      const mfem::Vector x_u(x.GetData(), n_u), x_p(x.GetData() + n_u, x.Size() - n_u);
+      err_u.push_back(MaxDiff(x_u, TrueDofs(problem->DisplacementSpace(), exact_u, t_final)));
+      err_p.push_back(MaxDiff(x_p, PressureTrueDofs(mixed, exact_p, t_final)));
+    }
+    std::printf("  mixed, %s, temporal order:", incompressible ? "incompressible" : "nu = 0.4999");
+    for (std::size_t k = 0; k + 1 < err_u.size(); k++)
+    {
+      const double ru = std::log2(err_u[k] / err_u[k + 1]), rp = std::log2(err_p[k] / err_p[k + 1]);
+      std::printf(" u %.3f p %.3f;", ru, rp);
+      const std::string tag = incompressible ? "mixed incompressible" : "mixed nu 0.4999";
+      CHECK_MSG(std::abs(ru - 2.0) <= 0.1, tag + ": order 2 in dt for u, got " + std::to_string(ru));
+      CHECK_MSG(rp >= 1.8, tag + ": order 2 in dt for p, got " + std::to_string(rp));
+    }
+    std::printf(" errors u %.3e -> %.3e, p %.3e -> %.3e\n", err_u.front(), err_u.back(), err_p.front(),
+                err_p.back());
+  }
+
+  // The pressure mode: two incompressible runs that differ in p_0 alone. The
+  // pressure force is interpolated with the rest of S_u, so the difference
+  // returns with the factor -af / (1 - af) = -rho_inf at every step.
+  const double rho_inf = 0.6;
+  std::vector<mfem::Vector> pressures[2];
+  for (int pass = 0; pass < 2; pass++)
+  {
+    cmf::AppConfig cfg = BaseConfig(2, "quad", 4, 2, 0.1, "linear_elastic");
+    cfg.formulation = "mixed";
+    cfg.material.E = cfg.material.nu = std::numeric_limits<double>::quiet_NaN();
+    cfg.material.mu = 96.0;
+    cfg.material.incompressible = true;
+    cfg.solver.linear.rtol = 1e-13;
+    std::unique_ptr<mfem::ParMesh> mesh = BuildMesh(cfg, false);
+    std::unique_ptr<cmf::SolidProblem> problem = cmf::MakeSolidProblem(*mesh, cfg);
+    mfem::Vector zero(2);
+    zero = 0.0;
+    mfem::VectorConstantCoefficient fixed(zero);
+    mfem::VectorFunctionCoefficient swing(
+      2, [](const mfem::Vector &X, mfem::Vector &v) { v.SetSize(2); v(0) = 0.0; v(1) = 0.2 * X(0); });
+    problem->AddDirichlet({4}, fixed);
+    cmf::DynamicSolidProblem dyn(*problem, Scheme("generalized_alpha", rho_inf));
+    dyn.SetInitialVelocity(swing);
+    mfem::Vector x(problem->Height());
+    x = 0.0;
+    const int n_u = problem->DisplacementSpace().GetTrueVSize();
+    if (pass == 1) { for (int i = n_u; i < x.Size(); i++) { x(i) = 0.5 * std::sin(1.0 + 3.0 * i); } }
+    // The same initial acceleration in both, so that the runs differ in p_0 only.
+    mfem::Vector a0(n_u);
+    a0 = 0.0;
+    dyn.SetInitialAcceleration(a0);
+    dyn.Initialize(x);
+    std::unique_ptr<mfem::Solver> linear = dyn.MakeLinearSolver(cfg.solver.linear);
+    cmf::SolveDynamic(dyn, *linear, cfg.solver, cmf::UniformTimeSteps(0.08, 8), 0.0, x,
+                      [&](const cmf::LoadStepReport &, const mfem::Vector &y)
+                      {
+                        // a copy: pushing the view itself would move it, and leave an alias of y
+                        const mfem::Vector view(y.GetData() + n_u, y.Size() - n_u);
+                        mfem::Vector copy(view);
+                        pressures[pass].push_back(copy);
+                      });
+  }
+  std::printf("  mixed, pressure mode with rho_inf = %.1f: |p' - p| of successive steps in the ratio", rho_inf);
+  double previous = 0.0;
+  for (std::size_t k = 0; k < pressures[0].size(); k++)
+  {
+    mfem::Vector d(pressures[1][k]);
+    d -= pressures[0][k];
+    const double norm = d.Norml2();
+    if (k > 0)
+    {
+      std::printf(" %.4f", norm / previous);
+      CHECK_MSG(std::abs(norm / previous - rho_inf) <= 0.05 * rho_inf, "an error in the pressure returns with the factor rho_inf");
+    }
+    previous = norm;
+  }
+  std::printf("\n");
+
+  // Finite kappa and an initial displacement: p_0 is the pressure of u_0.
+  {
+    cmf::AppConfig cfg = BaseConfig(2, "quad", 2, 2, 0.0, "linear_elastic");
+    cfg.formulation = "mixed";
+    cfg.material.nu = 0.45;
+    std::unique_ptr<mfem::ParMesh> mesh = BuildMesh(cfg, false);
+    std::unique_ptr<cmf::SolidProblem> problem = cmf::MakeSolidProblem(*mesh, cfg);
+    auto &mixed = dynamic_cast<cmf::MixedSolidMechanicsTL &>(*problem);
+    const cmf::LameParameters lame = cmf::LameFromYoungPoisson(kE, 0.45);
+    const double kappa = lame.lambda + 2.0 * lame.mu / 3.0;
+    mfem::VectorFunctionCoefficient u0(2, [](const mfem::Vector &X, mfem::Vector &u) { QuadraticField::U(X, u); });
+    mfem::FunctionCoefficient p0([kappa](const mfem::Vector &X) { return kappa * (0.055 * X(0) + 0.01 * X(1)); });
+    cmf::DynamicSolidProblem dyn(*problem, Scheme("generalized_alpha", 0.8));
+    dyn.SetInitialDisplacement(u0);
+    mfem::Vector x(problem->Height());
+    x = 0.0;
+    dyn.Initialize(x);
+    const int n_u = problem->DisplacementSpace().GetTrueVSize();
+    const mfem::Vector x_p(x.GetData() + n_u, x.Size() - n_u);
+    const mfem::Vector exact = PressureTrueDofs(mixed, p0, 0.0);
+    std::printf("  mixed, nu = 0.45, initial displacement: max |p_0 - kappa div u_0| = %.2e of %.3f\n",
+                MaxDiff(x_p, exact), exact.Normlinf());
+    CHECK_MSG(MaxDiff(x_p, exact) <= 1e-10 * exact.Normlinf(), "the initial pressure is that of the initial displacement");
+  }
+
+  // The header warns when the scheme has no dissipation.
+  cmf::AppConfig cfg;
+  cfg.formulation = "mixed";
+  cfg.dynamics = Scheme("newmark");
+  cfg.dynamics.t_final = 1.0;
+  cfg.dynamics.breakpoints = cmf::UniformTimeSteps(1.0, 10);
+  bool warned = false;
+  for (const std::string &line : cmf::DescribeDynamics(cfg)) { warned = warned || line.find("carries no inertia") != std::string::npos; }
+  CHECK_MSG(warned, "mixed formulation with the trapezoidal rule: the header warns");
+  cfg.dynamics = Scheme("generalized_alpha", 0.8);
+  cfg.dynamics.t_final = 1.0;
+  cfg.dynamics.breakpoints = cmf::UniformTimeSteps(1.0, 10);
+  warned = false;
+  for (const std::string &line : cmf::DescribeDynamics(cfg)) { warned = warned || line.find("warning") != std::string::npos; }
+  CHECK_MSG(!warned, "mixed formulation with rho_inf = 0.8: no warning");
+}
+
 // 10. From a YAML input to the library objects (DY2): the dynamics block, the
 // initial state from expressions, the nodal fields velocity and acceleration,
 // the header of the run.
@@ -926,5 +1174,7 @@ int main(int argc, char *argv[])
   StepperTest();
   std::cout << "from a YAML input" << std::endl;
   YamlTest();
+  std::cout << "mixed u-p formulation" << std::endl;
+  MixedTest();
   return cmf_test::Report("test_dynamics");
 }
