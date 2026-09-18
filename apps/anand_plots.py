@@ -101,8 +101,9 @@ def reaction(data, name):
 
 def uniaxial_nominal(lam, psi1, kappa=KBULK):
     """Nominal stress of homogeneous uniaxial tension of the decoupled model
-    sigma = 2 Psi_1(I1bar) J^-1 dev(Bbar) + kappa (J - 1) I with the lateral
-    stretch from sigma_22 = 0 (kappa = None: incompressible, 2 Psi_1 (lambda - lambda^-2))."""
+    sigma = 2 Psi_1(I1bar) J^-1 dev(Bbar) + kappa ln(J)/J I (the logarithmic volumetric
+    law of the inputs and the reference) with the lateral stretch from sigma_22 = 0
+    (kappa = None: incompressible, 2 Psi_1 (lambda - lambda^-2))."""
     lam = np.atleast_1d(np.asarray(lam, dtype=float))
     if kappa is None:
         I1 = lam ** 2 + 2.0 / lam
@@ -113,11 +114,11 @@ def uniaxial_nominal(lam, psi1, kappa=KBULK):
         def sigma22(l2):
             J = l1 * l2 * l2
             I1b = J ** (-2.0 / 3.0) * (l1 * l1 + 2.0 * l2 * l2)
-            return 2.0 * float(psi1(I1b)) * J ** (-5.0 / 3.0) * (l2 * l2 - l1 * l1) / 3.0 + kappa * (J - 1.0)
+            return 2.0 * float(psi1(I1b)) * J ** (-5.0 / 3.0) * (l2 * l2 - l1 * l1) / 3.0 + kappa * math.log(J) / J
         l2 = brentq(sigma22, 0.2, 1.5)
         J = l1 * l2 * l2
         I1b = J ** (-2.0 / 3.0) * (l1 * l1 + 2.0 * l2 * l2)
-        s11 = 2.0 * float(psi1(I1b)) * J ** (-5.0 / 3.0) * 2.0 * (l1 * l1 - l2 * l2) / 3.0 + kappa * (J - 1.0)
+        s11 = 2.0 * float(psi1(I1b)) * J ** (-5.0 / 3.0) * 2.0 * (l1 * l1 - l2 * l2) / 3.0 + kappa * math.log(J) / J
         out[k] = s11 * J / l1
     return out
 

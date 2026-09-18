@@ -5,13 +5,14 @@
 # curved second-order geometry (apps/mesh/plate_hole.geo, after 3D_hip_v2.geo).
 formulation: mixed
 mesh: { file: apps/mesh/plate_hole.msh, order: 2 }
-material: { model: arruda_boyce, mu: 280.0, N: 26.2144, kappa: 280000.0 }   # kPa, mm: G0 = 280 kPa, lambda_L = 5.12 (N = lambda_L^2), K = 1000 G0
+material: { model: arruda_boyce, mu: 280.0, N: 26.2144, kappa: 280000.0, volumetric: logarithmic }   # kPa, mm: G0 = 280 kPa, lambda_L = 5.12 (N = lambda_L^2), K = 1000 G0, p = K ln J / J
 bcs:
   dirichlet:
     - { attr: [xbot], expression: ["0", "0", "0"], components: [x] }
     - { attr: [ybot], expression: ["0", "0", "0"], components: [y] }
     - { attr: [xtop], name: loaded, expression: ["30*t", "0", "0"] }
 solver:
+  predictor: tangent               # impose each Dirichlet increment on a linear solve about the converged state
   load_steps: 100
   substep: { on_failure: true, max_bisections: 6, min_dt: 1e-4 }
   newton: { rtol: 1e-8, atol: 1e-10, max_it: 30 }

@@ -2,14 +2,22 @@
 # sinusoidal cycles of shear strain amplitude 1 (u_x = sin(2 pi t_phys / 10 s) on the
 # face y = 1, 20 s total, so u_x = sin(4 pi t)), the face y = 0 clamped, the other
 # faces free. 100 steps as in the reference; 8 x 8 x 4 hexahedra instead of tetrahedra.
+# Volumetric law: the default quadratic one, unlike the other inputs of this set. With the
+# reference's logarithmic law (volumetric: logarithmic) the run fails at t = 0.064 for any
+# increment size: the tangent bulk modulus K (1 - ln J) / J^2 of that law softens in
+# dilatation (0.18 K at J = 1.67, zero at J = e), and at the clamped top corners, which are
+# stress singularities that this mesh and quadrature (order 2p + 3) resolve sharply, J
+# grows with the shear (1.19, 1.35, 1.47, 1.56, 1.62, 1.66 over the first six steps) until
+# the volumetric response there is lost.
 formulation: mixed
 mesh: { file: apps/mesh/shear_cube.msh, order: 2 }
-material: { model: arruda_boyce, mu: 280.0, N: 26.2144, kappa: 280000.0 }   # kPa, mm: G0 = 280 kPa, lambda_L = 5.12 (N = lambda_L^2), K = 1000 G0
+material: { model: arruda_boyce, mu: 280.0, N: 26.2144, kappa: 280000.0 }   # kPa, mm: G0 = 280 kPa, lambda_L = 5.12 (N = lambda_L^2), K = 1000 G0, p = K (J - 1)
 bcs:
   dirichlet:
     - { attr: [front], expression: ["0", "0", "0"] }
     - { attr: [back], name: top,  expression: ["sin(4*pi*t)", "0", "0"] }
 solver:
+  predictor: tangent               # impose each Dirichlet increment on a linear solve about the converged state
   load_steps: 100
   substep: { on_failure: true, max_bisections: 6, min_dt: 1e-4 }
   newton: { rtol: 1e-8, atol: 1e-10, max_it: 30 }

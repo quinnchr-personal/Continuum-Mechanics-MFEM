@@ -6,12 +6,13 @@
 # 50 steps; a failed increment is bisected.
 formulation: mixed
 mesh: { file: apps/mesh/column_twist.msh, order: 2 }
-material: { model: arruda_boyce, mu: 280.0, N: 26.2144, kappa: 280000.0 }   # kPa, mm: G0 = 280 kPa, lambda_L = 5.12 (N = lambda_L^2), K = 1000 G0
+material: { model: arruda_boyce, mu: 280.0, N: 26.2144, kappa: 280000.0, volumetric: logarithmic }   # kPa, mm: G0 = 280 kPa, lambda_L = 5.12 (N = lambda_L^2), K = 1000 G0, p = K ln J / J
 bcs:
   dirichlet:
     - { attr: [bottom], expression: ["0", "0", "0"] }
     - { attr: [top], name: top, expression: ["(x-0.5)*cos(2*pi*t) + (y-0.5)*sin(2*pi*t) - (x-0.5)", "-(x-0.5)*sin(2*pi*t) + (y-0.5)*cos(2*pi*t) - (y-0.5)", "0"] }
 solver:
+  predictor: tangent               # impose each Dirichlet increment on a linear solve about the converged state
   load_steps: 50
   substep: { on_failure: true, max_bisections: 6, min_dt: 1e-4 }
   newton: { rtol: 1e-8, atol: 1e-10, max_it: 30 }
