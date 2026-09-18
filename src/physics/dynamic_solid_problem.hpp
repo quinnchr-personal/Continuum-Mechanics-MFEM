@@ -108,9 +108,10 @@ public:
   double KineticEnergy() const;
   double ExternalWork() const;
   // The external work costs one evaluation of the full static residual per
-  // accepted step (it needs the support forces of every step). Without it,
-  // and with a scheme that does not interpolate the forces (alpha_f = 0), that
-  // evaluation is left to the first call of Reactions() for a state. On by default.
+  // accepted step (it needs the support forces of every step). Without it
+  // that evaluation is left to the first call of Reactions() for a state, and
+  // the S_n a force-interpolating scheme needs is taken from Newton's last
+  // residual. On by default.
   void TrackExternalWork(bool on) { track_work_ = on; }
   // Resultant of M a_n per component (the rate of linear momentum), global.
   std::vector<double> InertialForce() const;
@@ -159,6 +160,9 @@ private:
   mfem::Vector u_pred_, v_pred_, h_n_;
   double external_work_ = 0.0;
   mutable mfem::Vector w_, Mw_;
+  // The static residual of the last Mult and its argument: Newton's last
+  // evaluation is at the state it returns, so S_{n+1} is usually already here.
+  mutable mfem::Vector x_last_, S_last_;
 
   // K + c_M M (displacement block) and, for the mixed unknown, the block
   // operator around it; the stamp is shared with the linear solver.

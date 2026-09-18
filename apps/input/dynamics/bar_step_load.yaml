@@ -1,0 +1,38 @@
+# A step load on the free end of a fixed-free bar: the wave problem of d'Alembert. L = 10,
+# clamped at x = 0 (left), traction p = 0.25 along the axis on x = L (right), switched on at
+# t = 0 and held; linear_elastic with E = 250, nu = 0 (one-dimensional motion) and rho0 = 2.5,
+# so c = sqrt(E / rho0) = 10. A tension front of height p leaves the loaded end, reaches the wall
+# at t = L/c = 1, where it doubles, and runs back and forth with period 4L/c = 4:
+#   tip displacement: a triangle wave between 0 and 2 p L / E = 0.02 (twice the static value),
+#   wall stress: 0 for 0 < t < 1, 2p for 1 < t < 3, 0 for 3 < t < 5, ... (reaction -2 p A).
+# The exact solution is discontinuous; the finite element one rings behind every front. The
+# trapezoidal rule keeps that ringing for ever, generalized-alpha with rho_inf = 0.8 removes
+# what the mesh cannot resolve: this is where numerical dissipation earns its place
+# (apps/dynamics_compare.py draws both; tests/test_dynamic_verification.cpp records the
+# overshoot of the wall reaction of each). The load is a step, so the default schedule of a
+# dynamic analysis (constant, on from t = 0) is what is wanted: no schedule key. One time step
+# is the time the wave needs from one node to the next.
+# Run from the repository root:  build/apps/solid_mechanics -i apps/input/dynamics/bar_step_load.yaml
+mesh:
+  file: apps/mesh/bar.msh         # 10 x 1 x 1, 100 x 1 x 1 hexahedra (apps/mesh/box.geo)
+  order: 2
+material: { model: linear_elastic, E: 250.0, nu: 0.0, rho0: 2.5 }
+bcs:
+  dirichlet: [ { attr: [left], name: wall, expression: ["0", "0", "0"] } ]
+  traction:  [ { attr: [right], name: end_load, expression: ["0.25", "0", "0"] } ]
+dynamics:
+  t_final: 8.0                    # two periods
+  dt: 0.005
+  scheme: generalized_alpha
+  rho_inf: 0.8
+solver:
+  newton: { rtol: 1e-8, atol: 1e-16, max_it: 5, print_level: 0 }
+  linear: { type: cg_amg, amg: systems, rtol: 1e-13, max_it: 1000 }
+output:
+  paraview: out/dynamics/bar_step_load
+  fields: [displacement, velocity, cauchy_stress]
+  every: 20
+  probes: [ { name: tip, point: [10.0, 0.5, 0.5] }, { name: mid, point: [5.0, 0.5, 0.5] } ]
+  probe_every_step: true
+  reactions: true
+  energy: true

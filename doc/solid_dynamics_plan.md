@@ -7,7 +7,7 @@ trailers). This extends the framework of `doc/hyperelasticity_implementation_pla
 mesh never moves, thin `apps/`, `myapps/` untouched, materials are stateless value types, no
 per-exercise drivers) still hold.
 
-**Status (2026-09-18):** DY1 and DY2 complete.
+**Status (2026-09-18):** DY1, DY2 and DY3 complete.
 DY1 complete: `tests/test_dynamics.cpp` (177 checks, 5.5 s, in `make check`); every existing
 test line and the logs of `cook.yaml`, `bar_linear.yaml` and `cook_linear_incompressible.yaml`
 are identical to those of the commit before. Measured: total mass `1.M.1 = sum rho_r V_r` to
@@ -55,6 +55,27 @@ forces, `S_n`) is skipped when neither the external work is tracked (`output.ene
 scheme interpolates forces, and `Reactions()` then forms it on demand: a linear run is
 residual-bound (16 ms per step on the 3075-dof bar, three residual evaluations against one
 AMG-CG solve), so this is a third of the time.
+DY3 complete: six inputs under `apps/input/dynamics/`, `tests/test_dynamic_verification.cpp`
+(49 checks, 1 min 50 s, in `make test`; np 2 and 4 against serial to 5e-14 on 130 steps of the
+two bar inputs), `apps/dynamics_compare.py` (`make dynamics`; with `--check` in `make test`, it
+reads the executable's own per-step lines). Measured. Bar, first mode, five periods: tip within
+6.1e-4 A of `A cos(w_1 t)`, energy to 7e-14; at `dt = 0.2` the period grows by 8.135e-3 against
+`(w dt)^2/12 = 8.225e-3` and 8.171e-3 from the scheme's dispersion relation. Step load (new
+mesh `bar.msh`, 100 elements): tip peak 1.9895 and mean 1.0001 of the static deflection, front
+at mid-span at 0.5001, wall reaction 1.0000 p A on average. Cantilever: `w_1 = 0.101321`,
+0.17 percent below Euler-Bernoulli. Manufactured solutions: rates 3.006, 3.002 (2D) and 3.012,
+3.022 (3D) in `h`, self-convergence ratios 4.033, 4.010 in `dt`. Neo-Hookean block: ratios
+3.921, 3.981; energy error of the trapezoidal rule falling by 4.005, 4.001; with
+`rho_inf = 0.8` the energy never exceeds `E_0`.
+Deviations. (a) The step load's "overshoot record" is not what separates the schemes: the first
+overshoot of the wall reaction behind a front is made by the mesh and is 28 percent for both;
+what `rho_inf = 0.8` removes is the ringing that follows (rms 0.18 percent of `2 p A` late in
+the plateau against 1.62 percent), and that is what is checked. (b) The orders in `dt` are
+taken from self-convergence with steps that resolve the mesh (2D manufactured solution on the
+unrefined mesh with 800 steps and more: on the refined one the ratios are 3.74-3.78; block from
+`dt = 5e-4` down: one level coarser gives 3.65), for the reason of DY1's deviation (a). (c) The
+block input runs a cycle and a half (`t_final` 1.6) rather than the 0.16 of the convergence
+study, so that its plot shows a vibration.
 
 **Goal:** an optional top-level `dynamics:` block turns the quasi-static problem into
 

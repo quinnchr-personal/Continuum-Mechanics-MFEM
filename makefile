@@ -65,7 +65,7 @@ DEPS := $(LIB_OBJ:.o=.d) $(patsubst %.cpp,$(BUILD_DIR)/%.d,$(APP_SRC) $(TEST_SRC
 APP := $(BUILD_DIR)/apps/solid_mechanics
 TEST_OUT := $(BUILD_DIR)/tests/out
 
-.PHONY: all lib apps tests check homogeneous elastic_bar plate_with_hole meshes test clean
+.PHONY: all lib apps tests check homogeneous elastic_bar plate_with_hole dynamics meshes test clean
 
 all: lib apps tests
 
@@ -100,7 +100,7 @@ MESHES := $(MESH_DIR)/square.msh $(MESH_DIR)/cook.msh $(MESH_DIR)/cube.msh $(MES
 	$(MESH_DIR)/cube10.msh $(MESH_DIR)/shear_cube.msh $(MESH_DIR)/column_buckling.msh $(MESH_DIR)/column_twist.msh \
 	$(MESH_DIR)/cylinder_torsion.msh $(MESH_DIR)/plate_hole.msh $(MESH_DIR)/tube_quarter.msh \
 	$(MESH_DIR)/sphere_octant.msh $(MESH_DIR)/footing.msh $(MESH_DIR)/inclusion.msh \
-	$(MESH_DIR)/cube_tet.msh $(MESH_DIR)/plate_hole_2d.msh $(MESH_DIR)/column_euler.msh
+	$(MESH_DIR)/cube_tet.msh $(MESH_DIR)/plate_hole_2d.msh $(MESH_DIR)/column_euler.msh $(MESH_DIR)/bar.msh
 meshes: $(MESHES)
 $(MESH_DIR)/square.msh: $(MESH_DIR)/square.geo
 	$(GMSH) -2 -format msh22 -setnumber n 4 -o $@ $< > /dev/null
@@ -110,6 +110,9 @@ $(MESH_DIR)/cube.msh: $(MESH_DIR)/box.geo
 	$(GMSH) -3 -format msh22 -setnumber nx 2 -setnumber ny 2 -setnumber nz 2 -o $@ $< > /dev/null
 $(MESH_DIR)/beam.msh: $(MESH_DIR)/box.geo
 	$(GMSH) -3 -format msh22 -setnumber Lx 10 -setnumber nx 20 -setnumber ny 2 -setnumber nz 2 -o $@ $< > /dev/null
+# The wave-propagation bar of apps/input/dynamics: 10 x 1 x 1, one element across the section.
+$(MESH_DIR)/bar.msh: $(MESH_DIR)/box.geo
+	$(GMSH) -3 -format msh22 -setnumber Lx 10 -setnumber nx 100 -setnumber ny 1 -setnumber nz 1 -o $@ $< > /dev/null
 $(MESH_DIR)/annulus.msh: $(MESH_DIR)/annulus.geo
 	$(GMSH) -2 -order 2 -format msh22 -o $@ $< > /dev/null
 # Meshes of apps/input/anand_coupled_theories/finite_elasticity (the examples of Anand's book,
@@ -166,11 +169,17 @@ elastic_bar: $(APP)
 plate_with_hole: $(APP)
 	python3 apps/plate_with_hole_compare.py --app $(APP)
 
+# The dynamic inputs of apps/input/dynamics against their closed forms: time histories from
+# the per-step lines of the app, measures and plots in out/dynamics (needs python3 with PyYAML
+# and matplotlib; about two minutes).
+dynamics: $(APP)
+	python3 apps/dynamics_compare.py --app $(APP)
+
 # Full gates (S4): fast gates, the YAML-driven app runs serial and np=4,
 # np={2,4} consistency vs a serial reference, and the benchmarks with the
 # frozen Cook's membrane regression values, serial and np=4. Run from the
 # repository root: the inputs are referenced as apps/input/<set>/*.yaml.
-test: check $(APP) $(BUILD_DIR)/tests/test_benchmarks $(BUILD_DIR)/tests/test_parallel $(BUILD_DIR)/tests/test_verification $(BUILD_DIR)/tests/test_linear_verification
+test: check $(APP) $(BUILD_DIR)/tests/test_benchmarks $(BUILD_DIR)/tests/test_parallel $(BUILD_DIR)/tests/test_verification $(BUILD_DIR)/tests/test_linear_verification $(BUILD_DIR)/tests/test_dynamic_verification
 	$(APP) -i apps/input/finite_elasticity/cooks_membrane/cook.yaml
 	$(MFEM_MPIEXEC) -np 4 $(APP) -i apps/input/finite_elasticity/cooks_membrane/cook.yaml
 	$(APP) -i apps/input/finite_elasticity/verification/euler_bernoulli_cantilever3d.yaml
@@ -180,6 +189,11 @@ test: check $(APP) $(BUILD_DIR)/tests/test_benchmarks $(BUILD_DIR)/tests/test_pa
 	$(MFEM_MPIEXEC) -np 4 $(APP) -i apps/input/linear_elasticity/cooks_membrane/cook_linear_incompressible.yaml
 	$(BUILD_DIR)/tests/test_linear_verification
 	mkdir -p $(TEST_OUT)
+	$(BUILD_DIR)/tests/test_dynamic_verification
+	$(BUILD_DIR)/tests/test_dynamic_verification --write $(TEST_OUT)/dynamic_reference.txt
+	$(MFEM_MPIEXEC) -np 2 $(BUILD_DIR)/tests/test_dynamic_verification --check $(TEST_OUT)/dynamic_reference.txt
+	$(MFEM_MPIEXEC) -np 4 $(BUILD_DIR)/tests/test_dynamic_verification --check $(TEST_OUT)/dynamic_reference.txt
+	python3 apps/dynamics_compare.py --app $(APP) --out $(TEST_OUT)/dynamics --no-plot --check
 	$(BUILD_DIR)/tests/test_parallel --write $(TEST_OUT)/parallel_reference.txt
 	$(MFEM_MPIEXEC) -np 2 $(BUILD_DIR)/tests/test_parallel --check $(TEST_OUT)/parallel_reference.txt
 	$(MFEM_MPIEXEC) -np 4 $(BUILD_DIR)/tests/test_parallel --check $(TEST_OUT)/parallel_reference.txt

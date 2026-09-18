@@ -1,0 +1,32 @@
+# Manufactured solution of linear elastodynamics, plane strain, on the unit square:
+# linear_elastic with E = 250, nu = 0.3, rho0 = 2.5 and the exact displacement
+#   u(X, t) = sin(w t) U(X),   U = 0.05 (sin(pi x) sin(pi y), x^2 y (1 - y)),   w = 5,
+# prescribed on the whole boundary (a moving support on every side). U is the field of
+# linear_elasticity/verification/manufactured_solutions/mms_2d_plane_strain, whose body force
+# b_s = -Div sigma(U) / rho0 is reused: per unit mass
+#   b = u_tt - Div sigma(u) / rho0 = sin(w t) (b_s - w^2 U).
+# Initial state u_0 = 0, v_0 = w U; the consistent initial acceleration is zero, as is u_tt(0).
+# Every expression mentions t, so every schedule is constant and the data is the expression.
+# tests/test_dynamic_verification.cpp checks third-order L2 convergence in h at this small dt
+# (serial_refine 1, 2, 3) and second order in dt by self-convergence on the finest mesh.
+mesh: { file: apps/mesh/square.msh, serial_refine: 2, order: 2 }
+material: { model: linear_elastic, E: 250.0, nu: 0.3, rho0: 2.5 }
+bcs:
+  dirichlet:
+    - attr: [bottom, right, top, left]
+      expression: ["0.05*sin(pi*x)*sin(pi*y)*sin(5*t)",
+                   "0.05*x^2*y*(1 - y)*sin(5*t)"]
+body_force:
+  expression:
+    - "sin(5*t)*((250.0/13.0)*x*y - 125.0/13.0*x + (225.0/26.0)*pow(pi, 2)*sin(pi*x)*sin(pi*y) - 25*0.05*sin(pi*x)*sin(pi*y))"
+    - "sin(5*t)*((175.0/13.0)*pow(x, 2) + (50.0/13.0)*pow(y, 2) - 50.0/13.0*y - 125.0/26.0*pow(pi, 2)*cos(pi*x)*cos(pi*y) - 25*0.05*x^2*y*(1 - y))"
+dynamics:
+  t_final: 0.4
+  dt: 0.001
+  scheme: newmark
+  initial:
+    velocity: ["5*0.05*sin(pi*x)*sin(pi*y)",
+               "5*0.05*x^2*y*(1 - y)"]
+solver:
+  newton: { rtol: 1e-8, atol: 1e-16, max_it: 5, print_level: 0 }
+  linear: { type: cg_amg, rtol: 1e-13, max_it: 1000 }

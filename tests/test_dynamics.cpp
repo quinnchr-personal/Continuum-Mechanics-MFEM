@@ -775,6 +775,43 @@ void ReuseTest()
             "a rejected step leaves the history untouched");
 }
 
+// Without the external work the step does not evaluate the full static
+// residual: S_n comes from Newton's last residual and the reactions are formed
+// on demand. Nothing may change.
+void LazyBalanceTest()
+{
+  for (const std::string model : {"linear_elastic", "neo_hookean"})
+  {
+    mfem::Vector x_ref;
+    std::vector<cmf::Reaction> rx_ref;
+    for (int pass = 0; pass < 2; pass++)
+    {
+      ClampedBlock b(model, 4, 2);
+      mfem::VectorFunctionCoefficient support(
+        2, [](const mfem::Vector &, double t, mfem::Vector &u)
+        { u.SetSize(2); u(0) = 0.02 * (1.0 - std::cos(5.0 * t)); u(1) = 0.0; });
+      b.problem->AddDirichlet({4}, support, Constant());
+      cmf::DynamicSolidProblem dyn(*b.problem, Scheme("generalized_alpha", 0.7));
+      dyn.TrackExternalWork(pass == 0);
+      dyn.SetInitialDisplacement(*b.initial);
+      mfem::Vector x(b.problem->Height());
+      x = 0.0;
+      dyn.Initialize(x);
+      std::unique_ptr<mfem::Solver> linear = dyn.MakeLinearSolver(b.cfg.solver.linear);
+      const cmf::QuasiStaticReport report = cmf::SolveDynamic(
+        dyn, *linear, b.cfg.solver, cmf::UniformTimeSteps(0.2, 40), 0.0, x);
+      CHECK_MSG(report.converged, model + ": converged");
+      if (pass == 0) { x_ref = x; rx_ref = dyn.Reactions(); continue; }
+      const std::vector<cmf::Reaction> rx = dyn.Reactions();
+      const double dr = std::abs(rx[0].force[0] - rx_ref[0].force[0]) + std::abs(rx[0].force[1] - rx_ref[0].force[1]);
+      std::printf("  %s, work not tracked: max difference of the state %.1e, of the reaction %.1e (force %.4e)\n",
+                  model.c_str(), MaxDiff(x, x_ref), dr, rx_ref[0].force[0]);
+      CHECK_MSG(MaxDiff(x, x_ref) == 0.0, model + ": the same state to the last digit");
+      CHECK_MSG(dr == 0.0, model + ": the same reaction to the last digit");
+    }
+  }
+}
+
 // 9. The stepper in physical time, far from the unit interval.
 void StepperTest()
 {
@@ -884,6 +921,7 @@ int main(int argc, char *argv[])
   NonlinearTest();
   std::cout << "one Jacobian per run, bisection" << std::endl;
   ReuseTest();
+  LazyBalanceTest();
   std::cout << "stepper in physical time" << std::endl;
   StepperTest();
   std::cout << "from a YAML input" << std::endl;

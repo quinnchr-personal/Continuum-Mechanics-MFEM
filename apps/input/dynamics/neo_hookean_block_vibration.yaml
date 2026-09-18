@@ -1,0 +1,35 @@
+# Large-amplitude free vibration of a neo-Hookean block: the nonlinear path of the dynamic
+# analysis. Unit square, plane strain, clamped on its left side, neo_hookean with E = 250,
+# nu = 0.3, rho0 = 2.5, thrown upwards with the initial velocity v_0 = (0, 6 x): the free corner
+# swings through 0.7 of the block's size with a period of about one time unit (a block of the
+# same material in small strain would need 0.4). There is no closed form; what can be checked
+# is that the time integration converges at its order and what it does with the energy:
+#   - the displacement at the end time, for dt halved three times, converges with ratio 4;
+#   - generalized-alpha with rho_inf = 0.8 (this input) never lets the energy exceed its
+#     initial value, and ends below it;
+#   - with the trapezoidal rule the energy is not conserved exactly (the problem is
+#     nonlinear), but its error falls by 4 when dt is halved.
+# (tests/test_dynamic_verification.cpp; apps/dynamics_compare.py plots the corner path and the
+# energies.) Newton needs three to four iterations per step; K + c_M M is reassembled in each.
+# Run from the repository root:  build/apps/solid_mechanics -i apps/input/dynamics/neo_hookean_block_vibration.yaml
+mesh: { file: apps/mesh/square.msh, order: 2 }        # 4 x 4 quadrilaterals
+material: { model: neo_hookean, E: 250.0, nu: 0.3, rho0: 2.5 }
+bcs:
+  dirichlet: [ { attr: [left], name: clamp, expression: ["0", "0"] } ]
+dynamics:
+  t_final: 1.6                    # a cycle and a half
+  dt: 0.002
+  scheme: generalized_alpha
+  rho_inf: 0.8
+  initial:
+    velocity: ["0", "6*x"]
+solver:
+  newton: { rtol: 1e-10, atol: 1e-14, max_it: 25, print_level: 0 }
+  linear: { type: gmres_amg, amg: systems, rtol: 1e-13, max_it: 1000 }
+output:
+  paraview: out/dynamics/neo_hookean_block_vibration
+  fields: [displacement, velocity, vonmises]
+  every: 8
+  probes: [ { name: corner, point: [1.0, 1.0] } ]
+  probe_every_step: true
+  energy: true

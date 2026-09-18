@@ -190,6 +190,8 @@ void DynamicSolidProblem::Mult(const mfem::Vector &x, mfem::Vector &y) const
 {
   MFEM_VERIFY(stepping_, "DynamicSolidProblem: no time step under way (SetLoadFactor)");
   problem_.Mult(x, y);
+  x_last_ = x;
+  S_last_ = y;
   const mfem::Vector x_u = Head(x, n_u_);
   w_ = x_u;
   w_ -= u_pred_;
@@ -253,8 +255,9 @@ void DynamicSolidProblem::AcceptStep(const mfem::Vector &x)
 
   // The full balance S_full + M a of the new state: its essential rows are the
   // support forces; with those rows zeroed the static part is S_{n+1}, which
-  // the next step interpolates when alpha_f is not zero.
-  if (track_work_ || ti_.alpha_f != 0.0)
+  // the next step interpolates when alpha_f is not zero. It costs a residual
+  // evaluation and is formed here only for the external work.
+  if (track_work_)
   {
     mfem::Vector balance;
     problem_.FullResidual(x, balance);
@@ -266,27 +269,38 @@ void DynamicSolidProblem::AcceptStep(const mfem::Vector &x)
 
     // External work over the step by the trapezoidal rule: dead loads on every
     // dof, support forces through the prescribed motion.
-    if (track_work_)
+    MFEM_VERIFY(balance_valid_, "DynamicSolidProblem: TrackExternalWork must be set before Initialize");
+    const mfem::Vector &f_new = problem_.Loads().ExternalLoad();
+    const double work = 0.5 * (mfem::InnerProduct(Comm(), f_ext_n_, du) +
+                               mfem::InnerProduct(Comm(), f_new, du));
+    const mfem::Array<int> &ess = problem_.EssentialTrueDofs();
+    double support = 0.0, global_support = 0.0;
+    for (int k = 0; k < ess.Size(); k++)
     {
-      MFEM_VERIFY(balance_valid_, "DynamicSolidProblem: TrackExternalWork must be set before Initialize");
-      const mfem::Vector &f_new = problem_.Loads().ExternalLoad();
-      const double work = 0.5 * (mfem::InnerProduct(Comm(), f_ext_n_, du) +
-                                 mfem::InnerProduct(Comm(), f_new, du));
-      const mfem::Array<int> &ess = problem_.EssentialTrueDofs();
-      double support = 0.0, global_support = 0.0;
-      for (int k = 0; k < ess.Size(); k++)
-      {
-        const int i = ess[k];
-        support += 0.5 * (balance_n_(i) + balance(i)) * du(i);
-      }
-      MPI_Allreduce(&support, &global_support, 1, MPI_DOUBLE, MPI_SUM, Comm());
-      external_work_ += work + global_support;
-      f_ext_n_ = f_new;
+      const int i = ess[k];
+      support += 0.5 * (balance_n_(i) + balance(i)) * du(i);
     }
+    MPI_Allreduce(&support, &global_support, 1, MPI_DOUBLE, MPI_SUM, Comm());
+    external_work_ += work + global_support;
+    f_ext_n_ = f_new;
     balance_n_ = balance;
     balance_valid_ = true;
   }
-  else { balance_valid_ = false; }
+  else
+  {
+    // Only S_{n+1} is needed, and only when the scheme interpolates the
+    // forces: it is the static part of Newton's last residual when that was
+    // evaluated at the accepted state (the same on every rank).
+    if (ti_.alpha_f != 0.0)
+    {
+      int same = x_last_.Size() == x.Size() ? 1 : 0, all_same = 0;
+      for (int i = 0; same && i < x.Size(); i++) { same = x_last_(i) == x(i) ? 1 : 0; }
+      MPI_Allreduce(&same, &all_same, 1, MPI_INT, MPI_MIN, Comm());
+      if (all_same) { S_n_ = S_last_; }
+      else { problem_.Mult(x, S_n_); }
+    }
+    balance_valid_ = false;
+  }
 
   u_n_ = x_u;
   v_n_ = v_new;
