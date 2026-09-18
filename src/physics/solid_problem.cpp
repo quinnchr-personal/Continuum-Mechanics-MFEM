@@ -56,13 +56,13 @@ std::vector<MixedMaterial> MakeMixedMaterialTable(const MaterialConfig &cfg, mfe
 
 std::unique_ptr<SolidProblem> MakeSolidProblem(mfem::ParMesh &mesh, const AppConfig &cfg)
 {
-  if (cfg.formulation == "mixed")
-  {
-    return std::make_unique<MixedSolidMechanicsTL>(mesh, cfg, MakeMixedMaterialTable(cfg.material, mesh));
-  }
-  const std::vector<Material> materials =
-    MakeMaterialTable(cfg.material, mesh, cfg.plane == "stress");
-  if (IsSmallStrain(materials[0]) && cfg.solver.predictor == "tangent")
+  const bool mixed = cfg.formulation == "mixed";
+  std::vector<MixedMaterial> mixed_materials;
+  std::vector<Material> materials;
+  if (mixed) { mixed_materials = MakeMixedMaterialTable(cfg.material, mesh); }
+  else { materials = MakeMaterialTable(cfg.material, mesh, cfg.plane == "stress"); }
+  const bool small_strain = mixed ? IsSmallStrain(mixed_materials[0]) : IsSmallStrain(materials[0]);
+  if (small_strain && cfg.solver.predictor == "tangent")
   {
     // The first Newton step of a linear problem is the exact solve. After an
     // exact predictor Newton would start at the round-off floor, where
@@ -70,6 +70,7 @@ std::unique_ptr<SolidProblem> MakeSolidProblem(mfem::ParMesh &mesh, const AppCon
     throw ConfigError("key 'solver.predictor': tangent is not used by model '" + cfg.material.model +
                       "' (small strain: the first Newton step is already the exact linear solve)");
   }
+  if (mixed) { return std::make_unique<MixedSolidMechanicsTL>(mesh, cfg, mixed_materials); }
   return std::make_unique<SolidMechanicsTL>(mesh, cfg, materials);
 }
 

@@ -791,10 +791,68 @@ void TestLinearElastic(double E, double nu)
   bad = cfg;
   bad.kappa = 100.0;
   CHECK_THROWS(cmf::MakeMaterial(bad), cmf::ConfigError, "needs exactly one of");
+  // nu = 0.5: the mixed formulation, or plane stress in 2D, as for the rubber models.
   bad = cfg;
   bad.nu = 0.5;
-  CHECK_THROWS(cmf::MakeMaterial(bad), cmf::ConfigError, "needs a finite bulk modulus");
-  CHECK_THROWS(cmf::MakeMixedMaterial(cfg), cmf::ConfigError, "formulation: mixed needs");
+  CHECK_THROWS(cmf::MakeMaterial(bad), cmf::ConfigError, "'linear_elastic' is incompressible; use formulation: mixed");
+  CHECK(cmf::MaterialName(cmf::MakeMaterial(bad, true)) == "linear_elastic (plane stress)");
+  CHECK(std::get<cmf::LinearElastic>(cmf::MakeMixedMaterial(bad)).Incompressible());
+  const cmf::MixedMaterial mixed = cmf::MakeMixedMaterial(cfg);
+  CHECK(cmf::MaterialName(mixed) == "linear_elastic" && cmf::IsSmallStrain(mixed));
+  CHECK(std::get<cmf::LinearElastic>(mixed).ShearModulus() == 80.0);
+  cfg.model = "iso_neo_hookean";
+  CHECK(!cmf::IsSmallStrain(cmf::MakeMixedMaterial(cfg)));
+
+  // The split of the mixed (Herrmann) formulation: P = P_iso + kappa tr(eps) I
+  // with a deviatoric P_iso, W = W_iso + kappa/2 tr(eps)^2, and the volumetric
+  // law u'(theta) = theta - 1 in the volume ratio theta = 1 + tr(eps).
+  {
+    const Mat3 F = RandomF(rng);
+    const Mat3 eps = cmf::LinearElastic::Strain(F);
+    const Mat3 Piso = m.PK1Iso(F);
+    const Mat3 P = Piso + (m.kappa * cmf::tr(eps)) * cmf::I<3>();
+    CHECK_MSG(std::abs(cmf::tr(Piso)) <= 1e-14 * scale, "linear_elastic: P_iso is deviatoric");
+    CHECK_MSG(MaxAbs(P - m.PK1(F)) <= 1e-14 * scale, "linear_elastic: P = P_iso + kappa tr(eps) I");
+    const double theta = 1.0 + cmf::tr(eps);
+    CHECK_CLOSE(m.EnergyIso(F) + m.kappa * 0.5 * (theta - 1.0) * (theta - 1.0), m.Energy(F), 1e-14 * scale);
+    CHECK_CLOSE(m.NormalizedVolumetricPressure(theta), cmf::tr(eps), 1e-15);
+    CHECK_CLOSE(m.NormalizedVolumetricModulus(theta), 1.0, 0.0);
+    CHECK_CLOSE(m.ComplementaryVolumetricEnergy(3.0), 4.5 / m.kappa, 1e-16);
+  }
+
+  // Incompressible plane stress (nu = 1/2, E = 3 mu): eps_33 = -(eps_11 + eps_22),
+  // sigma = 2 mu eps + 2 mu (eps_11 + eps_22) I in the plane, tangent with
+  // lambda* = 2 mu; no pressure unknown.
+  {
+    const double mu = m.mu;
+    const cmf::PlaneStress<cmf::LinearElastic> ps(cmf::LinearElastic(mu, std::numeric_limits<double>::infinity()));
+    CHECK(ps.Incompressible() && cmf::is_small_strain<cmf::PlaneStress<cmf::LinearElastic>>::value);
+    Mat3 F = cmf::I<3>();
+    F(0, 0) += 0.05; F(1, 1) += -0.02; F(0, 1) += 0.06; F(1, 0) += -0.01;
+    const double e11 = 0.05, e22 = -0.02, e12 = 0.025;
+    const Mat3 P = ps.PK1(F);
+    CHECK_CLOSE(P(0, 0), 2.0 * mu * (2.0 * e11 + e22), 1e-13 * scale);
+    CHECK_CLOSE(P(1, 1), 2.0 * mu * (2.0 * e22 + e11), 1e-13 * scale);
+    CHECK_CLOSE(P(0, 1), 2.0 * mu * e12, 1e-13 * scale);
+    CHECK_CLOSE(P(1, 0), 2.0 * mu * e12, 1e-13 * scale);
+    CHECK_CLOSE(P(2, 2), 0.0, 1e-13 * scale);
+    CHECK_CLOSE(ps.Complete(F)(2, 2) - 1.0, -(e11 + e22), 1e-15);
+    CHECK_CLOSE(ps.Energy(F), 0.5 * (P(0, 0) * e11 + P(1, 1) * e22 + 2.0 * P(0, 1) * e12), 1e-13 * scale);
+    const Tan4 A = cmf::MaterialTangent(ps, F, 2);
+    double worst = 0.0;
+    for (int i = 0; i < 2; i++)
+      for (int j = 0; j < 2; j++)
+        for (int k = 0; k < 2; k++)
+          for (int l = 0; l < 2; l++)
+          {
+            const double C = 2.0 * mu * (i == j) * (k == l) + mu * ((i == k) * (j == l) + (i == l) * (j == k));
+            worst = std::max(worst, std::abs(A(i, j, k, l) - C) / scale);
+          }
+    std::printf("  incompressible plane stress at strain 0.05: tangent vs closed form rel %.2e\n", worst);
+    CHECK_MSG(worst <= 1e-12, "linear_elastic incompressible plane stress: tangent with lambda* = 2 mu");
+    TestPlaneStressSmallStrain(cmf::LinearElastic(mu, std::numeric_limits<double>::infinity()),
+                               "linear_elastic incompressible", 3.0 * mu, 0.5);
+  }
 }
 
 int main()

@@ -46,6 +46,22 @@ declares `IsLinear()`, and Newton accepts such a problem at the floor (a later s
 fails its line search or reduces the residual by less than ten, every linear solve
 converged; `NewtonReport::at_floor`). The linear inputs use `newton.rtol: 1e-8`, which only
 accepts the single linear solve; accuracy is set by `linear.rtol`.
+LE4 complete: the mixed kernel takes its volume measure from the material's kinematics
+(`J`, `J F^{-T}` or `1 + tr(eps)`, `I`), `LinearElastic` joins `MixedMaterial`, the
+plane-stress adapter has the small-strain incompressible branch, and the mixed physics is
+`IsLinear()`. The finite-strain mixed results are bit-identical (the incompressible Cook to
+all 16 digits). Measured: patch tests at amplitude 0.3 exact in two Newton steps (the first
+reaches 4e-11, the second refines), a block Jacobian that is state independent (0) and
+symmetric (4e-17), MMS rates 3.0-3.7 (u) and 2.0-2.2 (p) at nu = 0.45 and nu = 0.5,
+agreement with the displacement formulation under refinement. Incompressible Lame cylinder:
+u_r to 4e-6 and the pressure unknown equal to the constant A = 10/3 to 3e-6 in the wall
+(1e-4 in the corner elements). Locking record at nu = 0.4999, error of u_r(a): displacement
+p = 1 50 percent, p = 2 2.8e-4, mixed Q2-Q1 4e-6. Incompressible plane-strain Cook (E = 1,
+unit load): corner 19.4176, mid-edge 18.4974 on 32x32, frozen; the displacement formulation
+at nu = 0.4999, p = 2 gives 19.164 (1.3 percent). np 2 and 4 agree with serial to 1e-15.
+Adding the alternative to `MixedMaterial` needed one guard in `test_homogeneous` (a visitor
+over the rubber models). The pointwise tr(eps) of the incompressible solution is not zero
+but O(h^2) (the constraint is weak), which the verification tolerance reflects.
 
 **Goal:** `material: { model: linear_elastic, E: ..., nu: ... }` solves geometrically linear
 (small-strain) isotropic elasticity in 2D (plane strain, plane stress) and 3D, in the

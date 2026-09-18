@@ -99,6 +99,12 @@ void MixedSolidMechanicsTL::AddPressure(const std::vector<int> &attrs, mfem::Coe
   }
   else
   {
+    if (IsSmallStrain(materials_[0]))
+    {
+      throw ConfigError("traction type follower_pressure is not used by model '" +
+                        ModelNameOf(materials_[0]) + "' (small strain: the reference and the "
+                        "current configuration coincide; use type: pressure)");
+    }
     const double *scale = loads_.AddFollowerPressure(attrs, p, opt);
     follower_markers_.push_back(loads_.Marker(attrs));
     nlf_->AddBdrFaceIntegrator(new BlockFollowerPressureIntegrator(p, scale),
@@ -173,6 +179,13 @@ std::vector<Reaction> MixedSolidMechanicsTL::Reactions(const mfem::Vector &x) co
   const int n_u = offsets_[1];
   mfem::Vector r_u(r.GetData(), n_u), x_u(const_cast<double *>(x.GetData()), n_u);
   r_u -= loads_.ExternalLoad();
+  if (IsSmallStrain(materials_[0]))
+  {
+    // Equilibrium holds on the reference configuration: reference moment arms.
+    mfem::Vector zero(n_u);
+    zero = 0.0;
+    return loads_.Reactions(r_u, zero);
+  }
   return loads_.Reactions(r_u, x_u);
 }
 
@@ -197,6 +210,7 @@ HYPRE_BigInt MixedSolidMechanicsTL::GlobalTrueVSize() const
 std::string MixedSolidMechanicsTL::Description() const
 {
   return "mixed u-p formulation, " + MaterialName(materials_[0]) +
+         (IsSmallStrain(materials_[0]) ? " (small strain)" : "") +
          (materials_.size() > 1 ? " (regions)" : "") +
          (incompressible_ ? " (incompressible)" : " (kappa " + std::to_string(kappa_) +
                             VolumetricLawSuffix(materials_[0]) + ")");
@@ -242,7 +256,7 @@ void MixedSolidMechanicsTL::UpdateFields(const mfem::Vector &x)
       s.F = DeformationGradientAt(grad, T.GetDimension());
       s.P = MixedPK1(mat, s.F, p);
       // The mixed functional's integrand, consistent with InternalEnergy.
-      const double J = det(s.F);
+      const double J = VolumeRatio(mat, s.F);
       s.energy = mat.EnergyIso(s.F) + p * (J - 1.0) -
                  (inv_kappa > 0.0 ? mat.ComplementaryVolumetricEnergy(p) : 0.0);
       CompleteState(mat, s);

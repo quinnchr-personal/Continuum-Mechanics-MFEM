@@ -80,7 +80,13 @@ std::array<double, 3> Beta(const cmf::MixedMaterial &material, const std::array<
   {
     using M = std::decay_t<decltype(m)>;
     std::array<double, 3> beta{};
-    if constexpr (std::is_same_v<M, cmf::Ogden>)
+    if constexpr (cmf::is_small_strain<M>::value)
+    {
+      // linear_elastic shares the variant but is not one of the rubber models
+      // of this test (tests/test_linear_elasticity.cpp, tests/test_mixed.cpp).
+      MFEM_ABORT("Beta: closed forms in the principal stretches need a finite-strain model");
+    }
+    else if constexpr (std::is_same_v<M, cmf::Ogden>)
     {
       for (int a = 0; a < 3; a++)
         for (int r = 0; r < m.terms; r++) { beta[a] += m.mu[r] * std::pow(lam[a], m.alpha[r]); }

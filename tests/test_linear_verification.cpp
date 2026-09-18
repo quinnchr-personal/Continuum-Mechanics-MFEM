@@ -3,8 +3,10 @@
 // thick-walled cylinder and sphere, Kirsch's stress concentration, the
 // Euler-Bernoulli cantilever, manufactured solutions in 2D and 3D, a
 // two-material cube (Voigt-Reuss bounds), and Cook's membrane in its original
-// small-strain form with frozen regression values. Every solve is one Newton
-// iteration. Where a finite-strain input poses the same problem in its linear
+// small-strain form with frozen regression values; in the mixed u-p
+// formulation the incompressible Lame cylinder (uniform pressure unknown),
+// the locking record at nu = 0.4999 and the incompressible membrane. Every
+// displacement solve is one Newton iteration, every mixed one at most two. Where a finite-strain input poses the same problem in its linear
 // limit (Kirsch, the cantilever), the two runs are compared.
 #include <cmath>
 #include <cstdio>
@@ -181,6 +183,75 @@ void LameCylinderTest()
     CHECK_MSG(rs >= 3.0 && re >= 3.0, "Lame cylinder: pointwise stress and strain converge with h^2");
   }
   CHECK_MSG(stress_err.back() <= 1.5e-3, "Lame cylinder wall stresses within 0.15% of p on the finest mesh");
+}
+
+// ------------------------------------- Lame's cylinder, incompressible (mixed)
+
+void LameCylinderIncompressibleTest()
+{
+  cmf::AppConfig cfg = cmf::LoadConfig(kDir + "verification/lame_cylinder_incompressible.yaml");
+  const double E = cfg.material.E, a = 1.0, b = 2.0;
+  const double P = cmf::Expression::Parse(cfg.bcs.traction.at(0).expression.at(0)).Eval(0, 0, 0, 1);
+  const double A = P * a * a / (b * b - a * a);
+  auto u_r = [&](double r, double nu) { return (1.0 + nu) / E * A * ((1.0 - 2.0 * nu) * r + b * b / r); };
+  std::unique_ptr<Solved> s = Solve(cfg);
+  CHECK_MSG(s->report.converged && s->NewtonIterations() <= 2, "incompressible Lame cylinder: at most two Newton steps");
+  const double ua = s->Probe("displacement", {a, 0.0})[0], ub = s->Probe("displacement", {b, 0.0})[0];
+  std::printf("  incompressible Lame cylinder: u_r(a) %.10e (exact %.10e, rel %.2e), u_r(b) rel %.2e; "
+              "pressure at a, b: %.6f, %.6f (exact %.6f)\n", ua, u_r(a, 0.5), Rel(ua, u_r(a, 0.5)),
+              Rel(ub, u_r(b, 0.5)), s->Probe("pressure", {a, 0.0})[0], s->Probe("pressure", {b, 0.0})[0], A);
+  CHECK_MSG(Rel(ua, u_r(a, 0.5)) <= 1e-5, "incompressible Lame cylinder u_r(a)");
+  CHECK_MSG(Rel(ub, u_r(b, 0.5)) <= 1e-5, "incompressible Lame cylinder u_r(b)");
+  // The mean stress of the incompressible field is uniform: the pressure
+  // unknown is the constant A (least accurate in the corner elements).
+  CHECK_MSG(Rel(s->Probe("pressure", {a, 0.0})[0], A) <= 5e-4, "incompressible Lame cylinder pressure at r = a");
+  CHECK_MSG(Rel(s->Probe("pressure", {b, 0.0})[0], A) <= 5e-4, "incompressible Lame cylinder pressure at r = b");
+  for (const cmf::ProbeConfig &probe : cfg.output.probes)
+  {
+    if (probe.name.rfind("wall_", 0) != 0) { continue; }
+    const double x = probe.point[0], y = probe.point[1], r = std::hypot(x, y);
+    const Polar sig = PolarComponents2D(s->Probe("cauchy_stress", probe.point), x, y);
+    const Polar eps = PolarComponents2D(s->Probe("strain", probe.point), x, y);
+    const double pr = s->Probe("pressure", probe.point)[0];
+    const double srr = A * (1.0 - b * b / (r * r)), stt = A * (1.0 + b * b / (r * r));
+    std::printf("  incompressible Lame cylinder r = %.2f: p %.7f (%.7f), sigma_rr %.5f (%.5f), sigma_tt %.5f "
+                "(%.5f), sigma_zz %.5f (%.5f), tr(eps) %.1e\n", r, pr, A, sig.rr, srr, sig.tt, stt, sig.zz, A,
+                eps.rr + eps.tt + eps.zz);
+    CHECK_MSG(Rel(pr, A) <= 1e-5, "incompressible Lame cylinder: uniform pressure A at " + probe.name);
+    CHECK_MSG(std::abs(sig.rr - srr) <= 5e-3 * P, "incompressible Lame cylinder sigma_rr at " + probe.name);
+    CHECK_MSG(std::abs(sig.tt - stt) <= 5e-3 * P, "incompressible Lame cylinder sigma_tt at " + probe.name);
+    CHECK_MSG(std::abs(sig.zz - A) <= 5e-3 * P, "incompressible Lame cylinder sigma_zz = A at " + probe.name);
+    // The constraint holds weakly (against the Q1 pressures); pointwise, tr(eps)
+    // of the projected strain carries the h^2 error of the strains themselves.
+    CHECK_MSG(std::abs(eps.rr + eps.tt + eps.zz) <= 5e-3 * u_r(a, 0.5) / a,
+              "incompressible Lame cylinder: tr(eps) small against eps_tt(a) at " + probe.name);
+  }
+
+  // Volumetric locking at nu = 0.4999 on the same mesh: the displacement
+  // formulation with p = 1 and p = 2 against the mixed one.
+  const double nu = 0.4999;
+  cmf::AppConfig dcfg = cmf::LoadConfig(kDir + "verification/lame_cylinder.yaml");
+  dcfg.output.fields = {"displacement"};
+  dcfg.material.nu = nu;
+  dcfg.solver.linear.amg = "systems";
+  std::vector<double> err;
+  for (int order = 1; order <= 2; order++)
+  {
+    dcfg.mesh.order = order;
+    std::unique_ptr<Solved> d = Solve(dcfg);
+    CHECK_MSG(d->report.converged, "locking record: displacement formulation converged");
+    err.push_back(Rel(d->Probe("displacement", {a, 0.0})[0], u_r(a, nu)));
+  }
+  cmf::AppConfig mcfg = cfg;
+  mcfg.output.fields = {"displacement"};
+  mcfg.material.nu = nu;
+  std::unique_ptr<Solved> m = Solve(mcfg);
+  CHECK_MSG(m->report.converged, "locking record: mixed formulation converged");
+  const double mixed_err = Rel(m->Probe("displacement", {a, 0.0})[0], u_r(a, nu));
+  std::printf("  locking at nu = 0.4999, error of u_r(a): displacement p=1 %.2e, p=2 %.2e, mixed Q2-Q1 %.2e\n",
+              err[0], err[1], mixed_err);
+  CHECK_MSG(mixed_err <= 1e-5, "mixed formulation at nu = 0.4999: u_r(a)");
+  CHECK_MSG(err[0] >= 100.0 * mixed_err, "the p = 1 displacement formulation locks at nu = 0.4999");
 }
 
 // -------------------------------------------------------------- Lame's sphere
@@ -405,6 +476,58 @@ void CookLinearTest()
   CHECK_MSG(Rel(m, kCookLinearMidFrozen) <= 1e-8, "linear Cook mid-edge: frozen regression value within 1e-8");
 }
 
+// ------------------------------------- Cook's membrane, incompressible (mixed)
+
+// Frozen regression oracle: the incompressible plane-strain membrane (E = 1,
+// unit load) in the mixed formulation, vertical displacement of the corner
+// (48, 60) and of the mid-point of the free edge on the 32x32 Q2-Q1 mesh
+// (serial_refine 3). Recorded 2026-09-18, asserted within 1e-8 relative.
+const double kCookLinearIncCornerFrozen = 1.941762830954e+01;
+const double kCookLinearIncMidFrozen = 1.849738397162e+01;
+
+void CookLinearIncompressibleTest()
+{
+  cmf::AppConfig cfg = cmf::LoadConfig(kDir + "cooks_membrane/cook_linear_incompressible.yaml");
+  cfg.output.fields = {"displacement", "pressure"};
+  const int finest = cfg.mesh.serial_refine;
+  std::vector<double> corner, mid;
+  for (int refine = 0; refine <= finest; refine++)
+  {
+    cfg.mesh.serial_refine = refine;
+    std::unique_ptr<Solved> s = Solve(cfg);
+    CHECK_MSG(s->report.converged && s->NewtonIterations() <= 2, "incompressible linear Cook: at most two Newton steps");
+    corner.push_back(s->Probe("displacement", {48.0, 60.0})[1]);
+    mid.push_back(s->Probe("displacement", {48.0, 52.0})[1]);
+    std::printf("  incompressible linear cook %2dx%-2d Q2-Q1: uy corner %.10f, mid-edge %.10f\n", 4 << refine,
+                4 << refine, corner.back(), mid.back());
+  }
+  for (std::size_t k = 0; k + 2 < corner.size(); k++)
+  {
+    const double rc = std::abs(corner[k + 1] - corner[k]) / std::abs(corner[k + 2] - corner[k + 1]);
+    std::printf("  incompressible linear cook successive-difference ratio %zu: corner %.3f\n", k + 1, rc);
+    CHECK_MSG(rc >= 2.0, "incompressible linear Cook successive-difference ratio >= 2");
+  }
+  // The displacement formulation cannot reach nu = 1/2; at nu = 0.4999 with
+  // p = 2 on the same mesh it must be close (it locks only mildly there).
+  cmf::AppConfig dcfg = cfg;
+  dcfg.formulation = "displacement";
+  dcfg.material.nu = 0.4999;
+  dcfg.output.fields = {"displacement"};
+  dcfg.solver.linear.type = "cg_amg";
+  dcfg.solver.linear.amg = "systems";
+  dcfg.solver.linear.max_it = 2000;
+  std::unique_ptr<Solved> d = Solve(dcfg);
+  CHECK_MSG(d->report.converged, "linear Cook at nu = 0.4999 (displacement formulation) converged");
+  const double dc = d->Probe("displacement", {48.0, 60.0})[1];
+  std::printf("  incompressible linear cook finest: corner %.12e (frozen %.12e, rel %.2e), mid-edge %.12e (rel %.2e); "
+              "displacement formulation at nu = 0.4999: %.6f (rel %.1e)\n", corner.back(), kCookLinearIncCornerFrozen,
+              Rel(corner.back(), kCookLinearIncCornerFrozen), mid.back(), Rel(mid.back(), kCookLinearIncMidFrozen), dc,
+              Rel(dc, corner.back()));
+  CHECK_MSG(Rel(dc, corner.back()) <= 2e-2, "displacement formulation at nu = 0.4999 approaches the incompressible value");
+  CHECK_MSG(Rel(corner.back(), kCookLinearIncCornerFrozen) <= 1e-8, "incompressible linear Cook corner: frozen value");
+  CHECK_MSG(Rel(mid.back(), kCookLinearIncMidFrozen) <= 1e-8, "incompressible linear Cook mid-edge: frozen value");
+}
+
 } // namespace
 
 int main(int argc, char *argv[])
@@ -412,11 +535,13 @@ int main(int argc, char *argv[])
   mfem::Mpi::Init(argc, argv);
   mfem::Hypre::Init();
   LameCylinderTest();
+  LameCylinderIncompressibleTest();
   LameSphereTest();
   KirschTest();
   CantileverTest();
   ManufacturedTests();
   InclusionTest();
   CookLinearTest();
+  CookLinearIncompressibleTest();
   return cmf_test::Report("test_linear_verification");
 }

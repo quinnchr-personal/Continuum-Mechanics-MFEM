@@ -1,0 +1,37 @@
+# Lame's thick-walled cylinder, incompressible (nu = 1/2), in the small-strain theory: the
+# problem of lame_cylinder.yaml in the mixed u-p (Herrmann) formulation, Taylor-Hood Q2-Q1,
+#   int [2 mu dev(eps) + p I] : grad w = loads,   int q tr(eps) = 0.
+# With A = P a^2 / (b^2 - a^2) and mu = E / 3:
+#   u_r = 3 A b^2 / (2 E r),   sigma_rr = A (1 - b^2/r^2),   sigma_tt = A (1 + b^2/r^2),
+# and the mean stress sigma_zz = (sigma_rr + sigma_tt) / 2 = A is uniform, so the pressure
+# unknown must be the constant A = 10/3 everywhere. One or two Newton steps (the second only
+# refines the first). The small-strain counterpart of
+# finite_elasticity/verification/rivlin_cylinder_inflation. tests/test_linear_verification.cpp
+# checks the probes, and records the volumetric locking of the displacement formulation at
+# nu = 0.4999 on the same mesh.
+formulation: mixed
+mesh:
+  file: apps/mesh/annulus.msh
+  serial_refine: 2
+  order: 2
+material: { model: linear_elastic, E: 1000.0, nu: 0.5 }
+bcs:
+  dirichlet:
+    - { attr: [bottom], expression: ["0", "0"], components: [y] }
+    - { attr: [left], expression: ["0", "0"], components: [x] }
+  traction:
+    - { attr: [inner], type: pressure, expression: "10.0" }
+solver:
+  load_steps: 1
+  newton: { rtol: 1e-8, atol: 1e-14, max_it: 5 }
+  linear: { type: gmres_amg, rtol: 1e-13, max_it: 400, krylov_dim: 100, inner_rtol: 1e-4, inner_max_it: 100 }
+output:
+  paraview: out/lame_cylinder_incompressible
+  fields: [displacement, pressure, strain, cauchy_stress, vonmises]
+  nodal_projection: projected
+  probes:
+    - { name: inner, point: [1.0, 0.0] }
+    - { name: outer, point: [2.0, 0.0] }
+    - { name: wall_125, point: [0.8838834764831844, 0.8838834764831844] }   # r = 1.25 at 45 degrees
+    - { name: wall_150, point: [1.0606601717798212, 1.0606601717798212] }   # r = 1.5
+    - { name: wall_175, point: [1.2374368670764582, 1.2374368670764582] }   # r = 1.75

@@ -49,9 +49,12 @@ inline bool IsSmallStrain(const std::variant<Ms...> &m)
   return std::visit([](const auto &mat)
   { return is_small_strain<std::decay_t<decltype(mat)>>::value; }, m);
 }
+
 // Decoupled models usable in the mixed u-p formulation (PK1Iso<T>(F),
-// VolumetricPressure<T>(J), ShearModulus(), kappa possibly infinite).
-using MixedMaterial = std::variant<IsoNeoHookean, MooneyRivlin, Yeoh, Gent, ArrudaBoyce, Ogden>;
+// VolumetricPressure<T>(J), ShearModulus(), kappa possibly infinite);
+// LinearElastic with the volume measure of its small-strain kinematics.
+using MixedMaterial = std::variant<IsoNeoHookean, MooneyRivlin, Yeoh, Gent, ArrudaBoyce, Ogden,
+                                   LinearElastic>;
 
 struct LameParameters
 {

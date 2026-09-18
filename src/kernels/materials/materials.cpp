@@ -14,6 +14,7 @@ double Or(double v, double fallback) { return std::isnan(v) ? fallback : v; }
 MixedMaterial MakeDecoupledBase(const MaterialConfig &cfg, const ResolvedModuli &m)
 {
   if (cfg.model == "iso_neo_hookean") { return IsoNeoHookean(m.mu, m.kappa); }
+  if (cfg.model == "linear_elastic") { return LinearElastic(m.mu, m.kappa); }
   if (cfg.model == "mooney_rivlin") { return MooneyRivlin(cfg.c1, cfg.c2, m.kappa); }
   if (cfg.model == "yeoh") { return Yeoh(cfg.c10, Or(cfg.c20, 0.0), Or(cfg.c30, 0.0), m.kappa); }
   if (cfg.model == "gent") { return Gent(cfg.mu, cfg.Jm, m.kappa); }
@@ -26,7 +27,11 @@ MixedMaterial MakeDecoupled(const MaterialConfig &cfg, const ResolvedModuli &m)
 {
   MixedMaterial material = MakeDecoupledBase(cfg, m);
   const VolumetricLaw law = ParseVolumetricLaw(cfg.volumetric);
-  std::visit([law](auto &mat) { mat.law = law; }, material);
+  std::visit([law](auto &mat)
+  {
+    // linear_elastic has no law to choose (kappa tr(eps)).
+    if constexpr (has_volumetric_law<std::decay_t<decltype(mat)>>::value) { mat.law = law; }
+  }, material);
   return material;
 }
 
@@ -35,7 +40,8 @@ MixedMaterial MakeDecoupled(const MaterialConfig &cfg, const ResolvedModuli &m)
 bool IsDecoupledModel(const std::string &model)
 {
   return model == "iso_neo_hookean" || model == "mooney_rivlin" || model == "yeoh" ||
-         model == "gent" || model == "arruda_boyce" || model == "ogden";
+         model == "gent" || model == "arruda_boyce" || model == "ogden" ||
+         model == "linear_elastic";
 }
 
 ResolvedModuli ResolveModuli(const MaterialConfig &cfg)
@@ -93,15 +99,6 @@ Material MakeMaterial(const MaterialConfig &cfg, bool plane_stress)
   {
     base = GentCompressibleSummit{cfg.mu, cfg.kappa, cfg.Jm};
   }
-  else if (cfg.model == "linear_elastic")
-  {
-    if (m.incompressible)
-    {
-      throw ConfigError("material: model 'linear_elastic' needs a finite bulk modulus "
-                        "(nu < 0.5 or kappa) in the displacement formulation");
-    }
-    base = LinearElastic(m.mu, m.kappa);
-  }
   else
   {
     if (m.incompressible && !plane_stress)
@@ -126,7 +123,7 @@ MixedMaterial MakeMixedMaterial(const MaterialConfig &cfg)
   {
     throw ConfigError("material.model: '" + cfg.model + "' has no isochoric-"
                       "volumetric split; formulation: mixed needs one of iso_neo_hookean, "
-                      "mooney_rivlin, yeoh, gent, arruda_boyce, ogden");
+                      "mooney_rivlin, yeoh, gent, arruda_boyce, ogden, linear_elastic");
   }
   return MakeDecoupled(cfg, ResolveModuli(cfg));
 }

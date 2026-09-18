@@ -164,6 +164,8 @@ test: check $(APP) $(BUILD_DIR)/tests/test_benchmarks $(BUILD_DIR)/tests/test_pa
 	$(APP) -i apps/input/finite_elasticity/verification/euler_bernoulli_cantilever3d.yaml
 	$(APP) -i apps/input/linear_elasticity/cooks_membrane/cook_linear.yaml
 	$(MFEM_MPIEXEC) -np 4 $(APP) -i apps/input/linear_elasticity/cooks_membrane/cook_linear.yaml
+	$(APP) -i apps/input/linear_elasticity/cooks_membrane/cook_linear_incompressible.yaml
+	$(MFEM_MPIEXEC) -np 4 $(APP) -i apps/input/linear_elasticity/cooks_membrane/cook_linear_incompressible.yaml
 	$(BUILD_DIR)/tests/test_linear_verification
 	mkdir -p $(TEST_OUT)
 	$(BUILD_DIR)/tests/test_parallel --write $(TEST_OUT)/parallel_reference.txt

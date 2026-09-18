@@ -2,7 +2,11 @@
 // constant pressure), assembled block Jacobian vs finite differences, MMS
 // convergence for near-incompressible (finite kappa) and fully incompressible
 // (kappa = inf, volume-preserving manufactured motion) cases, and agreement
-// between the mixed and displacement formulations at finite kappa.
+// between the mixed and displacement formulations at finite kappa. The same
+// gates for small-strain linear elasticity (linear_elastic), whose mixed form
+// is Herrmann's linear, symmetric saddle-point problem: the volume measure is
+// 1 + tr(eps) with gradient I, every solve takes one or two Newton steps, and
+// the block Jacobian does not depend on the state.
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -342,21 +346,29 @@ double Seconds()
   return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 
+template <typename Material>
 void ConvergenceTest(const std::string &label, const Manufactured &m,
-                     const cmf::IsoNeoHookean &material, bool incompressible, double nu,
+                     const Material &material, bool incompressible, double nu,
                      double u_gate, double p_gate, int levels)
 {
+  const std::string model = cmf::ModelName<Material>();
+  const bool linear = cmf::is_small_strain<Material>::value;
   std::cout << "mms " << label << std::endl;
   std::vector<double> eu, ep;
   cmf::NewtonReport finest;
   const int base = 4;
   for (int level = 0; level < levels; level++)
   {
-    cmf::AppConfig cfg = BaseConfig(base, 2, 0.15, "iso_neo_hookean", nu, incompressible);
+    cmf::AppConfig cfg = BaseConfig(base, 2, 0.15, model, nu, incompressible);
     cfg.mesh.serial_refine = level;
-    cfg.solver.load_steps = 4; // the zero interior guess inverts first-layer elements at full load
+    cfg.solver.load_steps = linear ? 1 : 4; // the zero interior guess inverts first-layer elements at full load
     SolveResult r = SolveManufactured(cfg, m, material, true);
     CHECK_MSG(r.newton.converged, label + " level " + std::to_string(level) + " converged");
+    if (linear)
+    {
+      CHECK_MSG(r.newton.iterations <= 2, label + ": a linear problem, at most two Newton steps, got " +
+                std::to_string(r.newton.iterations));
+    }
     eu.push_back(r.u_l2);
     ep.push_back(r.p_l2);
     std::printf("  %s nx=%3d dofs %6d: L2 error u %.4e p %.4e, newton its %d (load step %d/%d)%s%s\n",
@@ -390,11 +402,11 @@ void ConvergenceTest(const std::string &label, const Manufactured &m,
 // At finite kappa the mixed and displacement formulations solve the same
 // continuous problem: their |u|_L2 must converge to each other under
 // refinement (a clamped/loaded square, nu = 0.45).
-void FormulationAgreementTest(int finest_nx)
+void FormulationAgreementTest(int finest_nx, const std::string &model = "iso_neo_hookean")
 {
   auto solve = [&](const std::string &formulation, int nx)
   {
-    cmf::AppConfig cfg = BaseConfig(nx, 2, 0.0, "iso_neo_hookean", 0.45, false);
+    cmf::AppConfig cfg = BaseConfig(nx, 2, 0.0, model, 0.45, false);
     cmf::BoundaryCondition clamp, load;
     clamp.attr = {4};
     clamp.expression = {"0", "0"};
@@ -404,6 +416,8 @@ void FormulationAgreementTest(int finest_nx)
     cfg.bcs.traction.push_back(load);
     cfg.solver.load_steps = 2;
     cfg.formulation = formulation;
+    // The elasticity AMG options stall at nu = 0.45 and fall back to these anyway.
+    if (model == "linear_elastic") { cfg.solver.linear.amg = "systems"; }
     std::unique_ptr<mfem::ParMesh> pmesh = cmf::BuildParMesh(MPI_COMM_WORLD, cfg.mesh);
     std::unique_ptr<cmf::SolidProblem> physics = cmf::MakeSolidProblem(*pmesh, cfg);
     physics->Finalize();
@@ -424,8 +438,8 @@ void FormulationAgreementTest(int finest_nx)
     const double mixed = solve("mixed", nx);
     const double disp = solve("displacement", nx);
     rel.push_back(std::abs(mixed - disp) / disp);
-    std::printf("  formulation agreement (nu = 0.45, %dx%d p=2): |u|_L2 mixed %.8e displacement %.8e rel %.2e\n",
-                nx, nx, mixed, disp, rel.back());
+    std::printf("  formulation agreement%s (nu = 0.45, %dx%d p=2): |u|_L2 mixed %.8e displacement %.8e rel %.2e\n",
+                model == "iso_neo_hookean" ? "" : (" " + model).c_str(), nx, nx, mixed, disp, rel.back());
   }
   for (std::size_t k = 0; k + 1 < rel.size(); k++)
   {
@@ -433,6 +447,166 @@ void FormulationAgreementTest(int finest_nx)
   }
   CHECK_MSG(rel.back() <= (finest_nx >= 32 ? 2e-3 : 5e-3),
             "mixed vs displacement |u|_L2 agree on the finest mesh (" + std::to_string(rel.back()) + ")");
+}
+
+// ------------------------------------------ small strain (linear_elastic)
+
+// Divergence-free u = a (d psi/dY, -d psi/dX) of the stream function
+// psi = sin(pi X) sin(pi Y) / pi, with a smooth pressure c sin(pi X) cos(pi Y).
+Manufactured StreamFunction(double a, double c)
+{
+  Manufactured m;
+  m.u = [a](const mfem::Vector &X, mfem::Vector &u)
+  {
+    u.SetSize(2);
+    u(0) = a * std::sin(M_PI * X(0)) * std::cos(M_PI * X(1));
+    u(1) = -a * std::cos(M_PI * X(0)) * std::sin(M_PI * X(1));
+  };
+  m.grad = [a](const mfem::Vector &X)
+  {
+    const double cc = a * M_PI * std::cos(M_PI * X(0)) * std::cos(M_PI * X(1));
+    const double ss = a * M_PI * std::sin(M_PI * X(0)) * std::sin(M_PI * X(1));
+    tensor<double, 2, 2> H;
+    H(0, 0) = cc; H(0, 1) = -ss;
+    H(1, 0) = ss; H(1, 1) = -cc;
+    return H;
+  };
+  m.p = [c](const mfem::Vector &X) { return c * std::sin(M_PI * X(0)) * std::cos(M_PI * X(1)); };
+  return m;
+}
+
+// The smooth compressible field with the small-strain pressure p = kappa div u.
+Manufactured SmoothLinear(double alpha, double kappa)
+{
+  Manufactured m = Smooth(alpha, kappa);
+  const auto grad = m.grad;
+  m.p = [grad, kappa](const mfem::Vector &X)
+  {
+    const tensor<double, 2, 2> H = grad(X);
+    return kappa * (H(0, 0) + H(1, 1));
+  };
+  return m;
+}
+
+void LinearElasticTests(int levels, int finest_nx)
+{
+  const double kappa45 = 2.0 * kMu * 1.45 / (3.0 * 0.1);
+  const double inf = std::numeric_limits<double>::infinity();
+  const cmf::LinearElastic le45(kMu, kappa45), le_inc(kMu, inf);
+
+  // The kernel at a point: with p = kappa tr(eps) the mixed stress is the
+  // displacement formulation's; the volume measure is 1 + tr(H), gradient I.
+  {
+    tensor<double, 3, 3> F = cmf::I<3>();
+    const double G[3][3] = {{0.05, -0.03, 0.02}, {0.01, -0.02, 0.04}, {-0.015, 0.025, 0.03}};
+    for (int i = 0; i < 3; i++)
+      for (int j = 0; j < 3; j++) { F(i, j) += G[i][j]; }
+    const double p = kappa45 * (G[0][0] + G[1][1] + G[2][2]);
+    const tensor<double, 3, 3> Pm = cmf::MixedPK1(le45, F, p), Pd = le45.PK1(F);
+    double diff = 0.0;
+    for (int i = 0; i < 3; i++)
+      for (int j = 0; j < 3; j++) { diff = std::max(diff, std::abs(Pm(i, j) - Pd(i, j))); }
+    CHECK_MSG(diff <= 1e-13 * kappa45, "linear_elastic: mixed stress at p = kappa tr(eps) equals PK1");
+    tensor<double, 2, 2> H;
+    H(0, 0) = 0.05; H(0, 1) = -0.03; H(1, 0) = 0.01; H(1, 1) = -0.02;
+    double J = 0.0;
+    const tensor<double, 2, 2> Gv = cmf::QPointVolumeGradient<cmf::LinearElastic, 2>(H, J);
+    CHECK_CLOSE(J, 1.03, 1e-15);
+    CHECK(Gv(0, 0) == 1.0 && Gv(1, 1) == 1.0 && Gv(0, 1) == 0.0 && Gv(1, 0) == 0.0);
+    double Jf = 0.0;
+    cmf::QPointVolumeGradient<cmf::IsoNeoHookean, 2>(H, Jf);
+    CHECK_CLOSE(Jf, 1.05 * 0.98 + 0.03 * 0.01, 1e-15); // det(I + H), unchanged for finite strain
+  }
+
+  std::cout << "linear_elastic patch tests" << std::endl;
+  for (const bool incompressible : {false, true})
+  {
+    // Amplitudes of order 0.3: nothing is small, and one load step suffices.
+    cmf::AppConfig cfg = BaseConfig(4, 2, 0.15, "linear_elastic", 0.45, incompressible);
+    tensor<double, 2, 2> A;
+    double p0 = 0.0;
+    if (incompressible)
+    {
+      A(0, 0) = 0.2; A(0, 1) = 0.3; A(1, 0) = -0.1; A(1, 1) = -0.2; // tr A = 0, the pressure is free
+      p0 = 12.5;
+    }
+    else
+    {
+      A(0, 0) = 0.08; A(0, 1) = 0.25; A(1, 0) = -0.05; A(1, 1) = -0.06;
+      p0 = kappa45 * (A(0, 0) + A(1, 1));
+    }
+    const SolveResult r = SolveManufactured(cfg, Affine(A, p0), incompressible ? le_inc : le45, false);
+    std::printf("  patch linear_elastic %s (p0 %.4f): max nodal error u %.3e p %.3e, newton its %d, |R|:",
+                incompressible ? "incompressible" : "nu=0.45", p0, r.max_nodal_u, r.max_nodal_p,
+                r.newton.iterations);
+    for (const cmf::NewtonIteration &it : r.newton.history) { std::printf(" %.1e", it.residual); }
+    std::printf("\n");
+    const std::string label = std::string("linear_elastic ") + (incompressible ? "incompressible" : "nu=0.45");
+    CHECK_MSG(r.newton.converged && r.newton.iterations <= 2, label + " patch: at most two Newton steps");
+    CHECK_MSG(r.max_nodal_u <= 1e-12, label + " patch displacement reproduced (" + std::to_string(r.max_nodal_u) + ")");
+    CHECK_MSG(r.max_nodal_p <= 1e-10 * std::max(1.0, std::abs(p0)),
+              label + " patch pressure reproduced (" + std::to_string(r.max_nodal_p) + ")");
+  }
+
+  // The block Jacobian is symmetric and does not depend on the state.
+  std::cout << "linear_elastic jacobian" << std::endl;
+  for (const bool incompressible : {false, true})
+  {
+    cmf::AppConfig cfg = BaseConfig(3, 2, 0.2, "linear_elastic", 0.45, incompressible);
+    std::unique_ptr<mfem::ParMesh> pmesh = cmf::BuildParMesh(MPI_COMM_WORLD, cfg.mesh);
+    cmf::MixedSolidMechanicsTL physics(*pmesh, cfg, cmf::MixedMaterial(incompressible ? le_inc : le45));
+    const Manufactured m = StreamFunction(0.05, 3.0);
+    mfem::VectorFunctionCoefficient exact_u(2, m.u);
+    physics.AddDirichlet({4}, exact_u);
+    physics.Finalize();
+    physics.SetLoadFactor(1.0);
+    CHECK_MSG(physics.IsLinear(), "linear_elastic mixed problem declares itself linear");
+    const int n = physics.Height();
+    std::mt19937 rng(17u);
+    std::uniform_real_distribution<double> unit(-1.0, 1.0);
+    mfem::Vector x1(n), x2(n), v(n), w(n), J1v(n), J2v(n), J1w(n);
+    for (int i = 0; i < n; i++) { x1(i) = unit(rng); x2(i) = 7.0 * unit(rng); v(i) = unit(rng); w(i) = unit(rng); }
+    for (int i = 0; i < physics.EssentialTrueDofs().Size(); i++)
+    {
+      v(physics.EssentialTrueDofs()[i]) = 0.0;
+      w(physics.EssentialTrueDofs()[i]) = 0.0;
+    }
+    physics.GetGradient(x1).Mult(v, J1v);
+    physics.GetGradient(x1).Mult(w, J1w);
+    physics.GetGradient(x2).Mult(v, J2v);
+    mfem::Vector d(J1v);
+    d -= J2v;
+    const double state = d.Norml2() / J1v.Norml2();
+    const double symmetry = std::abs((w * J1v) - (v * J1w)) / (w.Norml2() * J1v.Norml2());
+    std::printf("  jacobian linear_elastic %s: state dependence %.2e, asymmetry %.2e\n",
+                incompressible ? "incompressible" : "nu=0.45", state, symmetry);
+    CHECK_MSG(state <= 1e-13, "linear_elastic mixed Jacobian is independent of the state");
+    CHECK_MSG(symmetry <= 1e-13, "linear_elastic mixed Jacobian is symmetric");
+    mfem::ConstantCoefficient pr(1.0);
+    CHECK_THROWS(physics.AddPressure({2}, pr, true), cmf::ConfigError,
+                 "follower_pressure is not used by model 'linear_elastic'");
+  }
+
+  // Amplitude 0.2: |Grad u| ~ 0.6, far beyond what the finite-strain MMS can take.
+  ConvergenceTest("linear_elastic nu=0.45", SmoothLinear(0.2, kappa45), le45, false, 0.45, 2.9, 1.9, levels);
+  ConvergenceTest("linear_elastic incompressible", StreamFunction(0.1, 6.0), le_inc, true, 0.5, 2.9, 1.9, levels);
+  FormulationAgreementTest(finest_nx, "linear_elastic");
+
+  // Options that do not exist at small strain, through the factory.
+  {
+    cmf::AppConfig cfg = BaseConfig(2, 2, 0.0, "linear_elastic", 0.45, true);
+    std::unique_ptr<mfem::ParMesh> pmesh = cmf::BuildParMesh(MPI_COMM_WORLD, cfg.mesh);
+    std::unique_ptr<cmf::SolidProblem> ok = cmf::MakeSolidProblem(*pmesh, cfg);
+    CHECK_MSG(ok->Description().find("linear_elastic (small strain)") != std::string::npos &&
+              ok->Description().find("incompressible") != std::string::npos, ok->Description());
+    cfg.solver.predictor = "tangent";
+    CHECK_THROWS(cmf::MakeSolidProblem(*pmesh, cfg), cmf::ConfigError,
+                 "'solver.predictor': tangent is not used by model 'linear_elastic'");
+    cfg.solver.predictor = "none";
+    cfg.formulation = "displacement";
+    CHECK_THROWS(cmf::MakeSolidProblem(*pmesh, cfg), cmf::ConfigError,
+                 "'linear_elastic' is incompressible; use formulation: mixed");
+  }
 }
 
 } // namespace
@@ -498,6 +672,9 @@ int main(int argc, char *argv[])
   std::printf("  [%.1f s]\n", Seconds() - t0);
   t0 = Seconds();
   FormulationAgreementTest(finest_nx);
+  std::printf("  [%.1f s]\n", Seconds() - t0);
+  t0 = Seconds();
+  LinearElasticTests(levels, finest_nx);
   std::printf("  [%.1f s]\n", Seconds() - t0);
   return cmf_test::Report("test_mixed");
 }

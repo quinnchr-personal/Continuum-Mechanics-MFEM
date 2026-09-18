@@ -6,7 +6,8 @@
 // plane-stress response.
 //   incompressible base (kappa = inf): lambda3 = 1 / det F2D and the mean
 //     stress p = -sigma_iso,33 replaces the Lagrange multiplier,
-//     P = P_iso + p F^{-T}; no pressure unknown is needed;
+//     P = P_iso + p F^{-T}; no pressure unknown is needed (small strain:
+//     eps_33 = -(eps_11 + eps_22), p = -P_iso,33, P = P_iso + p I);
 //   compressible base: lambda3 solves P33(lambda3) = 0 by a scalar Newton
 //     iteration. With dual numbers the converged root is refined by one Newton
 //     step in dual arithmetic, which carries the implicit derivative
@@ -58,7 +59,8 @@ struct PlaneStress
   {
     if (Incompressible())
     {
-      return 1.0 / (F(0, 0) * F(1, 1) - F(0, 1) * F(1, 0));
+      if constexpr (small_strain) { return 1.0 - ((F(0, 0) - 1.0) + (F(1, 1) - 1.0)); }
+      else { return 1.0 / (F(0, 0) * F(1, 1) - F(0, 1) * F(1, 0)); }
     }
     tensor<double, 3, 3> Fv;
     for (int i = 0; i < 3; i++)
@@ -94,10 +96,15 @@ struct PlaneStress
     {
       if (material.Incompressible())
       {
-        // J = 1: P = P_iso + p F^{-T} with p = -sigma_iso,33 = -P_iso,33 lambda3.
+        // J = 1: P = P_iso + p F^{-T} with p = -sigma_iso,33 = -P_iso,33 lambda3
+        // (small strain, tr(eps) = 0: P = P_iso + p I with p = -P_iso,33).
         const tensor<T, 3, 3> Piso = material.PK1Iso(Fc);
-        const T p = -Piso(2, 2) * Fc(2, 2);
-        return Piso + p * transpose(inv(Fc));
+        if constexpr (small_strain) { return Piso + (-Piso(2, 2)) * I<3>(); }
+        else
+        {
+          const T p = -Piso(2, 2) * Fc(2, 2);
+          return Piso + p * transpose(inv(Fc));
+        }
       }
     }
     return material.PK1(Fc);

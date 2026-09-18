@@ -1,0 +1,27 @@
+# Cook's membrane, incompressible (nu = 1/2), plane strain, small-strain theory, mixed u-p
+# (Herrmann) formulation with Taylor-Hood Q2-Q1: the locking benchmark in its linear form.
+# E = 1 (mu = 1/3), unit shear load on the right edge (traction 1/16), clamped on the left.
+# The displacement formulation cannot be run at nu = 1/2; tests/test_linear_verification.cpp
+# freezes the corner displacement of this input and checks that the displacement formulation at
+# nu = 0.4999 (p = 2) approaches it. The small-strain counterpart of
+# finite_elasticity/cooks_membrane/cook_incompressible.
+formulation: mixed
+mesh:
+  file: apps/mesh/cook.msh        # 4 x 4 quadrilaterals of the membrane (apps/mesh/cook.geo); groups bottom, right, top, left
+  serial_refine: 3
+  order: 2
+material: { model: linear_elastic, E: 1.0, nu: 0.5 }
+bcs:
+  dirichlet: [ { attr: [left], expression: ["0", "0"] } ]
+  traction:  [ { attr: [right], expression: ["0", "0.0625"] } ]
+solver:
+  load_steps: 1
+  newton: { rtol: 1e-8, atol: 1e-14, max_it: 5 }
+  linear: { type: gmres_amg, rtol: 1e-13, max_it: 400, krylov_dim: 100, inner_rtol: 1e-4, inner_max_it: 100 }
+output:
+  paraview: out/cook/cook_linear_incompressible
+  fields: [displacement, pressure, strain, cauchy_stress, vonmises]
+  reactions: true
+  probes:
+    - { name: top_right_corner, point: [48.0, 60.0] }
+    - { name: mid_free_edge, point: [48.0, 52.0] }

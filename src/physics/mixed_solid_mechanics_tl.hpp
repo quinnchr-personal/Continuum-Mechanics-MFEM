@@ -53,6 +53,8 @@ public:
   void SetLoadFactor(double t) override;
   double LoadFactor() const override { return loads_.Time(); }
   void ApplyDirichlet(mfem::Vector &x) const override;
+  // A small-strain material with dead loads: Herrmann's linear saddle-point problem.
+  bool IsLinear() const override { return IsSmallStrain(materials_[0]) && !loads_.HasFollowerPressure(); }
   MPI_Comm Comm() const override { return fes_u_.GetComm(); }
 
   mfem::ParMesh &Mesh() { return mesh_; }

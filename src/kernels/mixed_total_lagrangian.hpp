@@ -10,6 +10,13 @@
 // fixed p (dual seeding), K_up = int (J F^{-T}) : Grad w  q,
 // K_pu = int q u''(J) (J F^{-T}) : Grad du (= K_up^T for the quadratic law),
 // K_pp = -1/kappa int q dp.
+//
+// J and dJ/dF = J F^{-T} are the volume measure of finite kinematics. For a
+// small-strain material (materials/kinematics.hpp) the measure is
+// theta = 1 + tr(eps) with d theta/dF = I, and the same blocks are Herrmann's
+// formulation of linear elasticity,
+//   R_u.w = int [2 mu dev(eps) + p I] : Grad w dV,  R_p.q = int q (tr(eps) - p / kappa) dV,
+// a linear, symmetric saddle-point problem (K_uu has no pressure term).
 #pragma once
 
 #include <cmath>
@@ -25,13 +32,21 @@
 namespace cmf
 {
 
-// P(F, p) = P_iso(F) + p J F^{-T}; templated so duals give dP/dF at fixed p.
+// P(F, p) = P_iso(F) + p J F^{-T} (small strain: P_iso + p I); templated so
+// duals give dP/dF at fixed p.
 template <typename Material, typename T>
 inline tensor<T, 3, 3> MixedPK1(const Material &material, const tensor<T, 3, 3> &F,
                                 double p)
 {
-  const T J = det(F);
-  return material.PK1Iso(F) + (p * J) * transpose(inv(F));
+  if constexpr (is_small_strain<Material>::value)
+  {
+    return material.PK1Iso(F) + p * I<3>();
+  }
+  else
+  {
+    const T J = det(F);
+    return material.PK1Iso(F) + (p * J) * transpose(inv(F));
+  }
 }
 
 template <typename Material, int dim>
@@ -69,14 +84,24 @@ inline tensor<double, 3, 3, 3, 3> QPointMixedTangent(const Material &material,
   return A;
 }
 
-// dJ/dF = J F^{-T}, in-plane block (plane strain: J = det of the 2x2 block).
-template <int dim>
+// The volume measure J of the material's kinematics and its gradient, in-plane
+// block: det F and dJ/dF = J F^{-T} (plane strain: the det of the 2x2 block),
+// or 1 + tr(eps) and I at small strain.
+template <typename Material, int dim>
 inline tensor<double, dim, dim> QPointVolumeGradient(const tensor<double, dim, dim> &H,
                                                      double &J)
 {
-  const tensor<double, dim, dim> F = I<dim>() + H;
-  J = det(F);
-  return J * transpose(inv(F));
+  if constexpr (is_small_strain<Material>::value)
+  {
+    J = 1.0 + tr(H);
+    return I<dim>();
+  }
+  else
+  {
+    const tensor<double, dim, dim> F = I<dim>() + H;
+    J = det(F);
+    return J * transpose(inv(F));
+  }
 }
 
 // Cauchy stress of the mixed formulation: sigma = J^{-1} P F^T, or P itself
@@ -192,7 +217,7 @@ private:
       PointSetup<dim>(el, Tr, ip, *elfun[1], H, p);
       const double w = ip.weight * Tr.Weight();
       const tensor<double, 3, 3> F = DeformationGradient<dim>(H);
-      const double J = det(F);
+      const double J = VolumeRatio(material, F);
       energy += w * (material.EnergyIso(F) + p * (J - 1.0) -
                      (inv_kappa > 0.0 ? material.ComplementaryVolumetricEnergy(p) : 0.0));
     }
@@ -232,7 +257,7 @@ private:
           PMatO(a, i) += w * s;
         }
       double J = 1.0;
-      QPointVolumeGradient<dim>(H, J);
+      QPointVolumeGradient<Material, dim>(H, J);
       const double constraint = material.NormalizedVolumetricPressure(J) - inv_kappa * p;
       for (int b = 0; b < dof_p; b++) { (*elvec[1])(b) += w * constraint * Sh_(b); }
     }
@@ -286,7 +311,7 @@ private:
             }
           }
       double J = 1.0;
-      const tensor<double, dim, dim> G = QPointVolumeGradient<dim>(H, J);
+      const tensor<double, dim, dim> G = QPointVolumeGradient<Material, dim>(H, J);
       // Kup(a i, b) = w (J F^{-T})_ij DS(a, j) N_b ; Kpu = u''(J) Kup^T
       const double upp = material.NormalizedVolumetricModulus(J);
       for (int a = 0; a < dof_u; a++)
