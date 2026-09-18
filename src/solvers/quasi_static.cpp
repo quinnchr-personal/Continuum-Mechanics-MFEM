@@ -70,40 +70,53 @@ bool TangentPredictor(QuasiStaticProblem &problem, mfem::Solver &linear_solver, 
   return true;
 }
 
-} // namespace
-
-QuasiStaticReport SolveQuasiStatic(QuasiStaticProblem &problem,
-                                   mfem::Solver &linear_solver,
-                                   const SolverConfig &cfg, mfem::Vector &x,
-                                   const LoadStepCallback &on_step)
+// The stepping loop of both analyses. physical_time selects the relative
+// tolerance on the targets, the step label and the time format; with it off
+// every comparison and printed line is that of the pseudo-time stepper.
+QuasiStaticReport RunSteps(QuasiStaticProblem &problem, mfem::Solver &linear_solver,
+                           const SolverConfig &cfg, const std::vector<double> &targets,
+                           double t_start, bool physical_time, mfem::Vector &x,
+                           const LoadStepCallback &on_step)
 {
   int rank = 0;
   MPI_Comm_rank(problem.Comm(), &rank);
   const bool verbose = rank == 0 && cfg.newton.print_level > 0;
-  const std::vector<double> targets = LoadStepBreakpoints(cfg);
   NewtonConfig newton = cfg.newton;
   newton.linear_problem = problem.IsLinear();
   QuasiStaticReport report;
   report.converged = true;
   mfem::Vector x_last(x);
-  double t = 0.0;
+  double t = t_start;
   int accepted = 0;
   for (std::size_t k = 0; k < targets.size(); k++)
   {
     const double target = targets[k];
     double dt = target - t;
+    const double reached = physical_time ? 1e-9 * dt : 1e-14;
     int attempts = 0;
     int bisections = 0;
-    while (t < target - 1e-14)
+    while (t < target - reached)
     {
-      const double t_try = std::min(t + dt, target);
+      double t_try = std::min(t + dt, target);
+      if (physical_time && t_try > target - reached) { t_try = target; }
       if (verbose)
       {
-        std::printf("load step %d/%zu: t = %.6f -> %.6f\n", accepted + 1, targets.size(),
-                    t, t_try);
+        if (physical_time)
+        {
+          std::printf("time step %d/%zu: t = %.9e -> %.9e\n", accepted + 1, targets.size(),
+                      t, t_try);
+        }
+        else
+        {
+          std::printf("load step %d/%zu: t = %.6f -> %.6f\n", accepted + 1, targets.size(),
+                      t, t_try);
+        }
       }
       problem.SetLoadFactor(t_try);
-      if (cfg.predictor == "tangent") { TangentPredictor(problem, linear_solver, x); }
+      if (!physical_time && cfg.predictor == "tangent")
+      {
+        TangentPredictor(problem, linear_solver, x);
+      }
       else { problem.ApplyDirichlet(x); }
       attempts++;
       LoadStepReport s;
@@ -118,6 +131,7 @@ QuasiStaticReport SolveQuasiStatic(QuasiStaticProblem &problem,
         t = t_try;
         x_last = x;
         report.steps.push_back(s);
+        problem.AcceptStep(x);
         if (on_step) { on_step(s, x); }
         attempts = 0;
         dt = target - t; // back to the planned breakpoint
@@ -138,12 +152,30 @@ QuasiStaticReport SolveQuasiStatic(QuasiStaticProblem &problem,
       report.bisections++;
       if (verbose)
       {
-        std::printf("load step %d: Newton failed (%s); bisecting to dt = %.6f\n",
+        std::printf(physical_time ? "time step %d: Newton failed (%s); bisecting to dt = %.9e\n"
+                                  : "load step %d: Newton failed (%s); bisecting to dt = %.6f\n",
                     accepted + 1, s.newton.failure.c_str(), dt);
       }
     }
   }
   return report;
+}
+
+} // namespace
+
+QuasiStaticReport SolveQuasiStatic(QuasiStaticProblem &problem,
+                                   mfem::Solver &linear_solver,
+                                   const SolverConfig &cfg, mfem::Vector &x,
+                                   const LoadStepCallback &on_step)
+{
+  return RunSteps(problem, linear_solver, cfg, LoadStepBreakpoints(cfg), 0.0, false, x, on_step);
+}
+
+QuasiStaticReport SolveDynamic(QuasiStaticProblem &problem, mfem::Solver &linear_solver,
+                               const SolverConfig &cfg, const std::vector<double> &times,
+                               double t_start, mfem::Vector &x, const LoadStepCallback &on_step)
+{
+  return RunSteps(problem, linear_solver, cfg, times, t_start, true, x, on_step);
 }
 
 } // namespace cmf

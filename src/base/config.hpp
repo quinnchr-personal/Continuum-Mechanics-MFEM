@@ -97,6 +97,9 @@ struct MaterialConfig
 // linear). ramp: 0 at t <= from, 1 at t >= to, linear between (the default,
 // from 0 to 1, is the proportional load path). constant: 1 for t > 0.
 // table: linear interpolation of (t, s) pairs, clamped outside.
+// In a dynamic analysis t is the physical time in [0, t_final] and the value
+// at t = 0 is the right limit (right_limit): a constant schedule is then 1
+// from the first instant, a step load that enters the initial acceleration.
 struct Schedule
 {
   enum class Kind { Ramp, Constant, Table };
@@ -106,7 +109,7 @@ struct Schedule
   std::vector<double> t;
   std::vector<double> s;
 
-  double Eval(double time) const;
+  double Eval(double time, bool right_limit = false) const;
   static Schedule Ramp(double from = 0.0, double to = 1.0);
   static Schedule Constant();
   static Schedule Table(const std::vector<double> &t, const std::vector<double> &s);
@@ -215,6 +218,34 @@ struct SolverConfig
   LinearSolverConfig linear;
 };
 
+// Dynamic analysis (the `dynamics` block; absent: quasi-static). The inertial
+// term int rho_R u_tt . w dV joins the weak form and t is the physical time.
+// Time integration is one family in displacement form (solvers/
+// time_integration.hpp): newmark (beta, gamma; the default 1/4, 1/2 is the
+// trapezoidal rule), hht (alpha in [0, 1/3]) and generalized_alpha (rho_inf in
+// [0, 1], the spectral radius at infinite frequency: 1 no dissipation, 0
+// asymptotic annihilation).
+struct DynamicsConfig
+{
+  bool enabled = false;
+  double t_final = 0.0;
+  // Targets t_1 < ... < t_n = t_final of the time steps (from `dt` or the
+  // `steps` segments; UniformTimeSteps for programmatic use).
+  std::vector<double> breakpoints;
+  std::string scheme = "newmark"; // newmark | hht | generalized_alpha
+  double beta = 0.25;
+  double gamma = 0.5;
+  double alpha = 0.0;
+  double rho_inf = 1.0;
+  // Initial state: one expression f(x, y, z) per component; empty = zero.
+  std::vector<std::string> initial_displacement;
+  std::vector<std::string> initial_velocity;
+};
+
+// t_final k / n for k = 1..n (formed by multiplication, so the last target is
+// t_final exactly).
+std::vector<double> UniformTimeSteps(double t_final, int n);
+
 struct ProbeConfig
 {
   std::string name;
@@ -256,6 +287,7 @@ struct AppConfig
   MaterialConfig material;
   BCConfig bcs;
   BodyForceConfig body_force;
+  DynamicsConfig dynamics;
   SolverConfig solver;
   OutputConfig output;
 };

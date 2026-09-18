@@ -10,6 +10,7 @@
 #include "materials/materials.hpp"
 #include "mfem.hpp"
 #include "physics/loads.hpp"
+#include "solvers/linear_solver.hpp"
 #include "solvers/quasi_static.hpp"
 
 namespace cmf
@@ -35,8 +36,28 @@ public:
   virtual void ClearBoundaryConditions() = 0;
   virtual void Finalize() = 0;
   virtual const LoadSet &Loads() const = 0;
-  // Reactions of the Dirichlet entries at the state x (see loads.hpp).
-  virtual std::vector<Reaction> Reactions(const mfem::Vector &x) const = 0;
+  // The static residual at x with its essential rows kept (Mult zeroes them):
+  // internal minus external force on every dof of the unknown.
+  virtual void FullResidual(const mfem::Vector &x, mfem::Vector &r) const = 0;
+  // Reactions of the Dirichlet entries (see loads.hpp) from a full residual r
+  // of the unknown at the state x; a dynamic analysis adds the inertial force
+  // to r (physics/dynamic_solid_problem.hpp).
+  virtual std::vector<Reaction> ReactionsFrom(const mfem::Vector &r,
+                                              const mfem::Vector &x) const = 0;
+  // Reactions of the static balance at x.
+  std::vector<Reaction> Reactions(const mfem::Vector &x) const
+  {
+    mfem::Vector r;
+    FullResidual(x, r);
+    return ReactionsFrom(r, x);
+  }
+  // Dynamic analysis: the loads follow the physical time (LoadSet::SetPhysicalTime).
+  virtual void SetPhysicalTime(bool on) = 0;
+  // Reference density rho_R by element attribute (material.rho0 and the
+  // regions'): the body force and the mass matrix share it.
+  virtual mfem::Coefficient &ReferenceDensity() = 0;
+  // The stamp of the operator GetGradient returns (solvers/linear_solver.hpp).
+  virtual OperatorStamp GradientStamp() const = 0;
 
   virtual mfem::ParFiniteElementSpace &DisplacementSpace() = 0;
   virtual const mfem::Array<int> &EssentialTrueDofs() const = 0;
@@ -63,6 +84,10 @@ std::unique_ptr<SolidProblem> MakeSolidProblem(mfem::ParMesh &mesh, const AppCon
 std::vector<Material> MakeMaterialTable(const MaterialConfig &cfg, mfem::Mesh &mesh,
                                         bool plane_stress);
 std::vector<MixedMaterial> MakeMixedMaterialTable(const MaterialConfig &cfg, mfem::Mesh &mesh);
+// Reference density by element attribute (entry a - 1 for attribute a, the
+// layout of mfem::PWConstCoefficient): cfg.rho0, and a region's rho0 on its
+// attributes.
+mfem::Vector MakeDensityTable(const MaterialConfig &cfg, mfem::Mesh &mesh);
 
 // Installs cfg.bcs and cfg.body_force into problem: attributes resolved
 // against mesh, coefficients built by base/coefficients.hpp and kept alive in

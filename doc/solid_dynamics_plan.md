@@ -7,7 +7,39 @@ trailers). This extends the framework of `doc/hyperelasticity_implementation_pla
 mesh never moves, thin `apps/`, `myapps/` untouched, materials are stateless value types, no
 per-exercise drivers) still hold.
 
-**Status (2026-09-18):** not started.
+**Status (2026-09-18):** DY1 complete.
+DY1 complete: `tests/test_dynamics.cpp` (177 checks, 5.5 s, in `make check`); every existing
+test line and the logs of `cook.yaml`, `bar_linear.yaml` and `cook_linear_incompressible.yaml`
+are identical to those of the commit before. Measured: total mass `1.M.1 = sum rho_r V_r` to
+2e-16 on perturbed quad / tri / hex / tet meshes, p = 1, 2, two densities (the reference
+volumes need a rule that is exact for the trilinear Jacobian; `Mesh::GetElementVolume` is off
+by 1e-4 on perturbed hexes). Free fall with two densities, `linear_elastic` and `neo_hookean`:
+`a_0 = g` to 4e-14, `u = g t^2/2` at every node to 1.4e-13 over 50 steps. Temporal order
+without spatial error (`newmark`, `hht` 0.1, `generalized_alpha` 0.8): 1.999-2.000 with
+tractions, 2.05 -> 2.005 with prescribed motion, for `u` and `v`. Trapezoidal rule, linear free
+vibration: energy constant to 3e-14 over 500 steps; at `w dt >> 1` the energy is annihilated
+for `rho_inf = 0` (1e-32 after 10 steps), falls with slope -1.331 against `2 ln rho_inf =
+-1.386` for 0.5, and is kept to 12 digits for 1. Step traction plus moving support: energy
+balance to 1.6e-14 of the peak energy, global momentum balance to 5e-13. Neo-Hookean at
+`max |u| = 0.75`: Newton order 1.90 with `K + c_M M`, self-convergence ratios 3.989 and 3.982;
+space-time manufactured solution at the spatial rate 3.015. Linear problem, 200 steps: one
+assembly of `K`, one of `K + c_M M`, one AMG setup, not a digit different from 200 of each; a
+step that fails once is halved and the run equals the one with the half steps planned;
+`t_final = 1e-3` and `1e3` end on `t_final` exactly.
+Deviations from the text below. (a) The order study of item 3 runs on 2 x 2 elements with
+steps from 2e-3 down: the error at a fixed time carries the free vibrations that the
+truncation error excites, each with the phase of its numerical frequency, and the ratios are
+only clean once `dt` resolves every mode of the mesh (on 4 x 4 elements from `dt = 0.04` they
+scatter between 1.1 and 3.2 while the errors still fall as `dt^2`). For the same reason item
+7 takes the order in `dt` of the nonlinear path from the self-convergence on such a mesh, and
+uses the manufactured solution under joint refinement (the dynamic error equals the static
+spatial one, 6.7e-6 on 8 x 8, and halving `dt` alone changes it by 2e-4). (b) Item 4's
+"`E_n` non-increasing" is not a property of generalized-alpha: it dissipates in its own norm,
+and the physical energy rose by 1.4e-5 `E_0` between two steps of the `rho_inf = 0.8` run; the
+check is that it never exceeds `E_0` and is lower at the end. (c) Equal steps `t_final k / n`
+differ in the last digits of `t_{k+1} - t_k`, which would give a new `c_M`, a new sum and a new
+AMG setup at every step of a linear problem: the decorator keeps the previous increment when
+the new one agrees with it to 1e-12. (d) The np 2 / 4 comparison needs inputs and moves to DY3.
 
 **Goal:** an optional top-level `dynamics:` block turns the quasi-static problem into
 

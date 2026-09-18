@@ -54,6 +54,23 @@ std::vector<MixedMaterial> MakeMixedMaterialTable(const MaterialConfig &cfg, mfe
   { return MakeMixedMaterial(c); });
 }
 
+mfem::Vector MakeDensityTable(const MaterialConfig &cfg, mfem::Mesh &mesh)
+{
+  const int max_attr = mesh.attributes.Size() ? mesh.attributes.Max() : 1;
+  mfem::Vector table(max_attr);
+  table = cfg.rho0;
+  for (std::size_t i = 0; i < cfg.regions.size(); i++)
+  {
+    const MaterialConfig &region = cfg.regions[i];
+    const std::string what = "material.regions[" + std::to_string(i) + "]";
+    for (int a : ResolveElementAttributes(mesh, region.attr, region.attr_names, what))
+    {
+      table(a - 1) = region.rho0;
+    }
+  }
+  return table;
+}
+
 std::unique_ptr<SolidProblem> MakeSolidProblem(mfem::ParMesh &mesh, const AppConfig &cfg)
 {
   const bool mixed = cfg.formulation == "mixed";

@@ -101,7 +101,7 @@ const double *LoadSet::AddFollowerPressure(const std::vector<int> &attrs, mfem::
   return follower_.back().scale.get();
 }
 
-void LoadSet::SetBodyForce(mfem::VectorCoefficient &b, double rho0, const BCOptions &opt)
+void LoadSet::SetBodyForce(mfem::VectorCoefficient &b, mfem::Coefficient &rho, const BCOptions &opt)
 {
   CheckVector(b, "SetBodyForce");
   // One body force at a time (the YAML has one key); replace an earlier one.
@@ -112,9 +112,8 @@ void LoadSet::SetBodyForce(mfem::VectorCoefficient &b, double rho0, const BCOpti
   LoadEntry e;
   e.vcoef = &b;
   e.body = true;
-  e.rho0 = rho0;
   e.opt = opt;
-  e.owned_vector = std::make_unique<mfem::ScalarVectorProductCoefficient>(rho0, b);
+  e.owned_vector = std::make_unique<mfem::ScalarVectorProductCoefficient>(rho, b);
   loads_.push_back(std::move(e));
   finalized_ = false;
 }
@@ -224,7 +223,7 @@ void LoadSet::SetTime(double t)
   for (FollowerEntry &e : follower_)
   {
     e.coef->SetTime(t);
-    *e.scale = e.opt.schedule.Eval(t);
+    *e.scale = e.opt.schedule.Eval(t, physical_time_);
   }
   external_ = 0.0;
   for (LoadEntry &e : loads_)
@@ -234,7 +233,7 @@ void LoadSet::SetTime(double t)
     if (e.owned_scalar) { e.owned_scalar->SetTime(t); }
     if (e.owned_vector) { e.owned_vector->SetTime(t); }
     if (e.opt.time_dependent) { Assemble(e); }
-    external_.Add(e.opt.schedule.Eval(t), e.L);
+    external_.Add(e.opt.schedule.Eval(t, physical_time_), e.L);
   }
 }
 
@@ -246,7 +245,7 @@ void LoadSet::ApplyDirichlet(mfem::Vector &x) const
   mfem::Vector g_true(fes_.GetTrueVSize());
   for (const DirichletEntry &e : dirichlet_)
   {
-    const double s = e.opt.schedule.Eval(time_);
+    const double s = e.opt.schedule.Eval(time_, physical_time_);
     g = 0.0;
     mfem::Array<int> marker(e.marker); // MFEM takes a non-const marker
     g.ProjectBdrCoefficient(*e.coef, marker);

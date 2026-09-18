@@ -60,8 +60,9 @@ public:
   // physics gives it to the boundary integrator it installs.
   const double *AddFollowerPressure(const std::vector<int> &attrs, mfem::Coefficient &p,
                                     const BCOptions &opt = BCOptions());
-  // Body force per unit mass; rho0 b enters the weak form.
-  void SetBodyForce(mfem::VectorCoefficient &b, double rho0,
+  // Body force per unit mass; rho_R b enters the weak form, with rho_R the
+  // reference density (by element attribute; not owned).
+  void SetBodyForce(mfem::VectorCoefficient &b, mfem::Coefficient &rho,
                     const BCOptions &opt = BCOptions());
   void Clear();
   bool HasFollowerPressure() const { return !follower_.empty(); }
@@ -75,6 +76,10 @@ public:
   // reassembles the time-dependent dead loads and caches the scheduled sum.
   void SetTime(double t);
   double Time() const { return time_; }
+  // Dynamic analysis: t is the physical time and the schedules take their
+  // right limit at t = 0 (base/config.hpp, Schedule).
+  void SetPhysicalTime(bool on) { physical_time_ = on; }
+  bool PhysicalTime() const { return physical_time_; }
 
   // Overwrite the essential true dofs of x with schedule(t) * projected data.
   void ApplyDirichlet(mfem::Vector &x) const;
@@ -106,10 +111,9 @@ private:
     mfem::VectorCoefficient *vcoef = nullptr; // traction or body force
     mfem::Coefficient *scoef = nullptr;       // pressure
     bool body = false;
-    double rho0 = 1.0;
     BCOptions opt;
     std::unique_ptr<mfem::Coefficient> owned_scalar;        // -p for the flux integrator
-    std::unique_ptr<mfem::VectorCoefficient> owned_vector;  // rho0 b
+    std::unique_ptr<mfem::VectorCoefficient> owned_vector;  // rho_R b
     mfem::Vector L;                                         // assembled true vector
   };
   struct FollowerEntry
@@ -131,6 +135,7 @@ private:
   std::vector<LoadEntry> loads_;
   std::vector<FollowerEntry> follower_;
   bool finalized_ = false;
+  bool physical_time_ = false;
   double time_ = 1.0;
   mfem::Array<int> ess_marker_;
   mfem::Array<int> ess_tdof_list_;

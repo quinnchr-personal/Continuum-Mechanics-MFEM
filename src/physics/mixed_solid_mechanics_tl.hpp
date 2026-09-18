@@ -45,7 +45,11 @@ public:
   void ClearBoundaryConditions() override;
   void Finalize() override;
   const LoadSet &Loads() const override { return loads_; }
-  std::vector<Reaction> Reactions(const mfem::Vector &x) const override;
+  void FullResidual(const mfem::Vector &x, mfem::Vector &r) const override;
+  std::vector<Reaction> ReactionsFrom(const mfem::Vector &r, const mfem::Vector &x) const override;
+  void SetPhysicalTime(bool on) override { loads_.SetPhysicalTime(on); }
+  mfem::Coefficient &ReferenceDensity() override { return density_; }
+  OperatorStamp GradientStamp() const override { return gradient_stamp_; }
 
   void Mult(const mfem::Vector &x, mfem::Vector &y) const override;
   mfem::Operator &GetGradient(const mfem::Vector &x) const override;
@@ -105,6 +109,8 @@ private:
   int dim_;
   int order_;
   double rho0_;
+  mfem::Vector density_table_;
+  mfem::PWConstCoefficient density_;
   std::vector<MixedMaterial> materials_;
   double mu_;
   double kappa_;

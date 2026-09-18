@@ -17,7 +17,8 @@ MixedSolidMechanicsTL::MixedSolidMechanicsTL(mfem::ParMesh &mesh, const AppConfi
                                              const std::vector<MixedMaterial> &materials)
   : SolidProblem(0),
     mesh_(mesh), dim_(mesh.Dimension()), order_(cfg.mesh.order),
-    rho0_(cfg.material.rho0), materials_(materials),
+    rho0_(cfg.material.rho0), density_table_(MakeDensityTable(cfg.material, mesh)),
+    density_(density_table_), materials_(materials),
     fec_u_(cfg.mesh.order, mesh.Dimension()),
     fes_u_(&mesh, &fec_u_, mesh.Dimension(), mfem::Ordering::byVDIM),
     fec_p_(cfg.mesh.order > 1 ? cfg.mesh.order - 1 : 1, mesh.Dimension()),
@@ -116,7 +117,7 @@ void MixedSolidMechanicsTL::AddPressure(const std::vector<int> &attrs, mfem::Coe
 
 void MixedSolidMechanicsTL::SetBodyForce(mfem::VectorCoefficient &b, const BCOptions &opt)
 {
-  loads_.SetBodyForce(b, rho0_, opt);
+  loads_.SetBodyForce(b, density_, opt);
   finalized_ = false;
 }
 
@@ -170,17 +171,25 @@ void MixedSolidMechanicsTL::Mult(const mfem::Vector &x, mfem::Vector &y) const
   for (int i = 0; i < ess.Size(); i++) { y(ess[i]) = 0.0; }
 }
 
-std::vector<Reaction> MixedSolidMechanicsTL::Reactions(const mfem::Vector &x) const
+void MixedSolidMechanicsTL::FullResidual(const mfem::Vector &x, mfem::Vector &r) const
 {
   MFEM_VERIFY(finalized_, "MixedSolidMechanicsTL: call Finalize() first");
   mfem::Array<int> none;
   nlf_->SetEssentialTrueDofs(0, none);
-  mfem::Vector r(x.Size());
+  r.SetSize(x.Size());
   nlf_->Mult(x, r);
   nlf_->SetEssentialTrueDofs(0, loads_.EssentialTrueDofs());
-  const int n_u = offsets_[1];
-  mfem::Vector r_u(r.GetData(), n_u), x_u(const_cast<double *>(x.GetData()), n_u);
+  mfem::Vector r_u(r.GetData(), offsets_[1]);
   r_u -= loads_.ExternalLoad();
+}
+
+// Only the displacement blocks of r and x are read (x may be that block alone).
+std::vector<Reaction> MixedSolidMechanicsTL::ReactionsFrom(const mfem::Vector &r,
+                                                           const mfem::Vector &x) const
+{
+  const int n_u = offsets_[1];
+  mfem::Vector r_u(const_cast<double *>(r.GetData()), n_u),
+               x_u(const_cast<double *>(x.GetData()), n_u);
   if (IsSmallStrain(materials_[0]))
   {
     // Equilibrium holds on the reference configuration: reference moment arms.

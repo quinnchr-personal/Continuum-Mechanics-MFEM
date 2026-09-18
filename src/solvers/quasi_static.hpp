@@ -1,7 +1,10 @@
 // Load stepping in the pseudo-time t in (0, 1]: the problem evaluates its
 // load schedules at t, each increment is solved by damped Newton warm-started
 // from the previous one, and a failed increment is bisected when the solver
-// config allows it (SubstepConfig).
+// config allows it (SubstepConfig). The same loop advances a dynamic analysis
+// in physical time (SolveDynamic): the problem is then the step equation of a
+// time integrator (physics/dynamic_solid_problem.hpp), which begins a step in
+// SetLoadFactor and advances its history in AcceptStep.
 #pragma once
 
 #include <functional>
@@ -30,6 +33,10 @@ public:
   // loads): Newton then accepts a residual at its round-off floor
   // (NewtonConfig::linear_problem).
   virtual bool IsLinear() const { return false; }
+  // Called once for every accepted increment, with its converged state, before
+  // the stepper's callback; a rejected (bisected) increment is never reported.
+  // A quasi-static problem has no history and ignores it.
+  virtual void AcceptStep(const mfem::Vector &) {}
 };
 
 // One accepted increment (or the final failed one): t_begin -> load_factor,
@@ -60,5 +67,17 @@ QuasiStaticReport SolveQuasiStatic(QuasiStaticProblem &problem,
                                    mfem::Solver &linear_solver,
                                    const SolverConfig &cfg, mfem::Vector &x,
                                    const LoadStepCallback &on_step = LoadStepCallback());
+
+// The same loop in physical time: from t_start through the targets `times`
+// (increasing), with cfg.newton and cfg.substep (min_dt then in time units);
+// cfg.load_steps, cfg.breakpoints and cfg.predictor are not used. A target
+// counts as reached within 1e-9 of the planned increment: the absolute 1e-14
+// of the pseudo-time is below the spacing of doubles once t > 100, and a
+// missed target would leave a degenerate last step. In the reports
+// load_factor is the time at the end of the step.
+QuasiStaticReport SolveDynamic(QuasiStaticProblem &problem, mfem::Solver &linear_solver,
+                               const SolverConfig &cfg, const std::vector<double> &times,
+                               double t_start, mfem::Vector &x,
+                               const LoadStepCallback &on_step = LoadStepCallback());
 
 } // namespace cmf

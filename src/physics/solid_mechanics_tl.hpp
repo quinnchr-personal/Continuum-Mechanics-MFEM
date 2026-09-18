@@ -52,7 +52,11 @@ public:
   // called lazily by SetLoadFactor/ApplyDirichlet, and required before Mult.
   void Finalize() override;
   const LoadSet &Loads() const override { return loads_; }
-  std::vector<Reaction> Reactions(const mfem::Vector &x) const override;
+  void FullResidual(const mfem::Vector &x, mfem::Vector &r) const override;
+  std::vector<Reaction> ReactionsFrom(const mfem::Vector &r, const mfem::Vector &x) const override;
+  void SetPhysicalTime(bool on) override { loads_.SetPhysicalTime(on); }
+  mfem::Coefficient &ReferenceDensity() override { return density_; }
+  OperatorStamp GradientStamp() const override { return gradient_stamp_; }
 
   // mfem::Operator on true dofs.
   void Mult(const mfem::Vector &x, mfem::Vector &y) const override;
@@ -87,7 +91,7 @@ public:
   const mfem::Vector &ExternalLoad() const { return loads_.ExternalLoad(); }
   const Material &GetMaterial() const { return materials_[0]; }
   const std::vector<Material> &Materials() const { return materials_; }
-  double Rho0() const { return rho0_; }
+  double Rho0() const { return rho0_; } // of the base material (regions: ReferenceDensity)
   int Order() const { return order_; }
 
   // Stored energy int W(F) dV at x.
@@ -114,6 +118,8 @@ private:
   int dim_;
   int order_;
   double rho0_;
+  mfem::Vector density_table_;
+  mfem::PWConstCoefficient density_;
   std::vector<Material> materials_;
   mfem::H1_FECollection fec_;
   mfem::ParFiniteElementSpace fes_;

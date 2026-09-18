@@ -272,7 +272,15 @@ void CheckNonNegative(int v, const std::string &path)
 
 } // namespace
 
-double Schedule::Eval(double time) const
+std::vector<double> UniformTimeSteps(double t_final, int n)
+{
+  std::vector<double> times;
+  for (int k = 1; k <= n; k++) { times.push_back(t_final * double(k) / double(n)); }
+  if (!times.empty()) { times.back() = t_final; }
+  return times;
+}
+
+double Schedule::Eval(double time, bool right_limit) const
 {
   switch (kind)
   {
@@ -281,6 +289,7 @@ double Schedule::Eval(double time) const
       if (time >= to) { return 1.0; }
       return (time - from) / (to - from);
     case Kind::Constant:
+      if (right_limit) { return time >= 0.0 ? 1.0 : 0.0; }
       return time > 0.0 ? 1.0 : 0.0;
     case Kind::Table:
       if (time <= t.front()) { return s.front(); }

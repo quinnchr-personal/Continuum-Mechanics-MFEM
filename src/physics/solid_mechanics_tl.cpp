@@ -24,7 +24,8 @@ SolidMechanicsTL::SolidMechanicsTL(mfem::ParMesh &mesh, const AppConfig &cfg,
                                    const std::vector<Material> &materials)
   : SolidProblem(0),
     mesh_(mesh), dim_(mesh.Dimension()), order_(cfg.mesh.order),
-    rho0_(cfg.material.rho0), materials_(materials),
+    rho0_(cfg.material.rho0), density_table_(MakeDensityTable(cfg.material, mesh)),
+    density_(density_table_), materials_(materials),
     fec_(cfg.mesh.order, mesh.Dimension()),
     fes_(&mesh, &fec_, mesh.Dimension(), mfem::Ordering::byVDIM),
     loads_(fes_)
@@ -103,7 +104,7 @@ void SolidMechanicsTL::AddPressure(const std::vector<int> &attrs, mfem::Coeffici
 
 void SolidMechanicsTL::SetBodyForce(mfem::VectorCoefficient &b, const BCOptions &opt)
 {
-  loads_.SetBodyForce(b, rho0_, opt);
+  loads_.SetBodyForce(b, density_, opt);
   finalized_ = false;
 }
 
@@ -144,17 +145,22 @@ void SolidMechanicsTL::Mult(const mfem::Vector &x, mfem::Vector &y) const
   for (int i = 0; i < ess.Size(); i++) { y(ess[i]) = 0.0; }
 }
 
-std::vector<Reaction> SolidMechanicsTL::Reactions(const mfem::Vector &x) const
+void SolidMechanicsTL::FullResidual(const mfem::Vector &x, mfem::Vector &r) const
 {
   MFEM_VERIFY(finalized_, "SolidMechanicsTL: call Finalize() first");
-  // The full residual: the form zeroes its essential rows in Mult, so they
-  // are lifted for this evaluation and restored afterwards.
+  // The form zeroes its essential rows in Mult, so they are lifted for this
+  // evaluation and restored afterwards.
   mfem::Array<int> none;
   nlf_->SetEssentialTrueDofs(none);
-  mfem::Vector r(x.Size());
+  r.SetSize(x.Size());
   nlf_->Mult(x, r);
   nlf_->SetEssentialTrueDofs(loads_.EssentialTrueDofs());
   r -= loads_.ExternalLoad();
+}
+
+std::vector<Reaction> SolidMechanicsTL::ReactionsFrom(const mfem::Vector &r,
+                                                      const mfem::Vector &x) const
+{
   if (IsSmallStrain(materials_[0]))
   {
     // Equilibrium holds on the reference configuration: reference moment arms.
