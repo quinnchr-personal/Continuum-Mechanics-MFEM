@@ -30,7 +30,9 @@ struct BCOptions
 
 // Resultant of the nodal forces a Dirichlet entry exerts on the body through
 // its essential dofs (the residual there: internal minus external forces),
-// and their moment about the origin at the current positions X + u.
+// and their moment about the origin at the current positions X + u (at the
+// reference positions X for a small-strain material, whose equilibrium holds
+// on the reference configuration: the physics passes x = 0).
 struct Reaction
 {
   std::string name;

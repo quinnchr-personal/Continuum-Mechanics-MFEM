@@ -60,8 +60,17 @@ std::unique_ptr<SolidProblem> MakeSolidProblem(mfem::ParMesh &mesh, const AppCon
   {
     return std::make_unique<MixedSolidMechanicsTL>(mesh, cfg, MakeMixedMaterialTable(cfg.material, mesh));
   }
-  return std::make_unique<SolidMechanicsTL>(
-    mesh, cfg, MakeMaterialTable(cfg.material, mesh, cfg.plane == "stress"));
+  const std::vector<Material> materials =
+    MakeMaterialTable(cfg.material, mesh, cfg.plane == "stress");
+  if (IsSmallStrain(materials[0]) && cfg.solver.predictor == "tangent")
+  {
+    // The first Newton step of a linear problem is the exact solve. After an
+    // exact predictor Newton would start at the round-off floor, where
+    // rtol |R0| cannot be reached and the line search fails.
+    throw ConfigError("key 'solver.predictor': tangent is not used by model '" + cfg.material.model +
+                      "' (small strain: the first Newton step is already the exact linear solve)");
+  }
+  return std::make_unique<SolidMechanicsTL>(mesh, cfg, materials);
 }
 
 BCOptions OptionsOf(const BoundaryCondition &bc)
@@ -94,8 +103,12 @@ void InstallYamlLoads(SolidProblem &problem, mfem::Mesh &mesh, const AppConfig &
     if (bc.IsPressure())
     {
       owned_scalars.push_back(MakeScalarBCCoefficient(bc, what));
-      problem.AddPressure(attrs, *owned_scalars.back(), bc.type == "follower_pressure",
-                          OptionsOf(bc));
+      try
+      {
+        problem.AddPressure(attrs, *owned_scalars.back(), bc.type == "follower_pressure",
+                            OptionsOf(bc));
+      }
+      catch (const ConfigError &e) { throw ConfigError(what + ": " + e.what()); }
     }
     else
     {

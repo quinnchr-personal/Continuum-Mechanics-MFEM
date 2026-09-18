@@ -6,7 +6,17 @@ trailers). This extends the framework of `doc/hyperelasticity_implementation_pla
 `doc/bc_loading_plan.md`; their design decisions (reference mesh never moves, thin `apps/`,
 `myapps/` untouched, materials are stateless value types templated on the scalar) still hold.
 
-**Status (2026-09-18):** not started.
+**Status (2026-09-18):** LE1 complete. Measured: the assembled Jacobian equals
+`mfem::ElasticityIntegrator` to 5e-16 on perturbed quad / tri / hex / tet meshes (p = 1, 2)
+and is bitwise the tangent at u = 0 of `neo_hookean`, `st_venant_kirchhoff` and
+`iso_neo_hookean`; one Newton iteration at any amplitude; patch tests at amplitude 0.1 to
+1e-14; MMS rates 1.97-2.00 (p = 1), 3.00 (p = 2); `st_venant_kirchhoff` approaches it with
+ratio 2.00 per load halving. Deviations from the text below: the MMS body force is the
+analytic `-(lambda + mu) grad(div u) - mu lap(u)` rather than `ManufacturedBodyForce`, so the
+check does not pass through the material's own stress function; the small-strain-limit check
+of `TestMaterial` runs at strain 0.05 for this model (at the generic 1e-7 it sits on the
+`1e-16 / |Grad u|` floor of decision 5, 8e-10); the reaction test with reference moment arms
+was written here with the code change instead of in LE2.
 
 **Goal:** `material: { model: linear_elastic, E: ..., nu: ... }` solves geometrically linear
 (small-strain) isotropic elasticity in 2D (plane strain, plane stress) and 3D, in the

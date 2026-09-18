@@ -57,6 +57,8 @@ struct MeshConfig
 //   gent: mu, Jm
 //   arruda_boyce: mu, N                  (small-strain modulus mu (1 + 3/(5N) + ...))
 //   ogden: mu_r, alpha_r lists           (mu = 1/2 sum mu_r alpha_r)
+//   linear_elastic: mu or (E, nu)        (small strain, sigma = 2 mu dev(eps) + kappa tr(eps) I;
+//                                          no volumetric law, no follower loads, no tangent predictor)
 // The decoupled models (all but the first three) take the bulk modulus from
 // exactly one of kappa | nu | incompressible, and optionally a volumetric law.
 // `regions` override parameters by element attribute (numbers and/or

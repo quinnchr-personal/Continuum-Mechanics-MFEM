@@ -1,5 +1,6 @@
-// Material library entry point: the variant of available hyperelastic models,
-// the YAML factory, and the (E, nu) -> (mu, lambda) conversion.
+// Material library entry point: the variant of available models (the
+// hyperelastic ones and small-strain linear elasticity), the YAML factory,
+// and the (E, nu) -> (mu, lambda) conversion.
 #pragma once
 
 #include <string>
@@ -14,6 +15,8 @@
 #include "materials/gent.hpp"
 #include "materials/gent_compressible_summit.hpp"
 #include "materials/iso_neo_hookean.hpp"
+#include "materials/kinematics.hpp"
+#include "materials/linear_elastic.hpp"
 #include "materials/material_tangent.hpp"
 #include "materials/mooney_rivlin.hpp"
 #include "materials/neo_hookean.hpp"
@@ -29,15 +32,23 @@ namespace cmf
 // Every model usable in the displacement formulation (needs PK1<T>(F)),
 // each also wrapped by the plane-stress adapter (2D, plane: stress).
 using Material = std::variant<NeoHookean, StVenantKirchhoff, GentCompressibleSummit, IsoNeoHookean,
-                              MooneyRivlin, Yeoh, Gent, ArrudaBoyce, Ogden,
+                              MooneyRivlin, Yeoh, Gent, ArrudaBoyce, Ogden, LinearElastic,
                               PlaneStress<NeoHookean>, PlaneStress<StVenantKirchhoff>,
                               PlaneStress<GentCompressibleSummit>,
                               PlaneStress<IsoNeoHookean>, PlaneStress<MooneyRivlin>,
                               PlaneStress<Yeoh>, PlaneStress<Gent>, PlaneStress<ArrudaBoyce>,
-                              PlaneStress<Ogden>>;
+                              PlaneStress<Ogden>, PlaneStress<LinearElastic>>;
 
 template <typename M> struct is_plane_stress : std::false_type {};
 template <typename B> struct is_plane_stress<PlaneStress<B>> : std::true_type {};
+
+// Whether the held model is written for small strain (materials/kinematics.hpp).
+template <typename... Ms>
+inline bool IsSmallStrain(const std::variant<Ms...> &m)
+{
+  return std::visit([](const auto &mat)
+  { return is_small_strain<std::decay_t<decltype(mat)>>::value; }, m);
+}
 // Decoupled models usable in the mixed u-p formulation (PK1Iso<T>(F),
 // VolumetricPressure<T>(J), ShearModulus(), kappa possibly infinite).
 using MixedMaterial = std::variant<IsoNeoHookean, MooneyRivlin, Yeoh, Gent, ArrudaBoyce, Ogden>;
@@ -110,7 +121,16 @@ constexpr const char *ModelName()
   else if constexpr (std::is_same_v<M, Yeoh>) { return "yeoh"; }
   else if constexpr (std::is_same_v<M, Gent>) { return "gent"; }
   else if constexpr (std::is_same_v<M, ArrudaBoyce>) { return "arruda_boyce"; }
+  else if constexpr (std::is_same_v<M, LinearElastic>) { return "linear_elastic"; }
   else { return "ogden"; }
+}
+
+// The YAML name of the held model, without the plane-stress note of MaterialName.
+template <typename... Ms>
+inline std::string ModelNameOf(const std::variant<Ms...> &m)
+{
+  return std::visit([](const auto &mat) -> std::string
+  { return ModelName<std::decay_t<decltype(mat)>>(); }, m);
 }
 
 inline std::string MaterialName(const Material &m)

@@ -1,7 +1,8 @@
 // S2 gate: stress-free reference state, AD tangent vs finite differences,
 // objectivity under random rotations, and the small-strain (linear
 // elasticity) limit for every material; Ogden reductions and its analytic
-// tangent at coincident principal stretches.
+// tangent at coincident principal stretches; the small-strain model
+// linear_elastic, which is that limit at any amplitude.
 #include <algorithm>
 #include <limits>
 #include <random>
@@ -97,8 +98,20 @@ Tan4 FiniteDifferenceTangent(const Material &m, const Mat3 &F, double h)
   return A;
 }
 
+// What TestMaterial expects of a model. A small-strain model is not objective
+// under finite rotations, and it equals its own small-strain limit at any
+// amplitude: there the limit check runs at a finite strain, above the
+// 1e-16 / |Grad u| cancellation floor of eps = sym(F - I), to round-off.
+struct MaterialChecks
+{
+  bool objective = true;
+  double limit_eps = 1e-7;
+  double limit_tol = 1e-6;
+};
+
 template <typename Material>
-void TestMaterial(const Material &m, const std::string &name, double E, double nu)
+void TestMaterial(const Material &m, const std::string &name, double E, double nu,
+                  const MaterialChecks &checks = MaterialChecks())
 {
   // The small-strain Lame moduli follow from E and nu, not from the material's
   // members, so models parameterised otherwise run the same checks.
@@ -155,6 +168,7 @@ void TestMaterial(const Material &m, const std::string &name, double E, double n
               std::to_string(energy_err));
 
     // 3. Objectivity: P(QF) = Q P(F).
+    if (!checks.objective) { continue; }
     const Mat3 Q = RandomRotation(rng);
     CHECK_MSG(MaxAbs(cmf::transpose(Q) * Q - cmf::I<3>()) <= 1e-14, "Q is orthogonal");
     const Mat3 lhs = m.PK1(Q * F);
@@ -174,29 +188,29 @@ void TestMaterial(const Material &m, const std::string &name, double E, double n
     H(0, 0) = 0.3; H(0, 1) = -0.8; H(0, 2) = 0.2;
     H(1, 0) = 0.5; H(1, 1) = 0.1; H(1, 2) = 0.7;
     H(2, 0) = -0.4; H(2, 1) = 0.6; H(2, 2) = -0.2;
-    const double eps = 1e-7;
+    const double eps = checks.limit_eps, tol = checks.limit_tol;
     const Mat3 F = cmf::I<3>() + eps * H;
     const Mat3 P = m.PK1(F);
     const Mat3 e = eps * cmf::sym(H);
     const Mat3 P_lin = (lame.lambda * cmf::tr(e)) * cmf::I<3>() + (2.0 * lame.mu) * e;
     const double rel = MaxAbs(P - P_lin) / MaxAbs(P_lin);
     std::printf("  small-strain limit rel %.2e (eps %.0e)\n", rel, eps);
-    CHECK_MSG(rel <= 1e-6, name + ": small-strain limit relative error " + std::to_string(rel));
+    CHECK_MSG(rel <= tol, name + ": small-strain limit relative error " + std::to_string(rel));
     // Uniaxial strain: P_11 must equal the P-wave modulus E(1-nu)/((1+nu)(1-2nu)) eps
     // computed from E and nu directly, so a wrong Lame conversion cannot hide.
     Mat3 Fu = cmf::I<3>();
     Fu(0, 0) += eps;
     const Mat3 Pu = m.PK1(Fu);
     const double M = E * (1.0 - nu) / ((1.0 + nu) * (1.0 - 2.0 * nu));
-    CHECK_MSG(std::abs(Pu(0, 0) - M * eps) <= 1e-6 * M * eps,
+    CHECK_MSG(std::abs(Pu(0, 0) - M * eps) <= tol * M * eps,
               name + ": uniaxial P11 vs P-wave modulus");
-    CHECK_MSG(std::abs(Pu(1, 1) - lame.lambda * eps) <= 1e-6 * lame.lambda * eps,
+    CHECK_MSG(std::abs(Pu(1, 1) - lame.lambda * eps) <= tol * lame.lambda * eps,
               name + ": uniaxial P22 vs lambda");
     // Simple shear: P_12 = mu gamma.
     Mat3 Fs = cmf::I<3>();
     Fs(0, 1) += eps;
     const Mat3 Ps = m.PK1(Fs);
-    CHECK_MSG(std::abs(Ps(0, 1) - lame.mu * eps) <= 1e-6 * lame.mu * eps,
+    CHECK_MSG(std::abs(Ps(0, 1) - lame.mu * eps) <= tol * lame.mu * eps,
               name + ": simple shear P12 vs mu");
   }
 }
@@ -648,6 +662,141 @@ void TestGentCompressibleSummit()
   CHECK_THROWS(cmf::MakeMaterial(bad), cmf::ConfigError, "needs mu, kappa and Jm");
 }
 
+// linear_elastic (small strain): the generic checks without objectivity and
+// with the limit check at a finite strain; invariance under infinitesimal
+// rotations, PK1(I + W) = 0 for skew W, in its place; the AD tangent is the
+// constant isotropic C with minor and major symmetries; W = sigma:eps / 2; the
+// plane-stress adapter gives the plane-stress moduli at a finite strain, not
+// only in the limit; the YAML factory and its key rules.
+void TestLinearElastic(double E, double nu)
+{
+  const cmf::LameParameters lame = cmf::LameFromYoungPoisson(E, nu);
+  const cmf::LinearElastic m = cmf::LinearElastic::FromYoungPoisson(E, nu);
+  const double scale = lame.lambda + 2.0 * lame.mu;
+  CHECK_CLOSE(m.mu, lame.mu, 1e-13 * scale);
+  CHECK_CLOSE(m.Lambda(), lame.lambda, 1e-13 * scale);
+  CHECK(cmf::is_small_strain<cmf::LinearElastic>::value);
+  CHECK(cmf::is_small_strain<cmf::PlaneStress<cmf::LinearElastic>>::value);
+  CHECK(!cmf::is_small_strain<cmf::NeoHookean>::value);
+  CHECK(!cmf::is_small_strain<cmf::PlaneStress<cmf::NeoHookean>>::value);
+
+  MaterialChecks checks;
+  checks.objective = false;
+  checks.limit_eps = 0.05;
+  checks.limit_tol = 1e-13;
+  TestMaterial(m, "linear_elastic", E, nu, checks);
+
+  std::mt19937 rng(20260918u);
+  std::uniform_real_distribution<double> unit(-1.0, 1.0);
+  // Infinitesimal rotation: F = I + W, W skew, is stress free.
+  {
+    Mat3 W;
+    W(0, 1) = 0.3 * unit(rng); W(0, 2) = 0.3 * unit(rng); W(1, 2) = 0.3 * unit(rng);
+    W(1, 0) = -W(0, 1); W(2, 0) = -W(0, 2); W(2, 1) = -W(1, 2);
+    const Mat3 F = cmf::I<3>() + W;
+    CHECK_MSG(MaxAbs(m.PK1(F)) <= 1e-15 * scale, "linear_elastic: PK1(I + W) = 0 for skew W");
+    CHECK_MSG(std::abs(m.Energy(F)) <= 1e-15 * scale, "linear_elastic: W(I + W) = 0 for skew W");
+  }
+  // Constant tangent equal to lambda d_ij d_kl + mu (d_ik d_jl + d_il d_jk).
+  double worst_C = 0.0, worst_energy = 0.0;
+  for (int trial = 0; trial < 2; trial++)
+  {
+    const Mat3 F = RandomF(rng);
+    const Tan4 A = cmf::MaterialTangent(m, F);
+    for (int i = 0; i < 3; i++)
+      for (int j = 0; j < 3; j++)
+        for (int k = 0; k < 3; k++)
+          for (int l = 0; l < 3; l++)
+          {
+            const double C = lame.lambda * (i == j) * (k == l) +
+                             lame.mu * ((i == k) * (j == l) + (i == l) * (j == k));
+            worst_C = std::max(worst_C, std::abs(A(i, j, k, l) - C) / scale);
+          }
+    const Mat3 P = m.PK1(F);
+    CHECK_MSG(MaxAbs(P - cmf::transpose(P)) == 0.0, "linear_elastic: the stress is symmetric");
+    const double W = m.Energy(F), half = 0.5 * cmf::ddot(P, cmf::LinearElastic::Strain(F));
+    worst_energy = std::max(worst_energy, std::abs(W - half) / std::abs(half));
+  }
+  std::printf("  tangent vs closed-form C rel %.2e, W vs sigma:eps/2 rel %.2e\n", worst_C, worst_energy);
+  CHECK_MSG(worst_C <= 1e-14, "linear_elastic: AD tangent is the constant isotropic C");
+  CHECK_MSG(worst_energy <= 1e-14, "linear_elastic: W = sigma:eps / 2");
+
+  // Plane stress at a finite in-plane strain: sigma = E/(1-nu^2) [(1-nu) eps +
+  // nu tr(eps) I], thickness strain -nu/(1-nu) tr(eps), and the in-plane
+  // tangent lambda* d d + mu (dd + dd) with lambda* = 2 lambda mu/(lambda + 2 mu).
+  {
+    const cmf::PlaneStress<cmf::LinearElastic> ps(m);
+    Mat3 F = cmf::I<3>();
+    F(0, 0) += 0.05; F(1, 1) += -0.02; F(0, 1) += 0.06; F(1, 0) += -0.01;
+    const double e11 = 0.05, e22 = -0.02, e12 = 0.025;
+    const double Eps = E / (1.0 - nu * nu);
+    const Mat3 P = ps.PK1(F);
+    CHECK_CLOSE(P(0, 0), Eps * (e11 + nu * e22), 1e-13 * scale);
+    CHECK_CLOSE(P(1, 1), Eps * (e22 + nu * e11), 1e-13 * scale);
+    CHECK_CLOSE(P(0, 1), 2.0 * lame.mu * e12, 1e-13 * scale);
+    CHECK_CLOSE(P(1, 0), 2.0 * lame.mu * e12, 1e-13 * scale);
+    CHECK_CLOSE(P(2, 2), 0.0, 1e-13 * scale);
+    CHECK_CLOSE(ps.Complete(F)(2, 2) - 1.0, -nu / (1.0 - nu) * (e11 + e22), 1e-14);
+    const double lambda_ps = 2.0 * lame.lambda * lame.mu / (lame.lambda + 2.0 * lame.mu);
+    const Tan4 A = cmf::MaterialTangent(ps, F, 2);
+    double worst = 0.0;
+    for (int i = 0; i < 2; i++)
+      for (int j = 0; j < 2; j++)
+        for (int k = 0; k < 2; k++)
+          for (int l = 0; l < 2; l++)
+          {
+            const double C = lambda_ps * (i == j) * (k == l) +
+                             lame.mu * ((i == k) * (j == l) + (i == l) * (j == k));
+            worst = std::max(worst, std::abs(A(i, j, k, l) - C) / scale);
+          }
+    std::printf("  plane stress at strain 0.05: in-plane tangent vs closed form rel %.2e\n", worst);
+    CHECK_MSG(worst <= 1e-12, "linear_elastic plane stress: tangent is the plane-stress C");
+    TestPlaneStressSmallStrain(m, "linear_elastic", E, nu);
+  }
+
+  // YAML factory: mu or (E, nu), the bulk modulus from one of kappa | nu.
+  cmf::MaterialConfig cfg;
+  cfg.model = "linear_elastic"; cfg.E = E; cfg.nu = nu;
+  const cmf::Material made = cmf::MakeMaterial(cfg);
+  CHECK(cmf::MaterialName(made) == "linear_elastic");
+  CHECK(cmf::ModelNameOf(made) == "linear_elastic");
+  CHECK(cmf::IsSmallStrain(made));
+  CHECK_CLOSE(std::get<cmf::LinearElastic>(made).mu, lame.mu, 1e-13 * scale);
+  CHECK_CLOSE(std::get<cmf::LinearElastic>(made).kappa, lame.lambda + 2.0 * lame.mu / 3.0, 1e-13 * scale);
+  const cmf::Material made_ps = cmf::MakeMaterial(cfg, true);
+  CHECK(cmf::MaterialName(made_ps) == "linear_elastic (plane stress)");
+  CHECK(cmf::ModelNameOf(made_ps) == "linear_elastic");
+  CHECK(cmf::IsSmallStrain(made_ps));
+  cfg.model = "neo_hookean";
+  CHECK(!cmf::IsSmallStrain(cmf::MakeMaterial(cfg)));
+  CHECK(!cmf::IsSmallStrain(cmf::MakeMaterial(cfg, true)));
+  cfg = cmf::MaterialConfig();
+  cfg.model = "linear_elastic"; cfg.mu = 80.0; cfg.kappa = 200.0;
+  CHECK(std::get<cmf::LinearElastic>(cmf::MakeMaterial(cfg)).kappa == 200.0);
+  cfg.kappa = std::numeric_limits<double>::quiet_NaN();
+  cfg.nu = 0.25; // kappa = 2 mu (1 + nu) / (3 (1 - 2 nu))
+  CHECK_CLOSE(std::get<cmf::LinearElastic>(cmf::MakeMaterial(cfg)).kappa, 2.0 * 80.0 * 1.25 / 1.5, 1e-12);
+  cmf::MaterialConfig bad = cfg;
+  bad.volumetric = "logarithmic";
+  CHECK_THROWS(cmf::MakeMaterial(bad), cmf::ConfigError, "'material.volumetric' is not used by model 'linear_elastic'");
+  bad = cfg;
+  bad.E = 200.0;
+  CHECK_THROWS(cmf::MakeMaterial(bad), cmf::ConfigError, "give one, not both");
+  bad = cfg;
+  bad.mu = std::numeric_limits<double>::quiet_NaN();
+  CHECK_THROWS(cmf::MakeMaterial(bad), cmf::ConfigError, "needs mu, or E and nu");
+  bad = cfg;
+  bad.Jm = 10.0;
+  CHECK_THROWS(cmf::MakeMaterial(bad), cmf::ConfigError, "'material.Jm' is not used by model 'linear_elastic'");
+  bad = cfg;
+  bad.kappa = 100.0;
+  CHECK_THROWS(cmf::MakeMaterial(bad), cmf::ConfigError, "needs exactly one of");
+  bad = cfg;
+  bad.nu = 0.5;
+  CHECK_THROWS(cmf::MakeMaterial(bad), cmf::ConfigError, "needs a finite bulk modulus");
+  CHECK_THROWS(cmf::MakeMixedMaterial(cfg), cmf::ConfigError, "formulation: mixed needs");
+}
+
 int main()
 {
   const double E = 250.0, nu = 0.3;
@@ -682,6 +831,7 @@ int main()
   TestOgdenSpecial(mu, kappa);
   TestVolumetricLaws(mu, kappa);
   TestGentCompressibleSummit();
+  TestLinearElastic(E, nu);
   TestPlaneStress(E, nu, mu, kappa);
   // Mooney-Rivlin with c2 = 0 is the isochoric neo-Hookean model.
   {

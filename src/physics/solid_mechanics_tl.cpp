@@ -86,6 +86,12 @@ void SolidMechanicsTL::AddPressure(const std::vector<int> &attrs, mfem::Coeffici
   }
   else
   {
+    if (IsSmallStrain(materials_[0]))
+    {
+      throw ConfigError("traction type follower_pressure is not used by model '" +
+                        ModelNameOf(materials_[0]) + "' (small strain: the reference and the "
+                        "current configuration coincide; use type: pressure)");
+    }
     const double *scale = loads_.AddFollowerPressure(attrs, p, opt);
     follower_markers_.push_back(loads_.Marker(attrs));
     nlf_->AddBdrFaceIntegrator(new FollowerPressureIntegrator(p, scale),
@@ -147,6 +153,13 @@ std::vector<Reaction> SolidMechanicsTL::Reactions(const mfem::Vector &x) const
   nlf_->Mult(x, r);
   nlf_->SetEssentialTrueDofs(loads_.EssentialTrueDofs());
   r -= loads_.ExternalLoad();
+  if (IsSmallStrain(materials_[0]))
+  {
+    // Equilibrium holds on the reference configuration: reference moment arms.
+    mfem::Vector zero(x.Size());
+    zero = 0.0;
+    return loads_.Reactions(r, zero);
+  }
   return loads_.Reactions(r, x);
 }
 
@@ -169,6 +182,7 @@ HYPRE_BigInt SolidMechanicsTL::GlobalTrueVSize() const
 std::string SolidMechanicsTL::Description() const
 {
   return "displacement formulation, " + MaterialName(materials_[0]) +
+         (IsSmallStrain(materials_[0]) ? " (small strain)" : "") +
          VolumetricLawSuffix(materials_[0]) + (materials_.size() > 1 ? " (regions)" : "");
 }
 

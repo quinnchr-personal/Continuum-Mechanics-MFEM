@@ -93,6 +93,15 @@ Material MakeMaterial(const MaterialConfig &cfg, bool plane_stress)
   {
     base = GentCompressibleSummit{cfg.mu, cfg.kappa, cfg.Jm};
   }
+  else if (cfg.model == "linear_elastic")
+  {
+    if (m.incompressible)
+    {
+      throw ConfigError("material: model 'linear_elastic' needs a finite bulk modulus "
+                        "(nu < 0.5 or kappa) in the displacement formulation");
+    }
+    base = LinearElastic(m.mu, m.kappa);
+  }
   else
   {
     if (m.incompressible && !plane_stress)

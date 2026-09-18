@@ -264,6 +264,21 @@ void TestYaml()
   CHECK_THROWS(cmf::ParseConfig(YAML::Load(
     "mesh: { file: square.msh }\nmaterial: { model: mooney, E: 1.0, nu: 0.3 }\n")),
     cmf::ConfigError, "unknown model 'mooney'");
+  // linear_elastic (small strain): mu or (E, nu), one bulk-modulus key, no volumetric law.
+  {
+    const std::string mesh = "mesh: { file: square.msh }\n";
+    const cmf::AppConfig c = cmf::ParseConfig(YAML::Load(mesh + "material: { model: linear_elastic, E: 2.0, nu: 0.25 }\n"));
+    CHECK(c.material.model == "linear_elastic" && c.material.E == 2.0 && c.material.nu == 0.25);
+    CHECK(cmf::ParseConfig(YAML::Load(mesh + "material: { model: linear_elastic, mu: 1.0, kappa: 3.0 }\n")).material.kappa == 3.0);
+    CHECK_THROWS(cmf::ParseConfig(YAML::Load(mesh + "material: { model: linear_elastic, E: 2.0, nu: 0.25, volumetric: logarithmic }\n")),
+                 cmf::ConfigError, "'material.volumetric' is not used by model 'linear_elastic'");
+    CHECK_THROWS(cmf::ParseConfig(YAML::Load(mesh + "material: { model: linear_elastic, E: 2.0 }\n")),
+                 cmf::ConfigError, "model 'linear_elastic' needs mu, or E and nu");
+    CHECK_THROWS(cmf::ParseConfig(YAML::Load(mesh + "material: { model: linear_elastic, mu: 1.0 }\n")),
+                 cmf::ConfigError, "needs exactly one of");
+    CHECK_THROWS(cmf::ParseConfig(YAML::Load(mesh + "material: { model: linear_elastic, mu: 1.0, nu: 0.3, c1: 1.0 }\n")),
+                 cmf::ConfigError, "'material.c1' is not used by model 'linear_elastic'");
+  }
   CHECK_THROWS(cmf::ParseConfig(YAML::Load(
     "mesh: { file: square.msh }\nmaterial: { model: neo_hookean, E: 1.0, nu: 0.3 }\n"
     "solver: { linear: { type: mumps } }\n")),

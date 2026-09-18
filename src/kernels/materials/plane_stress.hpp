@@ -22,6 +22,7 @@
 
 #include "base/dual.hpp"
 #include "base/tensor.hpp"
+#include "materials/kinematics.hpp"
 
 namespace cmf
 {
@@ -36,6 +37,8 @@ template <typename Material>
 struct PlaneStress
 {
   using Base = Material;
+  // The adapter has the kinematics of its base (materials/kinematics.hpp).
+  static constexpr bool small_strain = is_small_strain<Material>::value;
 
   Material material;
 

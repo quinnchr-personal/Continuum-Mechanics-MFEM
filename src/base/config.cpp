@@ -464,6 +464,12 @@ void ValidateMaterialConfig(const MaterialConfig &cfg, const std::string &path)
     required = {"mu_r", "alpha_r"};
     needs = "mu_r and alpha_r";
   }
+  else if (model == "linear_elastic")
+  {
+    // Small strain: the volumetric response is kappa tr(eps), so there is no law to choose.
+    allowed = {"mu", "E", "nu", "kappa", "incompressible"};
+    needs = "mu, or E and nu";
+  }
   else
   {
     throw ConfigError("key " + key("model") + ": unknown model '" + model + "'");
@@ -503,7 +509,7 @@ void ValidateMaterialConfig(const MaterialConfig &cfg, const std::string &path)
     return;
   }
   if (model == "gent_compressible_summit") { return; } // coupled: kappa is a parameter of its penalty
-  if (model == "iso_neo_hookean")
+  if (model == "iso_neo_hookean" || model == "linear_elastic")
   {
     if (set(cfg.mu) && set(cfg.E))
     {
@@ -511,7 +517,7 @@ void ValidateMaterialConfig(const MaterialConfig &cfg, const std::string &path)
     }
     if (!set(cfg.mu) && !(set(cfg.E) && set(cfg.nu)))
     {
-      throw ConfigError("missing key " + key("mu") + " (model 'iso_neo_hookean' needs mu, or E and nu)");
+      throw ConfigError("missing key " + key("mu") + " (model '" + model + "' needs mu, or E and nu)");
     }
   }
   if (model == "mooney_rivlin" && !(cfg.c1 + cfg.c2 > 0.0))
@@ -603,14 +609,14 @@ MaterialConfig ReadMaterialKeys(NodeReader &r, const std::string &path, const Ma
   cfg.rho0 = r.Optional<double>("rho0", cfg.rho0);
   static const char *models[] = {"neo_hookean", "st_venant_kirchhoff", "gent_compressible_summit",
                                  "iso_neo_hookean", "mooney_rivlin", "yeoh", "gent", "arruda_boyce",
-                                 "ogden"};
+                                 "ogden", "linear_elastic"};
   bool known = false;
   for (const char *m : models) { known = known || cfg.model == m; }
   if (!known)
   {
     throw ConfigError("key '" + r.Path("model") + "': unknown model '" + cfg.model +
                       "' (expected neo_hookean, st_venant_kirchhoff, gent_compressible_summit, iso_neo_hookean, "
-                      "mooney_rivlin, yeoh, gent, arruda_boyce, or ogden)");
+                      "mooney_rivlin, yeoh, gent, arruda_boyce, ogden, or linear_elastic)");
   }
   if (!std::isnan(cfg.E)) { CheckPositive(cfg.E, r.Path("E")); }
   if (!std::isnan(cfg.mu)) { CheckPositive(cfg.mu, r.Path("mu")); }
