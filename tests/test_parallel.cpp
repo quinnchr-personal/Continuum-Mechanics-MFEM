@@ -3,9 +3,10 @@
 // they match to 1e-10 relative. The linear solver tolerance is tightened to
 // 1e-14 and Newton to 1e-12 relative (its round-off floor is ~3e-13 on these
 // problems, so 1e-14 would stall and truncate the load path); the achieved
-// reduction is reported. Both the displacement and the mixed u-p Cook's
-// membrane inputs are checked; a linear problem may be accepted at the
-// round-off floor of its residual instead.
+// reduction is reported. The displacement and the mixed u-p Cook's membrane
+// inputs and the small-strain one (linear_elastic) are checked; the latter is
+// linear and is accepted at the round-off floor of its residual, just above
+// 1e-12 here.
 #include <cmath>
 #include <cstdio>
 #include <fstream>
@@ -90,7 +91,8 @@ int main(int argc, char *argv[])
   }
 
   const std::vector<std::string> inputs = {"apps/input/finite_elasticity/cooks_membrane/cook.yaml",
-                                           "apps/input/finite_elasticity/cooks_membrane/cook_incompressible.yaml"};
+                                           "apps/input/finite_elasticity/cooks_membrane/cook_incompressible.yaml",
+                                           "apps/input/linear_elasticity/cooks_membrane/cook_linear.yaml"};
   std::vector<Norms> norms;
   for (const std::string &input : inputs)
   {

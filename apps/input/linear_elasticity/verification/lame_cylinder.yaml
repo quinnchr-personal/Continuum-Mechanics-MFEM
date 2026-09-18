@@ -1,0 +1,35 @@
+# Lame's thick-walled cylinder at small strain: radii a = 1, b = 2, plane strain, internal
+# pressure p = 10 on the inner surface, outer surface free; linear_elastic with E = 1000,
+# nu = 0.3. Quarter model (apps/mesh/annulus.geo, curved second-order geometry) with
+# rollers on the two symmetry lines. Closed form, with A = p a^2 / (b^2 - a^2):
+#   u_r = (1 + nu)/E A [(1 - 2 nu) r + b^2 / r],
+#   sigma_rr = A (1 - b^2/r^2),  sigma_tt = A (1 + b^2/r^2),  sigma_zz = 2 nu A.
+# The small-strain counterpart of finite_elasticity/verification/rivlin_cylinder_inflation
+# (there the pressure is a follower load; here the dead pressure is the same load). One
+# Newton iteration. tests/test_linear_verification.cpp checks the probes.
+mesh:
+  file: apps/mesh/annulus.msh
+  serial_refine: 2
+  order: 2
+material: { model: linear_elastic, E: 1000.0, nu: 0.3 }
+bcs:
+  dirichlet:
+    - { attr: [bottom], expression: ["0", "0"], components: [y] }
+    - { attr: [left], expression: ["0", "0"], components: [x] }
+  traction:
+    - { attr: [inner], type: pressure, expression: "10.0" }
+solver:
+  load_steps: 1
+  newton: { rtol: 1e-8, atol: 1e-14, max_it: 5 }
+  linear: { type: cg_amg, rtol: 1e-13, max_it: 500 }
+output:
+  paraview: out/lame_cylinder
+  fields: [displacement, strain, cauchy_stress, vonmises]
+  nodal_projection: projected
+  probes:
+    - { name: inner, point: [1.0, 0.0] }
+    - { name: outer, point: [2.0, 0.0] }
+    - { name: inner_top, point: [0.0, 1.0] }
+    - { name: wall_125, point: [0.8838834764831844, 0.8838834764831844] }   # r = 1.25 at 45 degrees
+    - { name: wall_150, point: [1.0606601717798212, 1.0606601717798212] }   # r = 1.5
+    - { name: wall_175, point: [1.2374368670764582, 1.2374368670764582] }   # r = 1.75

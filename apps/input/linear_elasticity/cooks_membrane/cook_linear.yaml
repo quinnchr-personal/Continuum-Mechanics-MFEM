@@ -1,0 +1,30 @@
+# Cook's membrane as it was posed: a small-strain plane-stress benchmark. Tapered panel
+# (0,0)-(48,44)-(48,60)-(0,44), clamped on the left edge, unit shear load on the right edge
+# (edge length 16, so the traction is 1/16 per unit length), E = 1, nu = 1/3. Literature values
+# of the vertical tip displacement lie near 23.9 (23.91 to 23.96); papers differ on whether it is
+# taken at the mid-point (48, 52) or the top corner (48, 60) of the free edge, so both are probed
+# and the literature serves as a sanity band only. tests/test_linear_verification.cpp freezes the
+# converged values of this code as the regression and reports the successive-difference ratios
+# (the clamped corner singularity limits them, as for the finite-strain membrane).
+# newton.rtol only accepts the single linear solve (the accuracy is set by linear.rtol); in a
+# bending problem like this one the round-off floor of the residual is near 1e-10 |R0|.
+plane: stress
+mesh:
+  file: apps/mesh/cook.msh        # 4 x 4 quadrilaterals of the membrane (apps/mesh/cook.geo); groups bottom, right, top, left
+  serial_refine: 4
+  order: 2
+material: { model: linear_elastic, E: 1.0, nu: 0.3333333333333333 }
+bcs:
+  dirichlet: [ { attr: [left], expression: ["0", "0"] } ]
+  traction:  [ { attr: [right], expression: ["0", "0.0625"] } ]
+solver:
+  load_steps: 1
+  newton: { rtol: 1e-8, atol: 1e-14, max_it: 5 }
+  linear: { type: cg_amg, rtol: 1e-13, max_it: 1000 }
+output:
+  paraview: out/cook/cook_linear
+  fields: [displacement, strain, cauchy_stress, vonmises]
+  reactions: true
+  probes:
+    - { name: top_right_corner, point: [48.0, 60.0] }
+    - { name: mid_free_edge, point: [48.0, 52.0] }

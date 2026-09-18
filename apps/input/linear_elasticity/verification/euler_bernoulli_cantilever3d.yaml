@@ -1,0 +1,27 @@
+# 3D cantilever in the small-strain theory: L = 10, square section 1 x 1, clamped at x = 0
+# (left), downward shear traction 0.02 on the x = L face (right), linear_elastic with E = 250,
+# nu = 0.3. Euler-Bernoulli tip deflection P L^3 / (3 E I) = 0.32. The same beam as
+# finite_elasticity/verification/euler_bernoulli_cantilever3d, which needs a load a thousand
+# times smaller to stay linear and then a Newton tolerance of 1e-6 above the round-off floor of
+# its stress evaluation; the linear model has neither restriction, and its tip deflection per
+# unit load must equal that run's. The rigid-body-mode (elasticity) AMG options stall on this
+# slender p = 2 hex mesh, so the systems options are selected. newton.rtol only accepts the
+# single linear solve (the accuracy is set by linear.rtol); the round-off floor of the residual
+# of this bending problem is near 1e-10 |R0|.
+# tests/test_linear_verification.cpp checks the tip probe.
+mesh:
+  file: apps/mesh/beam.msh        # 10 x 1 x 1 beam, 20 x 2 x 2 hexahedra (apps/mesh/box.geo); groups bottom, front, right, back, left, top
+  order: 2
+material: { model: linear_elastic, E: 250.0, nu: 0.3 }
+bcs:
+  dirichlet: [ { attr: [left], expression: ["0", "0", "0"] } ]
+  traction:  [ { attr: [right], expression: ["0", "0", "-0.02"] } ]
+solver:
+  load_steps: 1
+  newton: { rtol: 1e-8, atol: 1e-14, max_it: 5 }
+  linear: { type: cg_amg, amg: systems, rtol: 1e-13, max_it: 1000 }
+output:
+  paraview: out/euler_bernoulli_cantilever3d_linear
+  fields: [displacement, strain, cauchy_stress, vonmises]
+  probes: [ { name: tip, point: [10.0, 0.5, 0.5] } ]
+  reactions: true

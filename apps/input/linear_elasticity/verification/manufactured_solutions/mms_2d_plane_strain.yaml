@@ -1,0 +1,22 @@
+# Manufactured solution of small-strain linear elasticity, plane strain, on the unit square:
+# linear_elastic with E = 250, nu = 0.3 (mu = 1250/13, lambda = 1875/13), rho0 = 2.5, exact
+# displacement u = 0.05 (sin(pi x) sin(pi y), x^2 y (1 - y)) prescribed on the whole boundary.
+# The operator is linear, so the body force is short:
+#   rho0 b = -Div sigma = -[(lambda + mu) grad(div u) + mu lap(u)]
+# (generated with sympy and checked against that identity). Same displacement as
+# finite_elasticity/verification/manufactured_solutions/mms_2d_plane_strain. One Newton
+# iteration per mesh; tests/test_linear_verification.cpp checks third-order L2 convergence
+# under serial_refine 1, 2, 3.
+mesh: { file: apps/mesh/square.msh, serial_refine: 1, order: 2 }
+material: { model: linear_elastic, E: 250.0, nu: 0.3, rho0: 2.5 }
+bcs:
+  dirichlet:
+    - { attr: [bottom, right, top, left], expression: ["0.05*sin(pi*x)*sin(pi*y)", "0.05*x^2*y*(1 - y)"] }
+body_force:
+  expression:
+    - "(250.0/13.0)*x*y - 125.0/13.0*x + (225.0/26.0)*pow(pi, 2)*sin(pi*x)*sin(pi*y)"
+    - "(175.0/13.0)*pow(x, 2) + (50.0/13.0)*pow(y, 2) - 50.0/13.0*y - 125.0/26.0*pow(pi, 2)*cos(pi*x)*cos(pi*y)"
+solver:
+  load_steps: 1
+  newton: { rtol: 1e-8, atol: 1e-14, max_it: 5, print_level: 0 }
+  linear: { type: cg_amg, rtol: 1e-13, max_it: 1000 }

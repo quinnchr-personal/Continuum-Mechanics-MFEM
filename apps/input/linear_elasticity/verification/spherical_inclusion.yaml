@@ -1,0 +1,36 @@
+# Two materials through material.regions in the small-strain theory: the octant of a cube of
+# side 2 L = 20 with a centred spherical inclusion of radius a = 5 (apps/mesh/inclusion.geo,
+# second-order tetrahedra), matrix E = 100, inclusion ten times stiffer, nu = 0.3 in both (the
+# region inherits it). Uniaxial strain: rollers on every face, the top face moved by
+# u_z = 0.1 (strain 0.01). The apparent constrained modulus M = F_z / (L^2 eps) = 2 W / (V eps^2)
+# lies between the Reuss and the Voigt averages of M = lambda + 2 mu with the inclusion's volume
+# fraction f = pi a^3 / (6 L^3) = 0.0654: 143.04 < M < 213.91 (M_matrix = 134.6). The bounds hold
+# for the discrete solution too: affine fields are in the space (Voigt), and the displacement
+# method overestimates the energy (Reuss). The geometry of
+# anand_coupled_theories/finite_elasticity/09_spherical_inclusion.
+# tests/test_linear_verification.cpp checks the bounds, that reaction and energy give the same
+# modulus, and that regions with the base's parameters reproduce the homogeneous solution.
+mesh: { file: apps/mesh/inclusion.msh, order: 2 }
+material:
+  model: linear_elastic
+  E: 100.0
+  nu: 0.3
+  regions:
+    - { attr: [inclusion], E: 1000.0 }
+bcs:
+  dirichlet:
+    - { attr: [left, right], expression: ["0", "0", "0"], components: [x] }
+    - { attr: [front, back], expression: ["0", "0", "0"], components: [y] }
+    - { attr: [bottom],      expression: ["0", "0", "0"], components: [z] }
+    - { attr: [top], name: loaded, expression: ["0", "0", "0.1"], components: [z] }
+solver:
+  load_steps: 1
+  newton: { rtol: 1e-8, atol: 1e-14, max_it: 5 }
+  linear: { type: cg_amg, rtol: 1e-13, max_it: 1000 }
+output:
+  paraview: out/spherical_inclusion_linear
+  fields: [displacement, strain, cauchy_stress, vonmises]
+  reactions: true
+  probes:
+    - { name: inclusion_center, point: [1.0, 1.0, 1.0] }
+    - { name: corner, point: [10.0, 10.0, 10.0] }

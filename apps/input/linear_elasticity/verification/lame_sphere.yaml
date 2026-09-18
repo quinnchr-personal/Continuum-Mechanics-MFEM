@@ -1,0 +1,30 @@
+# Lame's thick-walled sphere at small strain: radii a = 10, b = 11, internal pressure p = 1,
+# linear_elastic with E = 1000, nu = 0.3; octant with rollers on the three symmetry planes
+# (apps/mesh/sphere_octant.geo, curved second-order tetrahedra). Closed form, with
+# A = p a^3 / (b^3 - a^3):
+#   u_r = A/E [(1 - 2 nu) r + (1 + nu) b^3 / (2 r^2)],
+#   sigma_rr = A (1 - b^3/r^3),  sigma_tt = A (1 + b^3/(2 r^3)).
+# The small-strain counterpart of finite_elasticity/verification/green_zerna_sphere_inflation.
+# tests/test_linear_verification.cpp checks the probes.
+mesh: { file: apps/mesh/sphere_octant.msh, order: 2 }
+material: { model: linear_elastic, E: 1000.0, nu: 0.3 }
+bcs:
+  dirichlet:
+    - { attr: [xplane], expression: ["0", "0", "0"], components: [x] }
+    - { attr: [yplane], expression: ["0", "0", "0"], components: [y] }
+    - { attr: [zplane], expression: ["0", "0", "0"], components: [z] }
+  traction:
+    - { attr: [inner], type: pressure, expression: "1.0" }
+solver:
+  load_steps: 1
+  newton: { rtol: 1e-8, atol: 1e-14, max_it: 5 }
+  linear: { type: cg_amg, rtol: 1e-13, max_it: 500 }
+output:
+  paraview: out/lame_sphere
+  fields: [displacement, strain, cauchy_stress, vonmises]
+  nodal_projection: projected
+  probes:
+    - { name: inner, point: [10.0, 0.0, 0.0] }
+    - { name: outer, point: [11.0, 0.0, 0.0] }
+    - { name: inner_z, point: [0.0, 0.0, 10.0] }
+    - { name: wall_mid, point: [6.0621778264910704, 6.0621778264910704, 6.0621778264910704] }   # r = 10.5 on the diagonal

@@ -23,6 +23,29 @@ uniaxial and general with rotation, plane strain, plane stress uniaxial and gene
 every quantity in every presentation to 6e-13 of a stress level of 12.5 and end-face
 reactions `sigma A` on the reference area; with the push-forward left in, the same test fails
 by 3 percent. Every finite-strain test number and app output is bit-identical.
+LE3 complete: inputs under `apps/input/linear_elasticity/` checked by the new
+`tests/test_linear_verification.cpp` (`make test`, 23 s; a separate executable so the linear
+cases do not wait for the 20 minutes of `test_verification`). Lame cylinder: u_r to 3e-6 (the
+geometry floor of the second-order arcs), wall stresses by h^2 convergence (ratios 3.90,
+4.04, 4.02; 0.26 percent of p at the input's refinement, not the 1e-4 hoped for below);
+Lame sphere u_r to 7e-5; Kirsch within 2 percent and within 9e-5 of the neo-Hookean run;
+the cantilever input is `euler_bernoulli_cantilever3d.yaml` (0.15 percent from
+Euler-Bernoulli; compliance equal to the small-load neo-Hookean one to 1e-9); MMS rates 3.00
+(2D, hex) and 2.93 (tet); Cook: the literature's 23.96 is the mid-edge point (48, 52), this
+code gives 23.9650 there and 25.1640 at the corner, successive-difference ratios 2.08-2.27
+(corner) and 2.11-3.57 (mid-edge), both values frozen; np 2 and 4 agree with serial to 1e-15.
+The two-material input checks the Reuss and Voigt bounds on the apparent modulus, reaction
+against energy, and regions with the base's parameters against the homogeneous solution (a
+pointwise traction-continuity check at 1e-3 is out of reach on that mesh).
+**Decision 7 amended while doing this:** the exact first step of a linear problem lands on
+the round-off floor of its residual, eps |K| |u| / |f| relative, which bending puts at
+4e-11 (Cook), 8e-11 (the cantilever) and 1.6e-9 (a 20:1 beam) - at or above the default
+`newton.rtol`, and with no quadratic convergence to carry the residual below it, the second
+step failed its line search and a solved problem was reported as not converged. A problem now
+declares `IsLinear()`, and Newton accepts such a problem at the floor (a later step that
+fails its line search or reduces the residual by less than ten, every linear solve
+converged; `NewtonReport::at_floor`). The linear inputs use `newton.rtol: 1e-8`, which only
+accepts the single linear solve; accuracy is set by `linear.rtol`.
 
 **Goal:** `material: { model: linear_elastic, E: ..., nu: ... }` solves geometrically linear
 (small-strain) isotropic elasticity in 2D (plane strain, plane stress) and 3D, in the
@@ -127,6 +150,8 @@ adapter, and tests that assume objectivity.
 7. **Newton stays the solver.** One iteration = one assembly, one AMG setup, one Krylov solve,
    two residual evaluations. Inputs keep `linear.rtol` at least 100x tighter than
    `newton.rtol` (as all existing inputs do), otherwise a second iteration starts at the floor.
+   (Amended in LE3, see the status note: the floor of the residual evaluation itself can lie
+   above `newton.rtol`, so a linear problem is accepted there.)
    `cg_amg` is valid (SPD) and preferred in new inputs. Reuse of the constant tangent across
    load steps is a separate optional gate (LE6).
 8. **Outputs under small strain:** `cauchy_stress = pk1_stress = sigma`, `jacobian =

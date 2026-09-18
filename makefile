@@ -158,10 +158,13 @@ homogeneous: $(APP)
 # np={2,4} consistency vs a serial reference, and the benchmarks with the
 # frozen Cook's membrane regression values, serial and np=4. Run from the
 # repository root: the inputs are referenced as apps/input/<set>/*.yaml.
-test: check $(APP) $(BUILD_DIR)/tests/test_benchmarks $(BUILD_DIR)/tests/test_parallel $(BUILD_DIR)/tests/test_verification
+test: check $(APP) $(BUILD_DIR)/tests/test_benchmarks $(BUILD_DIR)/tests/test_parallel $(BUILD_DIR)/tests/test_verification $(BUILD_DIR)/tests/test_linear_verification
 	$(APP) -i apps/input/finite_elasticity/cooks_membrane/cook.yaml
 	$(MFEM_MPIEXEC) -np 4 $(APP) -i apps/input/finite_elasticity/cooks_membrane/cook.yaml
 	$(APP) -i apps/input/finite_elasticity/verification/euler_bernoulli_cantilever3d.yaml
+	$(APP) -i apps/input/linear_elasticity/cooks_membrane/cook_linear.yaml
+	$(MFEM_MPIEXEC) -np 4 $(APP) -i apps/input/linear_elasticity/cooks_membrane/cook_linear.yaml
+	$(BUILD_DIR)/tests/test_linear_verification
 	mkdir -p $(TEST_OUT)
 	$(BUILD_DIR)/tests/test_parallel --write $(TEST_OUT)/parallel_reference.txt
 	$(MFEM_MPIEXEC) -np 2 $(BUILD_DIR)/tests/test_parallel --check $(TEST_OUT)/parallel_reference.txt
