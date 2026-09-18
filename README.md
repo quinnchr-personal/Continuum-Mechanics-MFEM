@@ -68,7 +68,10 @@ apps/           solid_mechanics.cpp (YAML parsing and wiring only), apps/mesh/*.
                     two materials) and cooks_membrane/ (the benchmark as posed, and its incompressible
                     plane-strain variant), all checked by tests/test_linear_verification;
                 apps/input/anand_coupled_theories/<chapter>/*.yaml (the examples of Anand's coupled-theories
-                  book, from its FEniCSx companion codes; finite_elasticity so far)
+                  book, from its FEniCSx companion codes; finite_elasticity so far);
+                apps/input/elastic_bar/ (the exercise of myapps/elastic_bar as inputs of the general
+                  executable, linear and nonlinear, with the exercise's own results in reference/) and
+                  apps/elastic_bar_compare.py (force against displacement, compared)
 tests/          test_base, test_materials, test_solid_mms, test_mixed, test_homogeneous, test_loading,
                 test_linear_elasticity (make check); test_mixed --full, test_benchmarks, test_parallel,
                 homogeneous compare, test_loading np=4, test_verification, test_linear_verification
@@ -90,6 +93,7 @@ make check      # serial, ~40 s: tensor/dual/YAML units, materials, patch tests 
                 # formulations), homogeneous deformations vs closed forms (all incompressible models),
                 # small-strain linear elasticity (operator vs MFEM's ElasticityIntegrator, outputs)
 make homogeneous # the app on apps/input/finite_elasticity/verification/homogeneous_deformations/*.yaml, compared with the closed forms (python3 + yaml)
+make elastic_bar # the elastic bar exercise: linear against Gent, force-displacement table and plot (python3 + yaml + matplotlib)
 make test       # everything: app runs serial and np=4, np={2,4} consistency, benchmarks, homogeneous
 make clean      # removes build/
 ```
@@ -423,6 +427,53 @@ Not supported: anisotropic linear elasticity, thermal or shrinkage eigenstrains 
 read a field yet), linear dynamics and modal analysis, linear buckling (needs a geometric
 stiffness), small-strain plasticity or viscoelasticity (internal variables), and reuse of the
 constant tangent across load steps (each step reassembles it; one step is the normal use).
+
+### The elastic bar exercise (`apps/input/elastic_bar/`, `apps/elastic_bar_compare.py`)
+
+The exercise of `myapps/elastic_bar`: a 0.3 x 0.3 x 1 bar clamped on `z = 0`, the face `z = 1`
+pulled to `u_z = 3` (a stretch of 4) with free lateral motion, the reaction force recorded
+against the end displacement, once for linear elasticity and once for a compressible Gent
+material (mu = 5e6, kappa = 1.5e9, Jm = 50). There it takes two drivers (a bilinear form with
+MFEM's `ElasticityIntegrator`, a nonlinear form with a hyperelastic model). Here it takes no
+driver at all: the two bars are inputs of `build/apps/solid_mechanics` that differ in one line,
+
+```yaml
+material: { model: linear_elastic, mu: 5.0e6, kappa: 1.5e9 }                       # bar_linear.yaml
+material: { model: gent_compressible_summit, mu: 5.0e6, kappa: 1.5e9, Jm: 50.0 }   # bar_gent.yaml
+material: { model: iso_neo_hookean, mu: 5.0e6, kappa: 1.5e9 }                      # bar_neo_hookean.yaml
+```
+
+(the third is the exercise's alternative model, MFEM's `NeoHookeanModel`). `output.reactions`
+prints the force of the Dirichlet entry `front` after every load step and the probe
+`pulled_face` its displacement. The mesh is the exercise's own file, so results compare degree
+of freedom for degree of freedom.
+
+```
+python3 apps/elastic_bar_compare.py                      # or: make elastic_bar   (about a minute)
+python3 apps/elastic_bar_compare.py --cases linear gent neo_hookean --paraview
+python3 apps/elastic_bar_compare.py --order 2 --steps 20 --out out/elastic_bar_p2
+```
+
+runs the cases, writes `out/elastic_bar/<case>/force_displacement.csv` in the exercise's format
+(`step,disp_z,total_Fz`; its `plot_force_displacement.py` reads them too), prints a table and
+draws `out/elastic_bar/force_displacement.png`: the curves, the homogeneous uniaxial-stress
+estimate of each model (lateral stretch from `P_22 = 0`), and the results of the exercise's own
+drivers (`apps/input/elastic_bar/reference/`). Measured (order 1, 100 steps):
+
+| | F/u, first step | F at u_z = 1 | u_z = 2 | u_z = 3 | against the exercise's driver |
+|---|---|---|---|---|---|
+| linear elastic | 1.5232e6 | 1.5232e6 | 3.0465e6 | 4.5697e6 | 2.6e-11 (its Krylov tolerance tightened from 1e-8 to 1e-14; 1.6e-5 as it stands) |
+| compressible Gent | 0.9051e6 | 0.8163e6 | 1.5707e6 | 2.6332e6 | 9.9e-13 (its stored 500-step curve) |
+| neo-Hookean | 1.4760e6 | 0.8641e6 | 1.4162e6 | 1.9138e6 | - |
+
+Two things the comparison shows. The Gent curve starts with a lower slope than the linear bar
+of the same mu and kappa, because kappa scales a quartic penalty there and does not enter the
+small-strain response (lambda = 2 mu / Jm); the neo-Hookean curve, whose small-strain moduli
+are the linear ones, leaves the origin along the linear curve. And the linear bar is 13 percent
+stiffer than homogeneous uniaxial stress (`E A / H`): with `--order 2` it is 3.3 percent, so
+10 of the 13 points are the volumetric locking of linear tetrahedra at nu = 0.4983 and 3 the
+clamped end. `make test` runs the script with `--check`, which fails unless both curves agree
+with the exercise's to 1e-8.
 
 ### Anand's coupled-theories examples (`apps/input/anand_coupled_theories/`)
 

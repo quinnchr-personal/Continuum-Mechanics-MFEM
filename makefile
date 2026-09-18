@@ -65,7 +65,7 @@ DEPS := $(LIB_OBJ:.o=.d) $(patsubst %.cpp,$(BUILD_DIR)/%.d,$(APP_SRC) $(TEST_SRC
 APP := $(BUILD_DIR)/apps/solid_mechanics
 TEST_OUT := $(BUILD_DIR)/tests/out
 
-.PHONY: all lib apps tests check homogeneous meshes test clean
+.PHONY: all lib apps tests check homogeneous elastic_bar meshes test clean
 
 all: lib apps tests
 
@@ -154,6 +154,12 @@ check: $(CHECK_TESTS)
 homogeneous: $(APP)
 	python3 apps/homogeneous_compare.py --app $(APP)
 
+# The exercise of myapps/elastic_bar with the general executable: force against displacement of
+# the linear and the Gent bar, compared with each other and with the exercise's own results
+# (needs python3 with PyYAML and matplotlib; about a minute).
+elastic_bar: $(APP)
+	python3 apps/elastic_bar_compare.py --app $(APP)
+
 # Full gates (S4): fast gates, the YAML-driven app runs serial and np=4,
 # np={2,4} consistency vs a serial reference, and the benchmarks with the
 # frozen Cook's membrane regression values, serial and np=4. Run from the
@@ -174,6 +180,7 @@ test: check $(APP) $(BUILD_DIR)/tests/test_benchmarks $(BUILD_DIR)/tests/test_pa
 	$(APP) -i apps/input/finite_elasticity/cooks_membrane/cook_incompressible.yaml
 	$(MFEM_MPIEXEC) -np 4 $(APP) -i apps/input/finite_elasticity/cooks_membrane/cook_incompressible.yaml
 	python3 apps/homogeneous_compare.py --app $(APP)
+	python3 apps/elastic_bar_compare.py --app $(APP) --out $(TEST_OUT)/elastic_bar --no-plot --check
 	$(BUILD_DIR)/tests/test_mixed --full
 	$(BUILD_DIR)/tests/test_benchmarks
 	$(MFEM_MPIEXEC) -np 4 $(BUILD_DIR)/tests/test_benchmarks

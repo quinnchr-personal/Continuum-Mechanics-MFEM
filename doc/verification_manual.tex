@@ -104,6 +104,7 @@ Target & Content \\
 \code{make meshes} & regenerates \file{apps/mesh/*.msh} from the \file{.geo} sources with Gmsh (the \file{.msh} files are kept in the tree) \\
 \code{make check} & serial, about 40 s: \file{test\_base}, \file{test\_materials}, \file{test\_solid\_mms}, \file{test\_mixed}, \file{test\_homogeneous}, \file{test\_loading}, \file{test\_linear\_elasticity} \\
 \code{make homogeneous} & the executable on the homogeneous-deformation inputs, compared with the closed forms by \file{apps/homogeneous\_compare.py} \\
+\code{make elastic\_bar} & the elastic bar exercise (Section~\ref{sec:elasticbar}): table and plot of force against displacement by \file{apps/elastic\_bar\_compare.py} \\
 \code{make test} & everything: \code{check}, the Cook inputs (finite strain and small strain, both formulations) serial and with four ranks, \file{test\_linear\_verification} (about 30 s), parallel consistency with two and four ranks, the homogeneous comparison, \file{test\_mixed --full}, \file{test\_benchmarks} serial and parallel, \file{test\_loading} with four ranks, \file{test\_verification}, and finally the Cook ratio gate \\
 \bottomrule
 \end{tabular}
@@ -862,6 +863,57 @@ $\nu = 0.4999$, $k = 2$ gives $19.164$ ($1.3\%$).  Both membranes are part
 of \file{test\_parallel}.
 
 %============================================================================
+\section{Cross-check with an independent code: the elastic bar (\texttt{apps/input/elastic\_bar/})}
+\label{sec:elasticbar}
+%============================================================================
+
+\paragraph{Problem.}
+The exercise of \file{myapps/elastic\_bar}: a $0.3\times0.3\times1$ bar
+(\file{elastic\_bar.msh}, the exercise's own mesh file: 954 nodes, linear
+tetrahedra), clamped on $z = 0$, the face $z = 1$ pulled to $u_z = 3$ (a
+stretch of 4) with free lateral motion, $\mu = 5\times10^6$,
+$\kappa = 1.5\times10^9$ ($\nu = 0.4983$); the reaction force on the pulled
+face is recorded against its displacement over 100 load steps.  The exercise
+has two drivers, a bilinear form with MFEM's \code{ElasticityIntegrator} and
+a nonlinear form with \code{HyperelasticNLFIntegrator}, a hand-coded
+compressible Gent model ($J_m = 50$) and PETSc solvers.  Here the two bars
+are inputs of the general executable that differ in the material line:
+\file{bar\_linear} (\code{linear\_elastic}), \file{bar\_gent}
+(\code{gent\_compressible\_summit}, the same energy), and
+\file{bar\_neo\_hookean} (\code{iso\_neo\_hookean}, the exercise's
+alternative model).  \code{output.reactions} and a probe on the pulled face
+print force and displacement after every step;
+\file{apps/elastic\_bar\_compare.py} runs the inputs, writes the exercise's
+\file{force\_displacement.csv} format, tabulates and plots.
+
+\paragraph{Reference.}
+The curves of the exercise's own drivers, kept in
+\file{apps/input/elastic\_bar/reference/}: the stored 500-step curve of the
+nonlinear driver, and the linear driver run on the same mesh with its Krylov
+tolerance tightened from $10^{-8}$ to $10^{-14}$.  Mesh, order and boundary
+conditions are identical, so the discrete problems are the same and the two
+codes must agree to solver tolerance.  In addition, the homogeneous
+uniaxial-stress estimate $F = A\,P_{11}(\lambda_1)$ of each model with the
+lateral stretch from $P_{22} = 0$.
+
+\paragraph{Check} (\file{apps/elastic\_bar\_compare.py --check}, part of
+\code{make test}; \code{make elastic\_bar} for the plot).
+Largest relative difference of the force over the whole curve:
+$9.9\times10^{-13}$ for the Gent bar and $2.6\times10^{-11}$ for the linear
+bar (gate $10^{-8}$); against the linear driver with its own tolerance of
+$10^{-8}$ the difference is $1.6\times10^{-5}$, which is that tolerance.
+Measured forces at $u_z = 3$: $4.5697\times10^6$ (linear),
+$2.6332\times10^6$ (Gent), $1.9138\times10^6$ (neo-Hookean).  The Gent curve
+starts with the slope $0.905\times10^6$ against $1.523\times10^6$ of the
+linear bar with the same $\mu$ and $\kappa$, because $\kappa$ scales a
+quartic penalty there and does not enter the small-strain response
+($\lambda = 2\mu/J_m$); the neo-Hookean curve leaves the origin along the
+linear one.  The linear bar is $13.0\%$ stiffer than homogeneous uniaxial
+stress $EA/H$; with $k = 2$ it is $3.3\%$, so ten of the thirteen points are
+the volumetric locking of linear tetrahedra at this Poisson ratio and three
+the clamped end.
+
+%============================================================================
 \section{Validation against a reference code: Anand\textquotesingle s examples}
 \label{sec:anand}
 %============================================================================
@@ -981,6 +1033,7 @@ plate, cantilever (small strain) & Kirsch, Euler--Bernoulli, the finite-strain r
 manufactured (small strain) & exact field, analytic body force & $L^2$ rate $\ge 2.8$ ($k = 2$) & \file{test\_linear\_elasticity}, \file{test\_linear\_verification} \\
 two materials & Reuss and Voigt bounds & bounds; reaction vs energy & \file{test\_linear\_verification} \\
 Cook's membrane (small strain) & literature 23.96, frozen values & $1\%$; $10^{-8}$ & \file{test\_linear\_verification} \\
+elastic bar (linear, Gent) & the drivers of \file{myapps/elastic\_bar} & force curves to $10^{-8}$ (measured $10^{-11}$, $10^{-12}$) & \file{elastic\_bar\_compare.py} \\
 \bottomrule
 \end{tabular}
 \end{center}

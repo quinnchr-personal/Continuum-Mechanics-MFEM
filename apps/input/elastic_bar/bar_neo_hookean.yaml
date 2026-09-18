@@ -1,0 +1,25 @@
+# The exercise of myapps/elastic_bar with its second nonlinear model (material.model:
+# neo_hookean, MFEM's NeoHookeanModel(mu, K, g = 1)): W = mu/2 (I1bar - 3) + kappa/2 (J - 1)^2,
+# which is the framework's iso_neo_hookean with the quadratic volumetric law; mu = 5e6,
+# kappa = 1.5e9. Otherwise the problem of bar_gent.yaml. Its small-strain moduli are those of
+# bar_linear.yaml, so the curve leaves the origin along the linear one (first-step secant
+# 1.476e6 against k = 1.523e6) and bends below it: 0.42 of the linear force at u_z = 3.
+# Run from the repository root:  build/apps/solid_mechanics -i apps/input/elastic_bar/bar_neo_hookean.yaml
+mesh: { file: apps/mesh/elastic_bar.msh, order: 1 }
+material: { model: iso_neo_hookean, mu: 5.0e6, kappa: 1.5e9 }
+bcs:
+  dirichlet:
+    - { attr: [back], name: back, expression: ["0", "0", "0"] }
+    - { attr: [front], name: front, expression: ["0", "0", "3.0"], components: [z] }
+solver:
+  load_steps: 100
+  predictor: tangent
+  substep: { on_failure: true, max_bisections: 6, min_dt: 1e-5 }
+  newton: { rtol: 1e-9, atol: 1e-6, max_it: 30, print_level: 0 }
+  linear: { type: gmres_amg, amg: systems, rtol: 1e-10, max_it: 2000, krylov_dim: 200 }
+output:
+  paraview: out/elastic_bar/neo_hookean/paraview
+  fields: [displacement, cauchy_stress, vonmises, jacobian]
+  reactions: true                  # force of every named Dirichlet entry, after every step
+  probe_every_step: true
+  probes: [ { name: pulled_face, point: [0.15, 0.15, 1.0] } ]   # u_z of the face z = 1

@@ -1,0 +1,33 @@
+# The exercise of myapps/elastic_bar, linear bar (its main.cpp, MFEM's ElasticityIntegrator):
+# a 0.3 x 0.3 x 1 bar (apps/mesh/elastic_bar.msh, that exercise's own mesh: 954 nodes, linear
+# tetrahedra), clamped on z = 0 (back), the face z = 1 (front) pulled to u_z = 3 with u_x, u_y
+# free, every other face traction free; small-strain linear elasticity with mu = 5e6,
+# kappa = 1.5e9 (lambda = kappa - 2 mu / 3, nu = 0.4983), the moduli of the exercise.
+# In the exercise the linear and the nonlinear bar are two drivers; here they are inputs of the
+# same executable that differ in the material line (bar_gent.yaml, bar_neo_hookean.yaml).
+# output.reactions prints the force on the pulled face after every step and the probe its
+# displacement; apps/elastic_bar_compare.py runs the inputs, turns those lines into the
+# exercise's force_displacement.csv (step,disp_z,total_Fz) and compares the curves, also with
+# the exercise's own results (reference/): this input agrees with its linear driver to 3e-11.
+# The response is linear, F = k u_z with k = 1.5232e6, so one step would do; the steps only
+# sample the curve like the nonlinear inputs. Homogeneous uniaxial stress would give
+# k = E A / H = 1.3485e6 (E = 9 kappa mu / (3 kappa + mu)): of the 13 percent in excess, 3 are
+# the clamped end and 10 the volumetric locking of linear tetrahedra at this Poisson ratio
+# (order 2 gives k = 1.3928e6; apps/elastic_bar_compare.py --order 2).
+# Run from the repository root:  build/apps/solid_mechanics -i apps/input/elastic_bar/bar_linear.yaml
+mesh: { file: apps/mesh/elastic_bar.msh, order: 1 }
+material: { model: linear_elastic, mu: 5.0e6, kappa: 1.5e9 }
+bcs:
+  dirichlet:
+    - { attr: [back], name: back, expression: ["0", "0", "0"] }
+    - { attr: [front], name: front, expression: ["0", "0", "3.0"], components: [z] }
+solver:
+  load_steps: 100
+  newton: { rtol: 1e-8, atol: 1e-8, max_it: 5, print_level: 0 }   # accepts the single linear solve
+  linear: { type: cg_amg, amg: systems, rtol: 1e-12, max_it: 2000 }
+output:
+  paraview: out/elastic_bar/linear/paraview
+  fields: [displacement, strain, cauchy_stress, vonmises]
+  reactions: true                  # force of every named Dirichlet entry, after every step
+  probe_every_step: true
+  probes: [ { name: pulled_face, point: [0.15, 0.15, 1.0] } ]   # u_z of the face z = 1

@@ -1,0 +1,32 @@
+# The exercise of myapps/elastic_bar, nonlinear bar (its main_nonlinear.cpp with material.model:
+# gent_compressible): the bar of bar_linear.yaml with the compressible Gent model of that
+# exercise, which is the framework's gent_compressible_summit,
+#   W = -mu/2 (Jm ln(1 - (I1 - 3)/Jm) + 2 ln J) + kappa/2 ((J^2 - 1)/2 - ln J)^4,
+# mu = 5e6, kappa = 1.5e9, Jm = 50, pulled to a stretch of 4 (u_z = 3). Same mesh, order and
+# boundary conditions as the exercise: the recorded curve agrees with the exercise's own
+# (reference/myapps_nonlinear_gent.csv) to 1e-12 (apps/elastic_bar_compare.py). kappa scales a
+# quartic penalty and does not enter the small-strain response (lambda = 2 mu / Jm there), so
+# the curve starts with a lower slope than the linear bar of the same mu and kappa: 0.905e6
+# against 1.523e6. The homogeneous uniaxial-stress state (lateral stretch from P_22 = 0) gives
+# F = A P_11; the finite element force is 2 to 9 percent above it (clamped end, locking).
+# The tangent predictor spreads each increment of the pulled face through the bar before
+# Newton starts; a failed step is halved.
+# Run from the repository root:  build/apps/solid_mechanics -i apps/input/elastic_bar/bar_gent.yaml
+mesh: { file: apps/mesh/elastic_bar.msh, order: 1 }
+material: { model: gent_compressible_summit, mu: 5.0e6, kappa: 1.5e9, Jm: 50.0 }
+bcs:
+  dirichlet:
+    - { attr: [back], name: back, expression: ["0", "0", "0"] }
+    - { attr: [front], name: front, expression: ["0", "0", "3.0"], components: [z] }
+solver:
+  load_steps: 100
+  predictor: tangent
+  substep: { on_failure: true, max_bisections: 6, min_dt: 1e-5 }
+  newton: { rtol: 1e-9, atol: 1e-6, max_it: 30, print_level: 0 }
+  linear: { type: gmres_amg, amg: systems, rtol: 1e-10, max_it: 2000, krylov_dim: 200 }
+output:
+  paraview: out/elastic_bar/gent/paraview
+  fields: [displacement, cauchy_stress, vonmises, jacobian]
+  reactions: true                  # force of every named Dirichlet entry, after every step
+  probe_every_step: true
+  probes: [ { name: pulled_face, point: [0.15, 0.15, 1.0] } ]   # u_z of the face z = 1
