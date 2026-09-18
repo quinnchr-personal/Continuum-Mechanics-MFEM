@@ -382,7 +382,12 @@ $\kappa = 29/6$ in the mixed formulation with each volumetric law:
 quadratic (\file{\ldots\_mixed}), \code{simo\_taylor}, \code{j\_log\_j} and
 \code{logarithmic} (the mixed constraint with $u'' \ne 1$).
 \file{incompressible\_uniaxial\_iso\_neo\_hookean}
-(Section~\ref{sec:homogeneous}) is their limit $\kappa = \infty$.
+(Section~\ref{sec:homogeneous}) is their limit $\kappa = \infty$.  A
+seventh input, \file{compressible\_uniaxial\_gent\_compressible\_summit},
+uses SUMMIT's compressible Gent model with $\mu = 0.5$, $\kappa = 29/6$ and
+$J_m = 100$ (displacement formulation); its $\kappa$ scales a quartic
+penalty and is not a small-strain bulk modulus, so that block is far more
+compressible than the others.
 
 \paragraph{Reference.}
 The state is homogeneous with $\bF = \diag(\lambda_1, \lambda_2, \lambda_2)$
@@ -408,7 +413,10 @@ $P_{aa} = \mu(\lambda_a - \lambda_a^{-1}) + \lambda\ln J/\lambda_a$ (coupled
 neo-Hookean) or
 $P_{aa} = \mu J^{-2/3}(\lambda_a - I_1/(3\lambda_a)) + U'(J)J/\lambda_a$
 (decoupled), the closed forms $\lambda_2^2 = 1 - \nu(\lambda_1^2 - 1)$,
-$P_{11} = E\lambda_1(\lambda_1^2 - 1)/2$ for Saint Venant--Kirchhoff, and
+$P_{11} = E\lambda_1(\lambda_1^2 - 1)/2$ for Saint Venant--Kirchhoff,
+$P_{aa} = \mu J_m\lambda_a/(J_m - I_1 + 3) + (2\kappa A^3(J^2-1) - \mu)/\lambda_a$
+for the SUMMIT Gent model (which shows the Gent upturn towards its locking
+stretch, $I_1 - 3 = 61.7$ of $J_m = 100$ at $\lambda_1 = 8$), and
 $P_{11} = \mu(\lambda_1 - \lambda_1^{-2})$ when incompressible.  Measured
 agreement is $3\times10^{-12}$ relative or better at every step, and the
 nodal $P_{11}$ is uniform to $2\times10^{-11}$.  The second script overlays

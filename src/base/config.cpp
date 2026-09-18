@@ -423,6 +423,12 @@ void ValidateMaterialConfig(const MaterialConfig &cfg, const std::string &path)
   std::string needs;
   const bool coupled = model == "neo_hookean" || model == "st_venant_kirchhoff";
   if (coupled) { allowed = {"E", "nu"}; required = {"E", "nu"}; needs = "E and nu"; }
+  else if (model == "gent_compressible_summit")
+  {
+    allowed = {"mu", "kappa", "Jm"};
+    required = {"mu", "kappa", "Jm"};
+    needs = "mu, kappa and Jm";
+  }
   else if (model == "iso_neo_hookean")
   {
     allowed = {"mu", "E", "nu", "kappa", "incompressible", "volumetric"};
@@ -496,6 +502,7 @@ void ValidateMaterialConfig(const MaterialConfig &cfg, const std::string &path)
     }
     return;
   }
+  if (model == "gent_compressible_summit") { return; } // coupled: kappa is a parameter of its penalty
   if (model == "iso_neo_hookean")
   {
     if (set(cfg.mu) && set(cfg.E))
@@ -594,14 +601,15 @@ MaterialConfig ReadMaterialKeys(NodeReader &r, const std::string &path, const Ma
   cfg.incompressible = r.Optional<bool>("incompressible", cfg.incompressible);
   cfg.volumetric = r.Optional<std::string>("volumetric", cfg.volumetric);
   cfg.rho0 = r.Optional<double>("rho0", cfg.rho0);
-  static const char *models[] = {"neo_hookean", "st_venant_kirchhoff", "iso_neo_hookean",
-                                 "mooney_rivlin", "yeoh", "gent", "arruda_boyce", "ogden"};
+  static const char *models[] = {"neo_hookean", "st_venant_kirchhoff", "gent_compressible_summit",
+                                 "iso_neo_hookean", "mooney_rivlin", "yeoh", "gent", "arruda_boyce",
+                                 "ogden"};
   bool known = false;
   for (const char *m : models) { known = known || cfg.model == m; }
   if (!known)
   {
     throw ConfigError("key '" + r.Path("model") + "': unknown model '" + cfg.model +
-                      "' (expected neo_hookean, st_venant_kirchhoff, iso_neo_hookean, "
+                      "' (expected neo_hookean, st_venant_kirchhoff, gent_compressible_summit, iso_neo_hookean, "
                       "mooney_rivlin, yeoh, gent, arruda_boyce, or ogden)");
   }
   if (!std::isnan(cfg.E)) { CheckPositive(cfg.E, r.Path("E")); }

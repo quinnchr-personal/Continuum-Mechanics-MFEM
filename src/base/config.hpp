@@ -49,13 +49,15 @@ struct MeshConfig
 // Material parameters; unset numeric keys are NaN. Which keys a model needs
 // is validated by ValidateMaterialConfig:
 //   neo_hookean, st_venant_kirchhoff: E, nu
+//   gent_compressible_summit: mu, kappa, Jm   (coupled; kappa scales a quartic penalty and
+//                                          is not the small-strain bulk modulus)
 //   iso_neo_hookean: mu or (E, nu)
 //   mooney_rivlin: c1, c2                (mu = 2 (c1 + c2))
 //   yeoh: c10, [c20, c30]                (mu = 2 c10)
 //   gent: mu, Jm
 //   arruda_boyce: mu, N                  (small-strain modulus mu (1 + 3/(5N) + ...))
 //   ogden: mu_r, alpha_r lists           (mu = 1/2 sum mu_r alpha_r)
-// The decoupled models (all but the first two) take the bulk modulus from
+// The decoupled models (all but the first three) take the bulk modulus from
 // exactly one of kappa | nu | incompressible, and optionally a volumetric law.
 // `regions` override parameters by element attribute (numbers and/or
 // physical-volume names in attr/attr_names): the same model with other

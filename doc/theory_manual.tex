@@ -376,7 +376,7 @@ Category & Volumetric treatment & Models & Formulation and input \\
 \midrule
 1. Compressible, coupled &
   one energy $\Psi(\bF)$; $J$ enters through $\ln J$ or $\tr\bE$ terms mixed with the shear response &
-  \code{neo\_hookean}, \code{st\_venant\_kirchhoff} &
+  \code{neo\_hookean}, \code{st\_venant\_kirchhoff}, \code{gent\_compressible\_summit} &
   displacement; \code{E}, \code{nu} with $\nu < \tfrac12$ \\
 2. Compressible, uncoupled &
   $\Psi_{\mathrm{iso}}(\bFb) + \kappa\,u(J)$, $u$ one of four laws (quadratic $\tfrac12(J-1)^2$ by default); $\kappa/\mu$ of order one to ten &
@@ -443,11 +443,43 @@ This is linear elasticity in the Green--Lagrange strain; it is not
 polyconvex, its energy stays finite as $J \to 0$ and it softens in
 compression, so it is used chiefly for manufactured-solution tests.
 
-Both take $(E, \nu)$ from the input and convert with
+\paragraph{Compressible Gent, SUMMIT form (\code{gent\_compressible\_summit}).}
+\begin{equation}
+  \Psi = -\frac{\mu}{2}\Bigl(J_m\ln\Bigl(1 - \frac{\Ione - 3}{J_m}\Bigr) + 2\ln J\Bigr)
+         + \frac{\kappa}{2}A^4,
+  \qquad
+  A = \frac{J^2 - 1}{2} - \ln J,
+  \label{eq:gentsummit}
+\end{equation}
+\begin{equation}
+  \bP = \frac{\mu J_m}{J_m - \Ione + 3}\,\bF
+        + \bigl(2\kappa A^3(J^2 - 1) - \mu\bigr)\bF^{-T},
+  \qquad \Ione - 3 < J_m .
+\end{equation}
+This is the \code{gent-compressible} material of the SUMMIT code
+(\code{summit::GentCompressibleHyperelastic}), transcribed so that results
+can be compared between the two codes: the Gent limited-extensibility term
+on the full $\Ione$ (not $\Ib$, unlike the decoupled \code{gent} of
+Section~\ref{sec:split}), the $-\mu\ln J$ term that makes the reference
+state stress free, and a quartic volumetric penalty.  For $J_m \to \infty$
+the chain term reduces to the neo-Hookean $\tfrac{\mu}{2}(\Ione - 3)$.
+Since $A = (J-1)^2 + O((J-1)^3)$, the penalty is $O((J-1)^8)$ and $\kappa$
+does \emph{not} enter the small-strain response: the linearised moduli are
+$\mu$ and $\lambda = 2\mu/J_m$ (the latter from the chain term, because
+$\Ione - 3 \approx 2\tr\beps$), that is $\nu = 1/(J_m + 2)$, whatever
+$\kappa$ is.  $\kappa$ is therefore a penalty parameter that stiffens the
+volume change at finite strain only, not a bulk modulus; SUMMIT reports
+$E$ and $\nu$ computed from $\kappa$ and $\mu$ as if it were one (they enter
+only its wave-speed estimate).  The input keys are \code{mu}, \code{kappa}
+and \code{Jm}; the tangent comes from automatic differentiation and agrees
+with SUMMIT's closed-form moduli to round-off (\file{test\_materials}).
+Displacement formulation only.
+
+The first two take $(E, \nu)$ from the input and convert with
 $\mu = E/(2(1+\nu))$, $\lambda = E\nu/((1+\nu)(1-2\nu))$; the derived bulk
 modulus $\kappa = \lambda + \tfrac23\mu$ is reported but does not enter the
-stress.  Neither model separates the pressure, so neither can be used in
-the mixed formulation or at $\nu = \tfrac12$.
+stress.  None of the three models separates the pressure, so none can be
+used in the mixed formulation or in the incompressible limit.
 
 \subsection{Category 2: compressible, uncoupled}
 \label{sec:split}

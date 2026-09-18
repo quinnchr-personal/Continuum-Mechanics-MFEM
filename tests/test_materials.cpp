@@ -100,8 +100,11 @@ Tan4 FiniteDifferenceTangent(const Material &m, const Mat3 &F, double h)
 template <typename Material>
 void TestMaterial(const Material &m, const std::string &name, double E, double nu)
 {
-  std::cout << "material " << name << " (mu " << m.mu << ", lambda " << m.lambda << ")" << std::endl;
-  const double scale = m.mu + m.lambda;
+  // The small-strain Lame moduli follow from E and nu, not from the material's
+  // members, so models parameterised otherwise run the same checks.
+  const cmf::LameParameters lame = cmf::LameFromYoungPoisson(E, nu);
+  std::cout << "material " << name << " (mu " << lame.mu << ", lambda " << lame.lambda << ")" << std::endl;
+  const double scale = lame.mu + lame.lambda;
 
   // 1. Stress-free reference configuration, to machine precision.
   const Mat3 P0 = m.PK1(cmf::I<3>());
@@ -175,7 +178,7 @@ void TestMaterial(const Material &m, const std::string &name, double E, double n
     const Mat3 F = cmf::I<3>() + eps * H;
     const Mat3 P = m.PK1(F);
     const Mat3 e = eps * cmf::sym(H);
-    const Mat3 P_lin = (m.lambda * cmf::tr(e)) * cmf::I<3>() + (2.0 * m.mu) * e;
+    const Mat3 P_lin = (lame.lambda * cmf::tr(e)) * cmf::I<3>() + (2.0 * lame.mu) * e;
     const double rel = MaxAbs(P - P_lin) / MaxAbs(P_lin);
     std::printf("  small-strain limit rel %.2e (eps %.0e)\n", rel, eps);
     CHECK_MSG(rel <= 1e-6, name + ": small-strain limit relative error " + std::to_string(rel));
@@ -187,13 +190,13 @@ void TestMaterial(const Material &m, const std::string &name, double E, double n
     const double M = E * (1.0 - nu) / ((1.0 + nu) * (1.0 - 2.0 * nu));
     CHECK_MSG(std::abs(Pu(0, 0) - M * eps) <= 1e-6 * M * eps,
               name + ": uniaxial P11 vs P-wave modulus");
-    CHECK_MSG(std::abs(Pu(1, 1) - m.lambda * eps) <= 1e-6 * m.lambda * eps,
+    CHECK_MSG(std::abs(Pu(1, 1) - lame.lambda * eps) <= 1e-6 * lame.lambda * eps,
               name + ": uniaxial P22 vs lambda");
     // Simple shear: P_12 = mu gamma.
     Mat3 Fs = cmf::I<3>();
     Fs(0, 1) += eps;
     const Mat3 Ps = m.PK1(Fs);
-    CHECK_MSG(std::abs(Ps(0, 1) - m.mu * eps) <= 1e-6 * m.mu * eps,
+    CHECK_MSG(std::abs(Ps(0, 1) - lame.mu * eps) <= 1e-6 * lame.mu * eps,
               name + ": simple shear P12 vs mu");
   }
 }
@@ -571,6 +574,80 @@ void TestModuliResolution()
 
 } // namespace
 
+// gent_compressible_summit against a transcription of SUMMIT's
+// GentCompressibleHyperelastic::Constitutive (row-major F and F^-1, its
+// coefficients coef_0..coef_3 of the Lagrangian moduli): stress, stored
+// energy and the AD tangent; then the generic checks with the small-strain
+// moduli mu and lambda = 2 mu / Jm (kappa does not enter them).
+void TestGentCompressibleSummit()
+{
+  const double mu = 0.5, kappa = 2000.0, Jm = 60.0;
+  const cmf::GentCompressibleSummit m{mu, kappa, Jm};
+  std::mt19937 rng(20260918u);
+  double worst_P = 0.0, worst_W = 0.0, worst_A = 0.0;
+  for (int trial = 0; trial < 5; trial++)
+  {
+    const Mat3 F = RandomF(rng);
+    const Mat3 Finv = cmf::inv(F);
+    const double detF = cmf::det(F);
+    const double Jsq_minus_1 = detF * detF - 1.0, logJ = std::log(detF), trC = cmf::ddot(F, F);
+    const double A = 0.5 * Jsq_minus_1 - logJ, C = Jm - trC + 3.0, B = Jm / C;
+    Mat3 P_ref;
+    for (int i = 0; i < 3; i++)
+      for (int J = 0; J < 3; J++)
+      {
+        P_ref(i, J) = mu * B * F(i, J) + (2.0 * kappa * A * A * A * Jsq_minus_1 - mu) * Finv(J, i);
+      }
+    const double W_ref = -0.5 * mu * (Jm * std::log(1.0 - (trC - 3.0) / Jm) + 2.0 * logJ) +
+                         0.5 * kappa * A * A * A * A;
+    const double coef_0 = mu * B, coef_1 = 2.0 * mu * Jm / (C * C);
+    const double coef_2 = mu - 2.0 * kappa * A * A * A * Jsq_minus_1;
+    const double coef_3 = 2.0 * kappa * (3.0 * A * A * Jsq_minus_1 * Jsq_minus_1 + 2.0 * detF * detF * A * A * A);
+    const Mat3 P = m.PK1(F);
+    const Tan4 T = cmf::MaterialTangent(m, F);
+    worst_P = std::max(worst_P, MaxAbs(P - P_ref) / MaxAbs(P_ref));
+    worst_W = std::max(worst_W, std::abs(m.Energy(F) - W_ref) / std::abs(W_ref));
+    double tmax = 0.0, terr = 0.0;
+    for (int i = 0; i < 3; i++)
+      for (int J = 0; J < 3; J++)
+        for (int k = 0; k < 3; k++)
+          for (int L = 0; L < 3; L++)
+          {
+            const double ref = coef_1 * F(k, L) * F(i, J) + coef_2 * Finv(J, k) * Finv(L, i) +
+                               coef_3 * Finv(J, i) * Finv(L, k) + (i == k && J == L ? coef_0 : 0.0);
+            tmax = std::max(tmax, std::abs(ref));
+            terr = std::max(terr, std::abs(T(i, J, k, L) - ref));
+          }
+    worst_A = std::max(worst_A, terr / tmax);
+  }
+  std::printf("gent_compressible_summit vs SUMMIT's expressions: P rel %.2e, W rel %.2e, tangent rel %.2e\n",
+              worst_P, worst_W, worst_A);
+  CHECK_MSG(worst_P <= 1e-13, "gent_compressible_summit: PK1 matches SUMMIT's expression");
+  CHECK_MSG(worst_W <= 1e-13, "gent_compressible_summit: energy matches SUMMIT's expression");
+  CHECK_MSG(worst_A <= 1e-12, "gent_compressible_summit: AD tangent matches SUMMIT's moduli");
+
+  const double lambda = m.SmallStrainLambda();
+  CHECK_CLOSE(lambda, 2.0 * mu / Jm, 1e-15);
+  TestMaterial(m, "gent_compressible_summit", mu * (3.0 * lambda + 2.0 * mu) / (lambda + mu),
+               lambda / (2.0 * (lambda + mu)));
+
+  cmf::MaterialConfig cfg;
+  cfg.model = "gent_compressible_summit";
+  cfg.mu = mu; cfg.kappa = kappa; cfg.Jm = Jm;
+  const cmf::Material made = cmf::MakeMaterial(cfg);
+  CHECK(cmf::MaterialName(made) == "gent_compressible_summit");
+  CHECK(std::get<cmf::GentCompressibleSummit>(made).kappa == kappa);
+  const cmf::ResolvedModuli r = cmf::ResolveModuli(cfg);
+  CHECK_CLOSE(r.lambda, 2.0 * mu / Jm, 1e-15);
+  CHECK_THROWS(cmf::MakeMixedMaterial(cfg), cmf::ConfigError, "has no isochoric-volumetric split");
+  cmf::MaterialConfig bad = cfg;
+  bad.nu = 0.3;
+  CHECK_THROWS(cmf::MakeMaterial(bad), cmf::ConfigError, "is not used by model 'gent_compressible_summit'");
+  bad = cfg;
+  bad.kappa = std::numeric_limits<double>::quiet_NaN();
+  CHECK_THROWS(cmf::MakeMaterial(bad), cmf::ConfigError, "needs mu, kappa and Jm");
+}
+
 int main()
 {
   const double E = 250.0, nu = 0.3;
@@ -604,6 +681,7 @@ int main()
   }
   TestOgdenSpecial(mu, kappa);
   TestVolumetricLaws(mu, kappa);
+  TestGentCompressibleSummit();
   TestPlaneStress(E, nu, mu, kappa);
   // Mooney-Rivlin with c2 = 0 is the isochoric neo-Hookean model.
   {

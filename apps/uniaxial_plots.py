@@ -25,6 +25,9 @@ Analytical solutions (lambda_2 from P_22 = 0):
                                the lateral stretch vanishes at lambda_1 = sqrt(1 + 1/nu), so this
                                case is driven to 0.95 of that limit instead of the target stretch
   neo-Hookean (Bonet-Wood)     P_aa = mu (lambda_a - 1/lambda_a) + lambda ln(J) / lambda_a
+  gent_compressible_summit     P_aa = mu Jm / (Jm - I1 + 3) lambda_a + (2 kappa A^3 (J^2 - 1) - mu) / lambda_a,
+                               A = (J^2 - 1)/2 - ln J (SUMMIT's compressible Gent; driven to at most
+                               0.95 sqrt(Jm + 3), short of the locking stretch)
   decoupled neo-Hookean        P_aa = mu J^-2/3 (lambda_a - I1 / (3 lambda_a)) + U'(J) J / lambda_a,
                                U' = kappa (J - 1) (quadratic), kappa (J - 1/J) / 2 (simo_taylor),
                                kappa ln(J) (j_log_j) or kappa ln(J) / J (logarithmic)
@@ -61,8 +64,15 @@ def lame(material):
 def pk1(material, l1, l2):
     """(P_11, P_22) of F = diag(l1, l2, l2) for the compressible models."""
     model = material["model"]
-    mu, lam, kappa = lame(material)
     J = l1 * l2 * l2
+    if model == "gent_compressible_summit":
+        mu, kappa, Jm = material["mu"], material["kappa"], material["Jm"]
+        I1 = l1 * l1 + 2.0 * l2 * l2
+        A = 0.5 * (J * J - 1.0) - math.log(J)
+        if I1 - 3.0 >= Jm:  # beyond the locking stretch
+            return math.nan, math.nan
+        return tuple(mu * Jm / (Jm - I1 + 3.0) * l + (2.0 * kappa * A ** 3 * (J * J - 1.0) - mu) / l for l in (l1, l2))
+    mu, lam, kappa = lame(material)
     if model == "st_venant_kirchhoff":
         E1, E2 = 0.5 * (l1 * l1 - 1.0), 0.5 * (l2 * l2 - 1.0)
         tr = E1 + 2.0 * E2
@@ -107,6 +117,8 @@ def stretch_limit(material, stretch):
     """The target stretch, reduced for St. Venant-Kirchhoff (lateral collapse)."""
     if material["model"] == "st_venant_kirchhoff":
         return min(stretch, 0.95 * math.sqrt(1.0 + 1.0 / material["nu"]))
+    if material["model"] == "gent_compressible_summit":  # locking: I1 - 3 < Jm, I1 > lambda_1^2
+        return min(stretch, 0.95 * math.sqrt(material["Jm"] + 3.0))
     return stretch
 
 

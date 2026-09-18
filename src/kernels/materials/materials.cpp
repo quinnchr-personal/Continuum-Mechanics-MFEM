@@ -51,6 +51,15 @@ ResolvedModuli ResolveModuli(const MaterialConfig &cfg)
     r.kappa = lame.lambda + 2.0 * lame.mu / 3.0;
     return r;
   }
+  if (model == "gent_compressible_summit")
+  {
+    // Small-strain moduli: the quartic penalty kappa/2 A^4 is O((J - 1)^8), so
+    // kappa does not enter; lambda = 2 mu / Jm comes from the Gent term.
+    r.mu = cfg.mu;
+    r.lambda = 2.0 * cfg.mu / cfg.Jm;
+    r.kappa = r.lambda + 2.0 * r.mu / 3.0;
+    return r;
+  }
   const double inf = std::numeric_limits<double>::infinity();
   if (model == "mooney_rivlin") { r.mu = 2.0 * (cfg.c1 + cfg.c2); }
   else if (model == "yeoh") { r.mu = 2.0 * cfg.c10; }
@@ -80,6 +89,10 @@ Material MakeMaterial(const MaterialConfig &cfg, bool plane_stress)
   Material base;
   if (cfg.model == "neo_hookean") { base = NeoHookean{m.mu, m.lambda}; }
   else if (cfg.model == "st_venant_kirchhoff") { base = StVenantKirchhoff{m.mu, m.lambda}; }
+  else if (cfg.model == "gent_compressible_summit")
+  {
+    base = GentCompressibleSummit{cfg.mu, cfg.kappa, cfg.Jm};
+  }
   else
   {
     if (m.incompressible && !plane_stress)

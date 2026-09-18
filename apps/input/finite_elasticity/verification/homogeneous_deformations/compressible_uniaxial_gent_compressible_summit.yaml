@@ -1,0 +1,31 @@
+# Compressible uniaxial tension of the unit cube with SUMMIT's compressible Gent model
+# (gent_compressible_summit, src/kernels/materials/gent_compressible_summit.hpp):
+#   W = -mu/2 (Jm ln(1 - (I1 - 3)/Jm) + 2 ln J) + kappa/2 ((J^2 - 1)/2 - ln J)^4,
+# mu = 0.5 MPa and kappa = 29/6 MPa as in the other uniaxial inputs, Jm = 100; displacement
+# formulation, stretch lambda_1 = 1.5 in x. kappa scales a quartic penalty and is not the
+# small-strain bulk modulus here (the linearised moduli are mu and lambda = 2 mu / Jm), so
+# the block is far more compressible than the nu = 0.45 inputs. Rollers on X = 0, Y = 0,
+# Z = 0, the face X = 1 moved by 0.5 t in x only, all other faces free, so the state is
+# homogeneous with F = diag(lambda_1, lambda_2, lambda_2) and the lateral stretch lambda_2
+# fixed by sigma_22 = 0. tests/test_verification.cpp solves P_22 = 0 with the material's own
+# PK1 and compares the probed displacement and P_11; apps/uniaxial_plots.py compares P_11
+# with an independent curve up to large stretch.
+formulation: displacement
+mesh: { file: apps/mesh/cube.msh, order: 2 }
+material: { model: gent_compressible_summit, mu: 0.5, kappa: 4.833333333333333, Jm: 100.0 }
+bcs:
+  dirichlet:
+    - { attr: [left],   expression: ["0", "0", "0"], components: [x] }
+    - { attr: [front],  expression: ["0", "0", "0"], components: [y] }
+    - { attr: [bottom], expression: ["0", "0", "0"], components: [z] }
+    - { attr: [right],  expression: ["0.5*t", "0", "0"], components: [x] }
+solver:
+  load_steps: 4
+  newton: { rtol: 1e-11, atol: 1e-13, max_it: 30 }
+  linear: { type: gmres_amg, rtol: 1e-13, max_it: 400, krylov_dim: 100, inner_rtol: 1e-4, inner_max_it: 100 }
+output:
+  paraview: out/homogeneous_deformations/compressible_uniaxial_gent_compressible_summit
+  fields: [displacement, jacobian, vonmises, pk1_stress, cauchy_stress]
+  probes:
+    - { name: corner, point: [1.0, 1.0, 1.0] }
+    - { name: center, point: [0.5, 0.5, 0.5] }

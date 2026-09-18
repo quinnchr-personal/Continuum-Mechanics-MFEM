@@ -12,6 +12,7 @@
 #include "base/config.hpp"
 #include "materials/arruda_boyce.hpp"
 #include "materials/gent.hpp"
+#include "materials/gent_compressible_summit.hpp"
 #include "materials/iso_neo_hookean.hpp"
 #include "materials/material_tangent.hpp"
 #include "materials/mooney_rivlin.hpp"
@@ -27,9 +28,10 @@ namespace cmf
 
 // Every model usable in the displacement formulation (needs PK1<T>(F)),
 // each also wrapped by the plane-stress adapter (2D, plane: stress).
-using Material = std::variant<NeoHookean, StVenantKirchhoff, IsoNeoHookean, MooneyRivlin,
-                              Yeoh, Gent, ArrudaBoyce, Ogden,
+using Material = std::variant<NeoHookean, StVenantKirchhoff, GentCompressibleSummit, IsoNeoHookean,
+                              MooneyRivlin, Yeoh, Gent, ArrudaBoyce, Ogden,
                               PlaneStress<NeoHookean>, PlaneStress<StVenantKirchhoff>,
+                              PlaneStress<GentCompressibleSummit>,
                               PlaneStress<IsoNeoHookean>, PlaneStress<MooneyRivlin>,
                               PlaneStress<Yeoh>, PlaneStress<Gent>, PlaneStress<ArrudaBoyce>,
                               PlaneStress<Ogden>>;
@@ -102,6 +104,7 @@ constexpr const char *ModelName()
   if constexpr (is_plane_stress<M>::value) { return ModelName<typename M::Base>(); }
   else if constexpr (std::is_same_v<M, NeoHookean>) { return "neo_hookean"; }
   else if constexpr (std::is_same_v<M, StVenantKirchhoff>) { return "st_venant_kirchhoff"; }
+  else if constexpr (std::is_same_v<M, GentCompressibleSummit>) { return "gent_compressible_summit"; }
   else if constexpr (std::is_same_v<M, IsoNeoHookean>) { return "iso_neo_hookean"; }
   else if constexpr (std::is_same_v<M, MooneyRivlin>) { return "mooney_rivlin"; }
   else if constexpr (std::is_same_v<M, Yeoh>) { return "yeoh"; }

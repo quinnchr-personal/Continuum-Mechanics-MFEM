@@ -355,6 +355,7 @@ int main(int argc, char *argv[])
   mfem::Hypre::Init();
   CompressibleUniaxialTest("compressible_uniaxial_neo_hookean.yaml");
   CompressibleUniaxialTest("compressible_uniaxial_st_venant_kirchhoff.yaml");
+  CompressibleUniaxialTest("compressible_uniaxial_gent_compressible_summit.yaml");
   CompressibleUniaxialTest("compressible_uniaxial_iso_neo_hookean_mixed.yaml");
   CompressibleUniaxialTest("compressible_uniaxial_iso_neo_hookean_logarithmic.yaml");
   CompressibleUniaxialTest("compressible_uniaxial_iso_neo_hookean_simo_taylor.yaml");

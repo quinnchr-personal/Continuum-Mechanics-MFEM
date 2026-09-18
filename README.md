@@ -26,7 +26,8 @@ src/kernels/    total_lagrangian.hpp: qpoint free functions + TotalLagrangianInt
                 mixed_total_lagrangian.hpp: u-p qpoint functions + MixedTotalLagrangianIntegrator<Material>;
                 follower_pressure.hpp: boundary face integrator T = -p J F^-T N (both forms)
 src/kernels/materials/
-                neo_hookean.hpp, st_venant_kirchhoff.hpp (coupled, displacement formulation);
+                neo_hookean.hpp, st_venant_kirchhoff.hpp, gent_compressible_summit.hpp (coupled,
+                displacement formulation; the last is SUMMIT's compressible Gent model);
                 iso_neo_hookean.hpp, mooney_rivlin.hpp, yeoh.hpp, gent.hpp, arruda_boyce.hpp,
                 ogden.hpp (isochoric-volumetric split, either formulation; isochoric.hpp shared
                 I1bar pieces, volumetric.hpp the selectable volumetric laws U(J),
@@ -133,6 +134,9 @@ mesh:
   order: 2                        # H1 polynomial degree (independent of the geometry order of the file)
 material: { model: neo_hookean, E: 250.0, nu: 0.3, rho0: 1.0 }
   # neo_hookean, st_venant_kirchhoff: coupled compressible models, keys E, nu (nu < 0.5); displacement only
+  # gent_compressible_summit: SUMMIT's compressible Gent model, keys mu, kappa, Jm; coupled, displacement only:
+  #   W = -mu/2 (Jm ln(1 - (I1 - 3)/Jm) + 2 ln J) + kappa/2 ((J^2 - 1)/2 - ln J)^4. kappa scales a quartic
+  #   penalty, not the small-strain bulk modulus (the linearised moduli are mu and lambda = 2 mu / Jm).
   # Decoupled (isochoric-volumetric) models, either formulation:
   #   iso_neo_hookean: mu (or E, nu)
   #   mooney_rivlin:   c1, c2                   (mu = 2 (c1 + c2))
