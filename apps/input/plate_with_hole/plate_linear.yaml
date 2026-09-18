@@ -1,0 +1,40 @@
+# The exercise of myapps/plate_with_hole: Kirsch's plate with a circular hole as an exact-solution
+# test. Quarter plate [0, 3R]^2 with a quarter hole of radius R = 0.01 at the origin
+# (apps/mesh/plate_with_a_hole.msh, the exercise's own mesh: 10900 nodes, straight-sided
+# triangles), plane strain, small-strain linear elasticity with mu = 7e10, nu = 0.3. The
+# displacement of the infinite plate under the far-field stress sigma_xx = s = 0.01 mu = 7e8,
+#   u_r     =  s/(8 mu r) [(k-1) r^2 + 2 R^2 + 2 (R^2 (k+1) + r^2 - R^4/r^2) cos 2theta],
+#   u_theta = -s/(4 mu r) [r^2 + R^2 (k-1) + R^4/r^2] sin 2theta,        k = 3 - 4 nu,
+# is prescribed on the four outer edges and the hole is traction free, so the finite element
+# solution is that field up to discretisation error - no finite-width effect, unlike
+# linear_elasticity/verification/kirsch_plate_with_hole, which pulls a 40 x 40 plate by a
+# traction. In the expressions below u_x = x A - y B, u_y = y A + x B with A = u_r / r and
+# B = u_theta / r written in x and y (cos 2theta = (x^2 - y^2)/r^2, sin 2theta = 2 x y / r^2);
+# numbers: s/(8 mu) = 1.25e-3, s/(4 mu) = 2.5e-3, k - 1 = 0.8, k + 1 = 2.8, R^2 = 1e-4, R^4 = 1e-8.
+# The exercise is a driver of its own (bilinear form, MFEM's ElasticityIntegrator, Dirichlet data
+# from a C++ function); here it is this input of the general executable.
+# apps/plate_with_hole_compare.py runs it and compares displacement and stress with the closed
+# form over the whole mesh (ParaView output read back), along the ligament x = 0 and around the
+# hole; tests/test_linear_verification.cpp checks errors and the concentration factor 3.
+# Run from the repository root:  build/apps/solid_mechanics -i apps/input/plate_with_hole/plate_linear.yaml
+mesh: { file: apps/mesh/plate_with_a_hole.msh, order: 1 }
+material: { model: linear_elastic, mu: 7.0e10, nu: 0.3 }
+bcs:
+  dirichlet:
+    - attr: [bottom, right, top, left]
+      name: outer
+      expression:
+        - "x*(0.00125/(x^2+y^2)*(0.80000000000000004*(x^2+y^2) + 0.00020000000000000001 + 2*(0.00027999999999999998 + (x^2+y^2) - 1e-08/(x^2+y^2))*(x^2-y^2)/(x^2+y^2))) - y*((-0.0025000000000000001)/(x^2+y^2)*((x^2+y^2) + 8.0000000000000007e-05 + 1e-08/(x^2+y^2))*2*x*y/(x^2+y^2))"
+        - "y*(0.00125/(x^2+y^2)*(0.80000000000000004*(x^2+y^2) + 0.00020000000000000001 + 2*(0.00027999999999999998 + (x^2+y^2) - 1e-08/(x^2+y^2))*(x^2-y^2)/(x^2+y^2))) + x*((-0.0025000000000000001)/(x^2+y^2)*((x^2+y^2) + 8.0000000000000007e-05 + 1e-08/(x^2+y^2))*2*x*y/(x^2+y^2))"
+solver:
+  load_steps: 1
+  newton: { rtol: 1e-8, atol: 1e-14, max_it: 5 }   # accepts the single linear solve
+  linear: { type: cg_amg, amg: systems, rtol: 1e-13, max_it: 2000 }
+output:
+  paraview: out/plate_with_hole/linear/paraview
+  fields: [displacement, strain, cauchy_stress, vonmises]
+  nodal_projection: projected
+  probes:
+    - { name: hole_top, point: [0.0, 0.01002] }     # sigma_xx -> 3 s; just inside the polygonal hole boundary
+    - { name: hole_side, point: [0.01002, 0.0] }    # sigma_yy -> -s
+    - { name: corner, point: [0.03, 0.03] }

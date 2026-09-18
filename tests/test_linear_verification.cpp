@@ -1,13 +1,16 @@
 // Verification of small-strain linear elasticity against closed-form
-// solutions, driven by the inputs of apps/input/linear_elasticity: Lame's
-// thick-walled cylinder and sphere, Kirsch's stress concentration, the
-// Euler-Bernoulli cantilever, manufactured solutions in 2D and 3D, a
-// two-material cube (Voigt-Reuss bounds), and Cook's membrane in its original
-// small-strain form with frozen regression values; in the mixed u-p
-// formulation the incompressible Lame cylinder (uniform pressure unknown),
-// the locking record at nu = 0.4999 and the incompressible membrane. Every
-// displacement solve is one Newton iteration, every mixed one at most two. Where a finite-strain input poses the same problem in its linear
-// limit (Kirsch, the cantilever), the two runs are compared.
+// solutions, driven by the inputs of apps/input/linear_elasticity (and
+// apps/input/plate_with_hole): Lame's thick-walled cylinder and sphere,
+// Kirsch's stress concentration, once by a far-field traction and once with
+// the exact displacement on the outer edges (the exercise of
+// myapps/plate_with_hole), the Euler-Bernoulli cantilever, manufactured
+// solutions in 2D and 3D, a two-material cube (Voigt-Reuss bounds), and Cook's
+// membrane in its original small-strain form with frozen regression values;
+// in the mixed u-p formulation the incompressible Lame cylinder (uniform
+// pressure unknown), the locking record at nu = 0.4999 and the incompressible
+// membrane. Every displacement solve is one Newton iteration, every mixed one
+// at most two. Where a finite-strain input poses the same problem in its
+// linear limit (Kirsch, the cantilever), the two runs are compared.
 #include <cmath>
 #include <cstdio>
 #include <memory>
@@ -326,6 +329,75 @@ void KirschTest()
   }
 }
 
+// ------------------------------- plate with a hole, exact Dirichlet data
+
+// The exercise of myapps/plate_with_hole: Kirsch's displacement of the infinite
+// plate prescribed on the outer edges of a quarter plate 3R x 3R, the hole
+// free, so the finite element solution is that field up to discretisation
+// (and the geometry of the straight-sided hole: a chord sag of 1e-4 R that
+// refinement does not remove, which bounds the displacement error near 1e-5).
+void PlateWithHoleTest()
+{
+  cmf::AppConfig cfg = cmf::LoadConfig("apps/input/plate_with_hole/plate_linear.yaml");
+  cfg.output.fields = {"displacement", "cauchy_stress"};
+  const double R = 0.01, mu = cfg.material.mu, nu = cfg.material.nu, s = 7.0e8, k = 3.0 - 4.0 * nu;
+  auto exact_u = [&](double x, double y, double &ux, double &uy)
+  {
+    const double r = std::hypot(x, y), r2 = r * r, c2 = (x * x - y * y) / r2, s2 = 2.0 * x * y / r2;
+    const double ur = s / (8.0 * mu * r) *
+                      ((k - 1.0) * r2 + 2.0 * R * R + 2.0 * (R * R * (k + 1.0) + r2 - R * R * R * R / r2) * c2);
+    const double ut = -s / (4.0 * mu * r) * (r2 + R * R * (k - 1.0) + R * R * R * R / r2) * s2;
+    ux = ur * x / r - ut * y / r;
+    uy = ur * y / r + ut * x / r;
+  };
+  // The expressions of the input are this field (they were generated, not typed).
+  const std::vector<std::string> &expr = cfg.bcs.dirichlet.at(0).expression;
+  const cmf::Expression ex = cmf::Expression::Parse(expr.at(0)), ey = cmf::Expression::Parse(expr.at(1));
+  double worst = 0.0;
+  for (const auto &pt : std::vector<std::pair<double, double>>{{0.03, 0.0}, {0.03, 0.03}, {0.0, 0.03}, {0.0, 0.012},
+                                                               {0.017, 0.023}, {0.01, 1e-9}})
+  {
+    double ux = 0.0, uy = 0.0;
+    exact_u(pt.first, pt.second, ux, uy);
+    const double scale = std::hypot(ux, uy);
+    worst = std::max({worst, std::abs(ex.Eval(pt.first, pt.second, 0.0, 1.0) - ux) / scale,
+                      std::abs(ey.Eval(pt.first, pt.second, 0.0, 1.0) - uy) / scale});
+  }
+  CHECK_MSG(worst <= 1e-13, "plate with a hole: the Dirichlet expressions are Kirsch's displacement (" +
+            std::to_string(worst) + ")");
+
+  cmf::ExpressionVectorCoefficient exact(expr);
+  mfem::Vector zero(2);
+  zero = 0.0;
+  mfem::VectorConstantCoefficient zero_coef(zero);
+  std::vector<double> errors;
+  for (int order = 1; order <= 2; order++)
+  {
+    cfg.mesh.order = order;
+    std::unique_ptr<Solved> sol = Solve(cfg);
+    CheckLinearSolve(*sol, "plate with a hole p=" + std::to_string(order));
+    // |u|_L2 of the exact field from the interpolant's norm is not needed: the
+    // error is taken relative to the norm of the computed field.
+    const double err = sol->problem->Displacement().ComputeL2Error(exact) /
+                       sol->problem->Displacement().ComputeL2Error(zero_coef);
+    errors.push_back(err);
+    const std::vector<double> top = sol->Probe("cauchy_stress", {0.0, 1.002 * R});   // xx yy zz xy yz xz
+    const std::vector<double> side = sol->Probe("cauchy_stress", {1.002 * R, 0.0});
+    const double q = 1.0 / (1.002 * 1.002), q2 = q * q;
+    const double sxx_top = s * (1.0 + 0.5 * q + 1.5 * q2), syy_side = s * 0.5 * (q - 3.0 * q2);
+    std::printf("  plate with a hole p=%d (%lld dofs): |u - u_Kirsch|_L2 / |u|_L2 = %.3e; sigma_xx/s at the hole "
+                "top %.4f (%.4f), sigma_yy/s at its side %.4f (%.4f), sigma_zz/s at the top %.4f (%.4f)\n", order,
+                static_cast<long long>(sol->problem->GlobalTrueVSize()), err, top[0] / s, sxx_top / s, side[1] / s,
+                syy_side / s, top[2] / s, nu * sxx_top / s);
+    const double tol = order == 1 ? 0.01 : 0.003;
+    CHECK_MSG(std::abs(top[0] - sxx_top) <= tol * 3.0 * s, "plate with a hole: sigma_xx at the hole top, p=" + std::to_string(order));
+    CHECK_MSG(std::abs(side[1] - syy_side) <= 2.0 * tol * s, "plate with a hole: sigma_yy at the hole side, p=" + std::to_string(order));
+    CHECK_MSG(std::abs(top[2] - nu * (top[0] + top[1])) <= 1e-9 * s, "plate with a hole: plane strain sigma_zz = nu (sigma_xx + sigma_yy)");
+  }
+  CHECK_MSG(errors[0] <= 1e-4, "plate with a hole: displacement error at order 1 (" + std::to_string(errors[0]) + ")");
+  CHECK_MSG(errors[1] <= 3e-5 && errors[1] < errors[0], "plate with a hole: displacement error at order 2");
+}
+
 // ----------------------------------------------------------------- cantilever
 
 void CantileverTest()
@@ -538,6 +610,7 @@ int main(int argc, char *argv[])
   LameCylinderIncompressibleTest();
   LameSphereTest();
   KirschTest();
+  PlateWithHoleTest();
   CantileverTest();
   ManufacturedTests();
   InclusionTest();

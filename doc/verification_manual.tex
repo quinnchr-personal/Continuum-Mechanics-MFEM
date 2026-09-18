@@ -105,6 +105,7 @@ Target & Content \\
 \code{make check} & serial, about 40 s: \file{test\_base}, \file{test\_materials}, \file{test\_solid\_mms}, \file{test\_mixed}, \file{test\_homogeneous}, \file{test\_loading}, \file{test\_linear\_elasticity} \\
 \code{make homogeneous} & the executable on the homogeneous-deformation inputs, compared with the closed forms by \file{apps/homogeneous\_compare.py} \\
 \code{make elastic\_bar} & the elastic bar exercise (Section~\ref{sec:elasticbar}): table and plot of force against displacement by \file{apps/elastic\_bar\_compare.py} \\
+\code{make plate\_with\_hole} & the plate-with-a-hole exercise (Section~\ref{sec:platewithhole}): errors against Kirsch's closed form and plot by \file{apps/plate\_with\_hole\_compare.py} \\
 \code{make test} & everything: \code{check}, the Cook inputs (finite strain and small strain, both formulations) serial and with four ranks, \file{test\_linear\_verification} (about 30 s), parallel consistency with two and four ranks, the homogeneous comparison, \file{test\_mixed --full}, \file{test\_benchmarks} serial and parallel, \file{test\_loading} with four ranks, \file{test\_verification}, and finally the Cook ratio gate \\
 \bottomrule
 \end{tabular}
@@ -924,6 +925,53 @@ the volumetric locking of linear tetrahedra at this Poisson ratio and three
 the clamped end.
 
 %============================================================================
+\section{Kirsch's plate as an exact-solution test (\texttt{apps/input/plate\_with\_hole/})}
+\label{sec:platewithhole}
+%============================================================================
+
+\paragraph{Problem.}
+The exercise of \file{myapps/plate\_with\_hole}: a quarter plate $[0, 3R]^2$
+with a quarter hole of radius $R = 0.01$ at the origin
+(\file{plate\_with\_a\_hole.msh}, the exercise's own mesh: 10900 nodes,
+straight-sided triangles), plane strain, \code{linear\_elastic} with
+$\mu = 7\times10^{10}$, $\nu = 0.3$.  The displacement of the infinite plate
+under the far-field stress $\sigma_\infty = 0.01\mu$ is prescribed on the four
+outer edges and the hole is traction free.  The exercise is a driver of its
+own; here it is the input \file{plate\_linear} of the general executable,
+with the Dirichlet data written as expressions in $x$ and $y$.
+
+\paragraph{Reference.}
+Kirsch's solution \cite{kirsch,timoshenko} with $k = 3 - 4\nu$,
+\begin{align*}
+  u_r &= \frac{\sigma_\infty}{8\mu r}\Bigl[(k-1)r^2 + 2R^2 + 2\bigl(R^2(k+1) + r^2 - R^4/r^2\bigr)\cos2\theta\Bigr], \\
+  u_\theta &= -\frac{\sigma_\infty}{4\mu r}\bigl[r^2 + R^2(k-1) + R^4/r^2\bigr]\sin2\theta ,
+\end{align*}
+and the stresses of Section~\ref{sec:linearcases}.  Because the exact field
+is imposed on the outer boundary there is no finite-width error (the case
+\file{kirsch\_plate\_with\_hole} of Section~\ref{sec:linearcases} pulls a finite
+plate by a traction and carries one): the finite element solution converges
+to the closed form, up to the geometry of the mesh, whose hole is a polygon
+with a chord sag of $10^{-4}R$ that uniform refinement keeps.
+
+\paragraph{Check} (\file{test\_linear\_verification};
+\file{apps/plate\_with\_hole\_compare.py --check} in \code{make test};
+\code{make plate\_with\_hole} for the plot).
+The expressions of the input equal an independent implementation of the
+closed form to $10^{-13}$.  Relative $L^2$ error of the displacement
+$5.3\times10^{-5}$ for $k = 1$ (gate $10^{-4}$) and $1.4\times10^{-5}$ for
+$k = 2$ (gate $3\times10^{-5}$, the geometry floor); $\sigma_{xx}$ just
+inside the top of the hole and $\sigma_{yy}$ at its side within $1\%$ and
+$0.3\%$ of $3\sigma_\infty$; $\sigma_{zz} = \nu(\sigma_{xx} + \sigma_{yy})$.
+The script reads the ParaView output back and compares every node:
+root-mean-square errors $5.5\times10^{-5}$ (displacement) and
+$2.6\times10^{-3}\sigma_\infty$ ($\sigma_{xx}$) at $k = 1$,
+$9.1\times10^{-4}$ after one refinement and $2.1\times10^{-4}$ at $k = 2$;
+concentration factor $2.991$, $2.997$, $2.998$.  With \code{neo\_hookean} and
+the same moduli the displacement differs from Kirsch's by
+$2.9\times10^{-4}$: at these strains geometric nonlinearity is five times
+the discretisation error.
+
+%============================================================================
 \section{Validation against a reference code: Anand\textquotesingle s examples}
 \label{sec:anand}
 %============================================================================
@@ -1044,6 +1092,7 @@ manufactured (small strain) & exact field, analytic body force & $L^2$ rate $\ge
 two materials & Reuss and Voigt bounds & bounds; reaction vs energy & \file{test\_linear\_verification} \\
 Cook's membrane (small strain) & literature 23.96, frozen values & $1\%$; $10^{-8}$ & \file{test\_linear\_verification} \\
 elastic bar (linear, Gent) & the drivers of \file{myapps/elastic\_bar} & force curves to $10^{-8}$ (measured $10^{-11}$, $10^{-12}$) & \file{elastic\_bar\_compare.py} \\
+plate with hole, exact boundary data & Kirsch over the whole field & $u$ to $10^{-4}$ ($k = 1$), $3\times10^{-5}$ ($k = 2$); stresses $1\%$ & \file{test\_linear\_verification}, \file{plate\_with\_hole\_compare.py} \\
 \bottomrule
 \end{tabular}
 \end{center}

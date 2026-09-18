@@ -65,7 +65,7 @@ DEPS := $(LIB_OBJ:.o=.d) $(patsubst %.cpp,$(BUILD_DIR)/%.d,$(APP_SRC) $(TEST_SRC
 APP := $(BUILD_DIR)/apps/solid_mechanics
 TEST_OUT := $(BUILD_DIR)/tests/out
 
-.PHONY: all lib apps tests check homogeneous elastic_bar meshes test clean
+.PHONY: all lib apps tests check homogeneous elastic_bar plate_with_hole meshes test clean
 
 all: lib apps tests
 
@@ -160,6 +160,12 @@ homogeneous: $(APP)
 elastic_bar: $(APP)
 	python3 apps/elastic_bar_compare.py --app $(APP)
 
+# The exercise of myapps/plate_with_hole: Kirsch's displacement on the outer edges of a quarter
+# plate, displacement and stress over the whole mesh compared with the closed form (needs
+# python3 with PyYAML, pyvista and matplotlib; a few seconds).
+plate_with_hole: $(APP)
+	python3 apps/plate_with_hole_compare.py --app $(APP)
+
 # Full gates (S4): fast gates, the YAML-driven app runs serial and np=4,
 # np={2,4} consistency vs a serial reference, and the benchmarks with the
 # frozen Cook's membrane regression values, serial and np=4. Run from the
@@ -181,6 +187,7 @@ test: check $(APP) $(BUILD_DIR)/tests/test_benchmarks $(BUILD_DIR)/tests/test_pa
 	$(MFEM_MPIEXEC) -np 4 $(APP) -i apps/input/finite_elasticity/cooks_membrane/cook_incompressible.yaml
 	python3 apps/homogeneous_compare.py --app $(APP)
 	python3 apps/elastic_bar_compare.py --app $(APP) --out $(TEST_OUT)/elastic_bar --no-plot --check
+	python3 apps/plate_with_hole_compare.py --app $(APP) --out $(TEST_OUT)/plate_with_hole --no-plot --check
 	$(BUILD_DIR)/tests/test_mixed --full
 	$(BUILD_DIR)/tests/test_benchmarks
 	$(MFEM_MPIEXEC) -np 4 $(BUILD_DIR)/tests/test_benchmarks

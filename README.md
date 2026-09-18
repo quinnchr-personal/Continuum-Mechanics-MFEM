@@ -71,7 +71,10 @@ apps/           solid_mechanics.cpp (YAML parsing and wiring only), apps/mesh/*.
                   book, from its FEniCSx companion codes; finite_elasticity so far);
                 apps/input/elastic_bar/ (the exercise of myapps/elastic_bar as inputs of the general
                   executable, linear and nonlinear, with the exercise's own results in reference/) and
-                  apps/elastic_bar_compare.py (force against displacement, compared)
+                  apps/elastic_bar_compare.py (force against displacement, compared);
+                apps/input/plate_with_hole/ (the exercise of myapps/plate_with_hole: Kirsch's displacement
+                  on the outer edges as expressions) and apps/plate_with_hole_compare.py (the computed
+                  fields against the closed form)
 tests/          test_base, test_materials, test_solid_mms, test_mixed, test_homogeneous, test_loading,
                 test_linear_elasticity (make check); test_mixed --full, test_benchmarks, test_parallel,
                 homogeneous compare, test_loading np=4, test_verification, test_linear_verification
@@ -94,6 +97,7 @@ make check      # serial, ~40 s: tensor/dual/YAML units, materials, patch tests 
                 # small-strain linear elasticity (operator vs MFEM's ElasticityIntegrator, outputs)
 make homogeneous # the app on apps/input/finite_elasticity/verification/homogeneous_deformations/*.yaml, compared with the closed forms (python3 + yaml)
 make elastic_bar # the elastic bar exercise: linear against Gent, force-displacement table and plot (python3 + yaml + matplotlib)
+make plate_with_hole # the plate-with-a-hole exercise: errors against Kirsch's closed form and plot (python3 + yaml + pyvista + matplotlib)
 make test       # everything: app runs serial and np=4, np={2,4} consistency, benchmarks, homogeneous
 make clean      # removes build/
 ```
@@ -482,6 +486,46 @@ stiffer than homogeneous uniaxial stress (`E A / H`): with `--order 2` it is 3.3
 10 of the 13 points are the volumetric locking of linear tetrahedra at nu = 0.4983 and 3 the
 clamped end. `make test` runs the script with `--check`, which fails unless both curves agree
 with the exercise's to 1e-8.
+
+### The plate-with-a-hole exercise (`apps/input/plate_with_hole/`, `apps/plate_with_hole_compare.py`)
+
+The exercise of `myapps/plate_with_hole`: Kirsch's problem posed as an exact-solution test. A
+quarter plate `[0, 3R]^2` with a quarter hole of radius `R = 0.01` at the origin, plane strain,
+linear elasticity with mu = 7e10, nu = 0.3; the displacement of the *infinite* plate under the
+far-field stress `s = 0.01 mu` is prescribed on the four outer edges and the hole is traction
+free, so the finite element solution is that field up to discretisation error. (The case
+`linear_elasticity/verification/kirsch_plate_with_hole` pulls a finite 40 x 40 plate by a
+traction instead and therefore carries a finite-width error of a few tenths of a percent.) The
+exercise is a driver of its own; here it is one input of the general executable,
+`apps/input/plate_with_hole/plate_linear.yaml`, whose Dirichlet data are the closed form written
+as expressions in `x` and `y` (`cos 2theta = (x^2 - y^2)/r^2`, `sin 2theta = 2xy/r^2`; generated,
+and checked against an independent implementation to 1e-13 by the test). The mesh is the
+exercise's own file (10900 nodes, straight-sided triangles).
+
+```
+python3 apps/plate_with_hole_compare.py                   # or: make plate_with_hole   (a few seconds)
+python3 apps/plate_with_hole_compare.py --order 2         # --refine N, --np N, --model neo_hookean
+```
+
+runs the input, reads the ParaView output back with pyvista, evaluates the closed form at every
+node and prints the errors; it draws `out/plate_with_hole/plate_with_hole.png`, the stress
+`sigma_xx` across the ligament `x = 0` and the hoop stress around the hole against Kirsch's
+curves. Measured (root mean square over the nodes; stresses relative to `s`):
+
+| | dofs | displacement | sigma_xx | concentration factor (3) |
+|---|---|---|---|---|
+| order 1 | 21800 | 5.5e-5 | 2.6e-3 | 2.991 |
+| order 1, refined once | 86420 | 2.3e-5 | 9.1e-4 | 2.997 |
+| order 2 | 86420 | 1.4e-5 | 2.1e-4 | 2.998 |
+| order 1, `neo_hookean` with the same moduli | 21800 | 2.9e-4 | 3.5e-3 | 2.987 |
+
+The displacement error levels off near 1e-5: the hole of this mesh is a polygon whose chords sag
+by 1e-4 R, and uniform refinement keeps the polygon (a mesh generated with `gmsh -order 2` would
+not have that floor). The last row is geometric nonlinearity: at these strains (0.4 to 1
+percent) a finite-strain model differs from Kirsch's linear solution by five times the
+discretisation error. `tests/test_linear_verification` holds the gates (displacement L2 error
+below 1e-4 at order 1 and 3e-5 at order 2, probed stresses at the hole to 1 and 0.3 percent), and
+`make test` runs the script with `--check`.
 
 ### Anand's coupled-theories examples (`apps/input/anand_coupled_theories/`)
 
