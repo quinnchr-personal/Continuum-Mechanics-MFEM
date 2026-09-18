@@ -245,6 +245,7 @@ void MixedSolidMechanicsTL::UpdateFields(const mfem::Vector &x)
       const double J = det(s.F);
       s.energy = mat.EnergyIso(s.F) + p * (J - 1.0) -
                  (inv_kappa > 0.0 ? mat.ComplementaryVolumetricEnergy(p) : 0.0);
+      CompleteState(mat, s);
     });
   }, materials_[0]);
 }

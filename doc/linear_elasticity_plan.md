@@ -17,6 +17,12 @@ check does not pass through the material's own stress function; the small-strain
 of `TestMaterial` runs at strain 0.05 for this model (at the generic 1e-7 it sits on the
 `1e-16 / |Grad u|` floor of decision 5, 8e-10); the reaction test with reference moment arms
 was written here with the code change instead of in LE2.
+LE2 complete: `QPointState` carries `sigma`, `strain` and `J`, filled by `CompleteState`
+through the kinematics helpers; five homogeneous Hooke states at 5 percent strain (3D
+uniaxial and general with rotation, plane strain, plane stress uniaxial and general) give
+every quantity in every presentation to 6e-13 of a stress level of 12.5 and end-face
+reactions `sigma A` on the reference area; with the push-forward left in, the same test fails
+by 3 percent. Every finite-strain test number and app output is bit-identical.
 
 **Goal:** `material: { model: linear_elastic, E: ..., nu: ... }` solves geometrically linear
 (small-strain) isotropic elasticity in 2D (plane strain, plane stress) and 3D, in the

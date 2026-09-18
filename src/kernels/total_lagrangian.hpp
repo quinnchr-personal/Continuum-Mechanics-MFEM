@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "base/tensor.hpp"
+#include "materials/kinematics.hpp"
 #include "materials/material_tangent.hpp"
 #include "mfem.hpp"
 
@@ -73,16 +74,16 @@ inline tensor<double, 3, 3, 3, 3> QPointTangent(const Material &material,
   return MaterialTangent(material, DeformationGradient<dim>(H), dim);
 }
 
-// Cauchy stress sigma = J^{-1} P F^T at a point, full 3x3 (plane strain keeps
-// sigma_33, plane stress uses the thickness stretch), and its von Mises
+// Cauchy stress at a point, full 3x3 (plane strain keeps sigma_33, plane
+// stress uses the thickness stretch): sigma = J^{-1} P F^T, or P itself for a
+// small-strain material (materials/kinematics.hpp); and its von Mises
 // equivalent.
 template <typename Material, int dim>
 inline tensor<double, 3, 3> QPointCauchyStress(const Material &material,
                                                const tensor<double, dim, dim> &H)
 {
   const tensor<double, 3, 3> F = CompleteF(material, DeformationGradient<dim>(H));
-  const tensor<double, 3, 3> P = material.PK1(F);
-  return (1.0 / det(F)) * (P * transpose(F));
+  return CauchyStress(material, F, material.PK1(F));
 }
 
 inline double VonMises(const tensor<double, 3, 3> &sigma)

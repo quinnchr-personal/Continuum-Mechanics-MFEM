@@ -230,6 +230,7 @@ void SolidMechanicsTL::UpdateFields(const mfem::Vector &x)
       s.P = mat.PK1(s.F);
       if constexpr (has_energy<M>::value) { s.energy = mat.Energy(s.F); }
       else { s.energy = 0.0; }
+      CompleteState(mat, s);
     });
   }, materials_[0]);
 }

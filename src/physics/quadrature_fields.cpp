@@ -8,8 +8,8 @@ namespace cmf
 const std::vector<QuantityInfo> &Quantities()
 {
   static const std::vector<QuantityInfo> q = {
-    {"cauchy_stress", 6}, {"pk1_stress", 9}, {"deformation_gradient", 9}, {"jacobian", 1},
-    {"vonmises", 1}, {"energy_density", 1}, {"thickness_stretch", 1}};
+    {"cauchy_stress", 6}, {"pk1_stress", 9}, {"deformation_gradient", 9}, {"strain", 6},
+    {"jacobian", 1}, {"vonmises", 1}, {"energy_density", 1}, {"thickness_stretch", 1}};
   return q;
 }
 
@@ -31,18 +31,18 @@ void PackQuantity(const std::string &name, const QPointState &s, double *out)
       for (int j = 0; j < 3; j++) { out[3 * i + j] = A(i, j); }
     return;
   }
-  if (name == "jacobian") { out[0] = det(s.F); return; }
+  if (name == "jacobian") { out[0] = s.J; return; }
   if (name == "thickness_stretch") { out[0] = s.F(2, 2); return; }
   if (name == "energy_density") { out[0] = s.energy; return; }
-  const tensor<double, 3, 3> sigma = (1.0 / det(s.F)) * (s.P * transpose(s.F));
-  if (name == "vonmises") { out[0] = VonMises(sigma); return; }
-  // cauchy_stress
-  out[0] = sigma(0, 0);
-  out[1] = sigma(1, 1);
-  out[2] = sigma(2, 2);
-  out[3] = 0.5 * (sigma(0, 1) + sigma(1, 0));
-  out[4] = 0.5 * (sigma(1, 2) + sigma(2, 1));
-  out[5] = 0.5 * (sigma(0, 2) + sigma(2, 0));
+  if (name == "vonmises") { out[0] = VonMises(s.sigma); return; }
+  // cauchy_stress, strain: symmetric, VTK order
+  const tensor<double, 3, 3> &A = name == "strain" ? s.strain : s.sigma;
+  out[0] = A(0, 0);
+  out[1] = A(1, 1);
+  out[2] = A(2, 2);
+  out[3] = 0.5 * (A(0, 1) + A(1, 0));
+  out[4] = 0.5 * (A(1, 2) + A(2, 1));
+  out[5] = 0.5 * (A(0, 2) + A(2, 0));
 }
 
 tensor<double, 3, 3> DeformationGradientAt(const mfem::DenseMatrix &grad, int dim)

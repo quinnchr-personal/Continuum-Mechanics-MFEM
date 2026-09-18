@@ -12,7 +12,10 @@
 //      -(lambda + mu) grad(div u) - mu lap(u): L2 rates p + 1;
 //   6. st_venant_kirchhoff approaches it linearly in the load;
 //   7. reactions balance the loads with reference moment arms; follower
-//      pressures and the tangent predictor are configuration errors.
+//      pressures and the tangent predictor are configuration errors;
+//   8. every output quantity of homogeneous Hooke states at 5 percent strain,
+//      in every presentation: sigma = P (no push-forward), J = 1 + tr(eps),
+//      strain = eps, the thickness stretch 1 + eps_33 under plane stress.
 #include <cmath>
 #include <cstdio>
 #include <functional>
@@ -21,7 +24,9 @@
 #include <string>
 #include <vector>
 
+#include "base/fields.hpp"
 #include "base/mesh_input.hpp"
+#include "base/probes.hpp"
 #include "materials/materials.hpp"
 #include "mfem.hpp"
 #include "physics/solid_mechanics_tl.hpp"
@@ -485,6 +490,203 @@ void ReactionAndConfigTests()
   }
 }
 
+// 8. Output quantities of homogeneous Hooke states at a strain of 5 percent,
+// where the finite-strain measures (J^{-1} P F^T, det F) would be off by
+// percents. A state is an affine displacement u = H X; the expected values
+// come from (E, nu) and H alone: eps = sym(H), sigma = lambda tr(eps) I +
+// 2 mu eps, F = I + H, J = 1 + tr(eps), W = sigma:eps / 2.
+using Mat3 = cmf::tensor<double, 3, 3>;
+
+struct HookeState
+{
+  std::string label;
+  int dim = 3;
+  bool plane_stress = false;
+  Mat3 H;                          // full 3x3 gradient, out-of-plane strain included
+  bool whole_boundary = true;      // else uniaxial: u_x on the end faces, rollers on X_i = 0
+};
+
+std::vector<std::pair<std::string, std::vector<double>>> ExpectedQuantities(const HookeState &s)
+{
+  const cmf::LameParameters lame = cmf::LameFromYoungPoisson(kE, kNu);
+  const Mat3 eps = cmf::sym(s.H);
+  const Mat3 sigma = (lame.lambda * cmf::tr(eps)) * cmf::I<3>() + (2.0 * lame.mu) * eps;
+  const Mat3 F = cmf::I<3>() + s.H;
+  auto voigt = [](const Mat3 &A)
+  { return std::vector<double>{A(0, 0), A(1, 1), A(2, 2), A(0, 1), A(1, 2), A(0, 2)}; };
+  auto rows = [](const Mat3 &A)
+  {
+    std::vector<double> v;
+    for (int i = 0; i < 3; i++)
+      for (int j = 0; j < 3; j++) { v.push_back(A(i, j)); }
+    return v;
+  };
+  const Mat3 dev = cmf::dev(sigma);
+  std::vector<std::pair<std::string, std::vector<double>>> x;
+  x.push_back({"cauchy_stress", voigt(sigma)});
+  x.push_back({"pk1_stress", rows(sigma)});
+  x.push_back({"deformation_gradient", rows(F)});
+  x.push_back({"strain", voigt(eps)});
+  x.push_back({"jacobian", {1.0 + cmf::tr(eps)}});
+  x.push_back({"vonmises", {std::sqrt(1.5 * cmf::ddot(dev, dev))}});
+  x.push_back({"energy_density", {0.5 * cmf::ddot(sigma, eps)}});
+  if (s.plane_stress) { x.push_back({"thickness_stretch", {F(2, 2)}}); }
+  return x;
+}
+
+void HomogeneousOutputTest(const HookeState &s, const std::string &projection)
+{
+  const ElementCase ec = s.dim == 2 ? kElementCases[0] : kElementCases[2];
+  cmf::AppConfig cfg = BoxConfig(ec, 2);
+  cfg.plane = s.plane_stress ? "stress" : "strain";
+  cfg.output.fields = {"displacement", "cauchy_stress", "pk1_stress", "deformation_gradient", "strain",
+                       "jacobian", "vonmises", "energy_density"};
+  if (s.plane_stress) { cfg.output.fields.push_back("thickness_stretch"); }
+  cfg.output.quadrature_at = {"nodes", "elements", "quadrature_points"};
+  cfg.output.nodal_projection = projection;
+  std::unique_ptr<mfem::ParMesh> pmesh = cmf::BuildParMesh(MPI_COMM_WORLD, cfg.mesh);
+  cmf::SolidMechanicsTL physics(*pmesh, cfg, cmf::MakeMaterial(cfg.material, s.plane_stress));
+  const int dim = s.dim;
+  const Mat3 H = s.H;
+  mfem::VectorFunctionCoefficient affine(dim, [dim, H](const mfem::Vector &X, mfem::Vector &u)
+  {
+    u.SetSize(dim);
+    for (int i = 0; i < dim; i++)
+    {
+      u(i) = 0.0;
+      for (int j = 0; j < dim; j++) { u(i) += H(i, j) * X(j); }
+    }
+  });
+  if (s.whole_boundary) { physics.AddDirichlet(AllAttrs(dim), affine); }
+  else
+  {
+    // u_x on the end faces; u_y = 0 on Y = 0 and u_z = 0 on Z = 0 (the affine
+    // field vanishes there); the other faces are traction free.
+    cmf::BCOptions ox, oy, oz;
+    ox.components = {0};
+    oy.components = {1};
+    oz.components = {2};
+    physics.AddDirichlet({LeftAttr(dim)}, affine, ox);
+    physics.AddDirichlet({RightAttr(dim)}, affine, ox);
+    physics.AddDirichlet({dim == 2 ? 1 : 2}, affine, oy);
+    if (dim == 3) { physics.AddDirichlet({1}, affine, oz); }
+  }
+  physics.Finalize();
+  cmf::LinearSolver linear(cfg.solver.linear, physics.FESpace());
+  mfem::Vector u(physics.FESpace().GetTrueVSize());
+  u = 0.0;
+  const cmf::QuasiStaticReport report = cmf::SolveQuasiStatic(physics, linear, cfg.solver, u);
+  physics.UpdateFields(u);
+
+  mfem::ParGridFunction exact(&physics.FESpace());
+  exact.ProjectCoefficient(affine);
+  exact -= physics.Displacement();
+  const double u_err = exact.Normlinf();
+
+  cmf::FieldRegistry fields;
+  physics.RegisterFields(fields);
+  const std::vector<double> center(dim, 0.5);
+  double nodal = 0.0, elem = 0.0, qp = 0.0;
+  for (const auto &kv : ExpectedQuantities(s))
+  {
+    const std::vector<double> &want = kv.second;
+    const std::vector<double> gn = cmf::ProbeVector(fields.Get(kv.first), center);
+    const std::vector<double> ge = cmf::ProbeVector(fields.Get(kv.first + "_elem"), center);
+    const mfem::QuadratureFunction &qf = fields.GetQ(kv.first + "_qp");
+    CHECK_MSG(gn.size() == want.size() && ge.size() == want.size(), s.label + ": components of " + kv.first);
+    for (std::size_t c = 0; c < want.size(); c++)
+    {
+      nodal = std::max(nodal, std::abs(gn[c] - want[c]));
+      elem = std::max(elem, std::abs(ge[c] - want[c]));
+    }
+    for (int i = 0; i < qf.Size(); i++) { qp = std::max(qp, std::abs(qf(i) - want[i % want.size()])); }
+  }
+  const double scale = kE * 0.05; // the stress level
+  const cmf::NewtonReport &newton = report.steps.back().newton;
+  std::printf("  %-28s %-9s: errors u %.1e, quantities nodal %.1e elem %.1e qp %.1e (stress scale %.1f), its %d\n",
+              s.label.c_str(), projection.c_str(), u_err, nodal, elem, qp, scale, newton.iterations);
+  CHECK_MSG(newton.converged && newton.iterations == 1, s.label + ": one Newton iteration");
+  CHECK_MSG(u_err <= 1e-12, s.label + " " + projection + ": displacement " + std::to_string(u_err));
+  CHECK_MSG(nodal <= 1e-10 * scale, s.label + " " + projection + ": nodal presentations " + std::to_string(nodal));
+  CHECK_MSG(elem <= 1e-10 * scale, s.label + " " + projection + ": element presentations " + std::to_string(elem));
+  CHECK_MSG(qp <= 1e-10 * scale, s.label + " " + projection + ": quadrature-point values " + std::to_string(qp));
+
+  if (!s.whole_boundary)
+  {
+    // The end faces carry -/+ sigma_xx A with the reference area A = 1 (a
+    // current area would differ by 2 nu eps = 3 percent); the rollers carry
+    // no load.
+    const std::vector<cmf::Reaction> rx = physics.Reactions(u);
+    const double sxx = ExpectedQuantities(s)[0].second[0];
+    CHECK_MSG(std::abs(sxx - kE * 0.05) <= 1e-12 * scale, s.label + ": sigma_xx = E eps");
+    CHECK_MSG(std::abs(rx[0].force[0] + sxx) <= 1e-9 * scale, s.label + ": left face reaction -sigma_xx A");
+    CHECK_MSG(std::abs(rx[1].force[0] - sxx) <= 1e-9 * scale, s.label + ": right face reaction sigma_xx A");
+    for (std::size_t k = 2; k < rx.size(); k++)
+    {
+      for (int c = 0; c < dim; c++)
+      {
+        CHECK_MSG(std::abs(rx[k].force[c]) <= 1e-9 * scale, s.label + ": rollers carry no load");
+      }
+    }
+  }
+}
+
+void HomogeneousOutputTests()
+{
+  const double e = 0.05, nu = kNu;
+  std::vector<HookeState> states;
+  {
+    HookeState s;
+    s.label = "3D uniaxial stress";
+    s.H(0, 0) = e; s.H(1, 1) = -nu * e; s.H(2, 2) = -nu * e;
+    s.whole_boundary = false;
+    states.push_back(s);
+  }
+  {
+    HookeState s;
+    s.label = "3D general (with rotation)";
+    const double G[3][3] = {{0.05, -0.03, 0.02}, {0.01, -0.02, 0.04}, {-0.015, 0.025, 0.03}};
+    for (int i = 0; i < 3; i++)
+      for (int j = 0; j < 3; j++) { s.H(i, j) = G[i][j]; }
+    states.push_back(s);
+  }
+  {
+    HookeState s;
+    s.label = "plane strain general";
+    s.dim = 2;
+    s.H(0, 0) = 0.05; s.H(0, 1) = -0.03; s.H(1, 0) = 0.01; s.H(1, 1) = -0.02;
+    states.push_back(s);
+  }
+  {
+    HookeState s;
+    s.label = "plane stress uniaxial";
+    s.dim = 2;
+    s.plane_stress = true;
+    s.H(0, 0) = e; s.H(1, 1) = -nu * e; s.H(2, 2) = -nu * e;
+    s.whole_boundary = false;
+    states.push_back(s);
+  }
+  {
+    HookeState s;
+    s.label = "plane stress general";
+    s.dim = 2;
+    s.plane_stress = true;
+    s.H(0, 0) = 0.05; s.H(0, 1) = -0.03; s.H(1, 0) = 0.01; s.H(1, 1) = -0.02;
+    s.H(2, 2) = -nu / (1.0 - nu) * (s.H(0, 0) + s.H(1, 1)); // sigma_33 = 0
+    states.push_back(s);
+  }
+  for (const HookeState &s : states)
+  {
+    if (s.plane_stress)
+    {
+      const double s33 = ExpectedQuantities(s)[0].second[2];
+      CHECK_MSG(std::abs(s33) <= 1e-13 * kE, s.label + ": the expected state has sigma_33 = 0");
+    }
+    HomogeneousOutputTest(s, "averaged");
+    HomogeneousOutputTest(s, "projected");
+  }
+}
+
 } // namespace
 
 int main(int argc, char *argv[])
@@ -508,5 +710,7 @@ int main(int argc, char *argv[])
   FiniteStrainLimitTest();
   std::cout << "reactions and configuration errors" << std::endl;
   ReactionAndConfigTests();
+  std::cout << "output quantities of homogeneous states" << std::endl;
+  HomogeneousOutputTests();
   return cmf_test::Report("test_linear_elasticity");
 }

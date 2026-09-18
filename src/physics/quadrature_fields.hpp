@@ -14,13 +14,21 @@
 //            projected - the global L2 projection (consistent mass matrix,
 //                        solved by CG to 1e-14).
 // The formulation supplies F, P and the energy density at a point through a
-// QPointEvaluator; derived scalars (J, von Mises, thickness stretch) are formed
+// QPointEvaluator, and the measures that depend on the material's kinematics
+// (Cauchy stress, volume ratio, strain; materials/kinematics.hpp) through
+// CompleteState; derived scalars (von Mises, thickness stretch) are formed
 // at the quadrature points and then presented, never from presented data.
 // Quantities (components): cauchy_stress (6, VTK order xx yy zz xy yz xz),
-// pk1_stress (9, row-major), deformation_gradient (9, row-major), jacobian
-// (1), vonmises (1), energy_density (1), thickness_stretch (1, F33 under
-// plane stress). In 2D, F carries F33 (1 for plane strain, the thickness
-// stretch for plane stress), so the out-of-plane terms are included.
+// pk1_stress (9, row-major), deformation_gradient (9, row-major), strain (6,
+// VTK order), jacobian (1), vonmises (1), energy_density (1),
+// thickness_stretch (1, F33 under plane stress). In 2D, F carries F33 (1 for
+// plane strain, the thickness stretch for plane stress), so the out-of-plane
+// terms are included.
+//                       finite strain          small strain (linear_elastic)
+//   cauchy_stress       J^{-1} P F^T           P (= pk1_stress, symmetric)
+//   jacobian            det F                  1 + tr(eps)
+//   strain              (F^T F - I) / 2        eps = sym(F - I)
+//   deformation_gradient, thickness_stretch:   I + Grad u, 1 + eps_33
 #pragma once
 
 #include <functional>
@@ -32,6 +40,7 @@
 #include "base/fields.hpp"
 #include "base/tensor.hpp"
 #include "kernels/total_lagrangian.hpp"
+#include "materials/kinematics.hpp"
 #include "mfem.hpp"
 
 namespace cmf
@@ -42,7 +51,21 @@ struct QPointState
   tensor<double, 3, 3> F;
   tensor<double, 3, 3> P;
   double energy = 0.0; // stored energy per unit reference volume
+  // Set by CompleteState from F and P.
+  tensor<double, 3, 3> sigma;  // Cauchy stress
+  tensor<double, 3, 3> strain;
+  double J = 1.0;              // volume ratio
 };
+
+// The entries of s that depend on the kinematics of the material, from s.F
+// and s.P; every evaluator ends with this call.
+template <typename Material>
+inline void CompleteState(const Material &material, QPointState &s)
+{
+  s.sigma = CauchyStress(material, s.F, s.P);
+  s.strain = Strain(material, s.F);
+  s.J = VolumeRatio(material, s.F);
+}
 
 // Sets the integration point on T and fills the state there.
 using QPointEvaluator = std::function<void(mfem::ElementTransformation &,

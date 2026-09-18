@@ -219,8 +219,9 @@ struct OutputConfig
 {
   std::string paraview;              // collection path; empty -> no output
   // Nodal unknowns: displacement | pressure (mixed). Quadrature-point
-  // quantities: cauchy_stress | pk1_stress | deformation_gradient | jacobian
-  // | vonmises | energy_density | thickness_stretch (plane stress).
+  // quantities: cauchy_stress | pk1_stress | deformation_gradient | strain
+  // (Green-Lagrange; the infinitesimal strain for a small-strain model) |
+  // jacobian | vonmises | energy_density | thickness_stretch (plane stress).
   std::vector<std::string> fields;
   // Presentations of the quadrature-point quantities (physics/quadrature_fields.hpp):
   // "nodes" (continuous H1 field <name>), "elements" (element average

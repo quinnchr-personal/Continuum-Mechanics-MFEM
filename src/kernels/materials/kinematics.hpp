@@ -43,4 +43,14 @@ inline double VolumeRatio(const Material &, const tensor<double, 3, 3> &F)
   else { return det(F); }
 }
 
+// The strain of the material's kinematics: the infinitesimal strain
+// eps = sym(F - I), or the Green-Lagrange strain E = (F^T F - I) / 2, which
+// tends to it.
+template <typename Material>
+inline tensor<double, 3, 3> Strain(const Material &, const tensor<double, 3, 3> &F)
+{
+  if constexpr (is_small_strain<Material>::value) { return sym(F - I<3>()); }
+  else { return 0.5 * (transpose(F) * F - I<3>()); }
+}
+
 } // namespace cmf

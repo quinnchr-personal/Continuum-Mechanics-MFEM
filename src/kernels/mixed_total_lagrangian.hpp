@@ -79,15 +79,15 @@ inline tensor<double, dim, dim> QPointVolumeGradient(const tensor<double, dim, d
   return J * transpose(inv(F));
 }
 
-// Cauchy stress of the mixed formulation, sigma = J^{-1} P F^T.
+// Cauchy stress of the mixed formulation: sigma = J^{-1} P F^T, or P itself
+// for a small-strain material (materials/kinematics.hpp).
 template <typename Material, int dim>
 inline tensor<double, 3, 3> QPointMixedCauchyStress(const Material &material,
                                                     const tensor<double, dim, dim> &H,
                                                     double p)
 {
   const tensor<double, 3, 3> F = DeformationGradient<dim>(H);
-  const tensor<double, 3, 3> P = MixedPK1(material, F, p);
-  return (1.0 / det(F)) * (P * transpose(F));
+  return CauchyStress(material, F, MixedPK1(material, F, p));
 }
 
 // Block integrator over (displacement, pressure) spaces.

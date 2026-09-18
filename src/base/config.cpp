@@ -884,12 +884,12 @@ OutputConfig ParseOutputConfig(const YAML::Node &node, const std::string &path)
   for (const std::string &f : cfg.fields)
   {
     if (f != "displacement" && f != "pressure" && f != "cauchy_stress" && f != "pk1_stress" &&
-        f != "deformation_gradient" && f != "jacobian" && f != "vonmises" &&
+        f != "deformation_gradient" && f != "strain" && f != "jacobian" && f != "vonmises" &&
         f != "energy_density" && f != "thickness_stretch")
     {
       throw ConfigError("key '" + r.Path("fields") + "': unknown field '" + f +
                         "' (expected displacement, pressure, cauchy_stress, pk1_stress, "
-                        "deformation_gradient, jacobian, vonmises, energy_density, or "
+                        "deformation_gradient, strain, jacobian, vonmises, energy_density, or "
                         "thickness_stretch)");
     }
   }
