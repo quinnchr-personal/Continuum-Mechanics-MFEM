@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Run the homogeneous-deformation inputs and compare the probed displacement,
 pressure, von Mises stress and Jacobian with the closed-form solutions of
-doc/incompressible_hyperelasticity.tex.
+doc/verification_manual.tex, Appendix A.
 
     python3 apps/homogeneous_compare.py [--app build/apps/solid_mechanics]
                                         [--tol 1e-8] [--np N] [inputs.yaml ...]

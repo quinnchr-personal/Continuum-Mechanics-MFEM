@@ -8,7 +8,7 @@ fluxes and sources at quadrature points and the framework owns assembly,
 Newton, and the linear solvers (architecture: `doc/flux_kernel_architecture.html`,
 plan: `doc/hyperelasticity_implementation_plan.md`). The first physics is
 quasi-static nonlinear solid mechanics (compressible hyperelasticity, total
-Lagrangian, CG, weak form in `doc/solid_mechanics_forms.tex`), with
+Lagrangian, CG, weak form in `doc/theory_manual.tex`), with
 small-strain linear elasticity as a material of the same kernels
 (`model: linear_elastic`, plan and measured results in
 `doc/linear_elasticity_plan.md`). The models and
@@ -172,7 +172,7 @@ material: { model: neo_hookean, E: 250.0, nu: 0.3, rho0: 1.0 }
   #   law U(J) = kappa u(J) of a decoupled model at finite kappa: u = (J - 1)^2/2 |
   #   (J^2 - 1 - 2 ln J)/4 | (ln J)^2/2 (p = kappa ln J / J, Anand's FEniCSx codes) | J ln J - J + 1.
   #   Every law has u''(1) = 1, so kappa keeps its meaning; they differ at finite strain.
-  #   Closed forms and homogeneous solutions: doc/incompressible_hyperelasticity.tex.
+  #   Closed forms and homogeneous solutions: doc/verification_manual.tex, Appendix A.
   # linear_elastic: small-strain (geometrically linear) isotropic elasticity, either formulation;
   #   keys mu (or E, nu) and one of kappa | nu | incompressible, as for iso_neo_hookean, no volumetric
   #   law: sigma = 2 mu dev(eps) + kappa tr(eps) I with eps = sym(grad u). nu = 0.5 needs
@@ -231,7 +231,7 @@ the full key path (for example `key 'material.E' expected a number, got
 Every boundary condition and the body force is a load entry with its own
 data and its own schedule in a pseudo-time `t` that the stepper advances
 from 0 to 1 (`doc/bc_loading_plan.md` is the design record,
-`doc/solid_mechanics_forms.tex` Section 5 the formulation).
+`doc/theory_manual.tex`, "Boundary conditions and loading", the formulation).
 
 **Data.** An entry gives `expression`: one string per component,
 `f(x, y, z, t)` in the reference coordinates and the pseudo-time (a single
@@ -357,7 +357,7 @@ references and the formulas.
 | `manufactured_solutions/mms_2d_plane_strain.yaml` | manufactured solution, St. Venant-Kirchhoff (test_loading) | third-order L2 convergence for p = 2, body force as YAML expressions |
 | `manufactured_solutions/mms_3d_{hex,tet}.yaml` | manufactured solution in 3D, St. Venant-Kirchhoff | third-order L2 convergence on hexahedra and on tetrahedra |
 | `manufactured_solutions/mms_3d_mixed.yaml` | isochoric manufactured solution of the mixed formulation | third-order L2 convergence, exact pressure zero |
-| `homogeneous_deformations/*_neo_hookean.yaml` | closed forms of doc/incompressible_hyperelasticity.tex (apps/homogeneous_compare.py) | every probed quantity to 1e-8 |
+| `homogeneous_deformations/*_neo_hookean.yaml` | closed forms of doc/verification_manual.tex, Appendix A (apps/homogeneous_compare.py) | every probed quantity to 1e-8 |
 | `homogeneous_deformations/compressible_uniaxial_*.yaml` | lateral stretch from P_22 = 0 with the material's own PK1 (mu = 0.5, nu = 0.45 throughout; one decoupled input per volumetric law); `apps/uniaxial_plots.py` and `apps/neo_hookean_compare.py` drive the uniaxial inputs to a stretch of 8 and plot P_11 on independently coded analytical curves | displacements, P_11, sigma_11 and J to 1e-7 (scripts: about 1e-12) |
 
 The torsion input needs 20 increments: a larger first increment leaves the
@@ -707,8 +707,8 @@ finite differences in `test_materials`, together with P33 = 0, J = 1 for
 incompressible bases, the plane-stress small-strain moduli E/(1 - nu^2) and
 the thickness strain -nu/(1 - nu) tr eps). Every quadrature quantity uses
 the completed F, and `thickness_stretch` becomes available as one more. The uniaxial, equibiaxial, pure-shear
-and thin-sheet simple-shear states of `doc/incompressible_hyperelasticity.tex`
-Section 4 are all plane-stress states, so they run in 2D with the affine
+and thin-sheet simple-shear states of `doc/verification_manual.tex`, Appendix A,
+are all plane-stress states, so they run in 2D with the affine
 displacement on the end faces (uniaxial) or on the whole boundary (the
 others; well posed here, unlike plane strain). Two cautions: it is a thin-body
 idealisation (stress uniform through the thickness, no bending), and because
@@ -765,7 +765,7 @@ The incompressible constitutive models (neo-Hookean, Mooney-Rivlin, Yeoh,
 Gent, Arruda-Boyce, Ogden) and the closed-form stresses and pressure of the
 homogeneous states (uniaxial, equibiaxial, pure shear, simple shear, and
 their plane-strain forms) are collected in
-`doc/incompressible_hyperelasticity.tex`. They are used as reference
+`doc/verification_manual.tex`, Appendix A. They are used as reference
 solutions in two places:
 
 - `apps/input/finite_elasticity/verification/homogeneous_deformations/plane_strain_neo_hookean.yaml` (unit square

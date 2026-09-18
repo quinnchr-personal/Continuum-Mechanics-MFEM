@@ -3,7 +3,7 @@
 # displacement u = ((lambda - 1) X, (lambda - 1) Y, (lambda^-2 - 1) Z) is
 # prescribed on the four faces X = 0, 1 and Y = 0, 1; the faces Z = 0, 1 are
 # free, so sigma_33 = 0 and sigma_11 = sigma_22 = 2 (lambda^2 - lambda^-4) (Psi_1 + lambda^2 Psi_2)
-# (doc/incompressible_hyperelasticity.tex, Sec. 4.2); apps/homogeneous_compare.py
+# (doc/verification_manual.tex, Appendix A, equibiaxial tension); apps/homogeneous_compare.py
 # checks the probed fields against it.
 formulation: mixed
 mesh:

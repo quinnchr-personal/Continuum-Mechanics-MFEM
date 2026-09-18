@@ -260,7 +260,7 @@ as now.
     pressure (2D plane strain, quarter model with `components` rollers from L3): compare
     inner-radius stretch with the closed-form relation of Rivlin (Ogden, *Non-linear Elastic
     Deformations*, Sec. 5.3.1). Add `apps/input/finite_elasticity/verification/rivlin_cylinder_inflation.yaml` and the Gmsh `.geo`.
-- **Acceptance:** above tests; `doc/solid_mechanics_forms.tex` gains the follower-pressure
+- **Acceptance:** above tests; `doc/solid_mechanics_forms.tex` (since merged into `doc/theory_manual.tex`) gains the follower-pressure
   weak form and tangent; the TODO seam at `solid_mechanics_tl.cpp:171` is removed.
 
 ### L5 — Convenience and consistency (small, optional)

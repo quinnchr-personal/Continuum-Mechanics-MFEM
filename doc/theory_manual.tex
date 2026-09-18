@@ -10,9 +10,9 @@
 \usepackage[hidelinks]{hyperref}
 
 % ---------------------------------------------------------------------------
-% Notation macros (shared with solid_mechanics_forms.tex and
-% incompressible_hyperelasticity.tex where they overlap). Referential
-% quantities carry the subscript R; the left Cauchy-Green tensor is bold B.
+% Notation macros (shared with verification_manual.tex where they overlap).
+% Referential quantities carry the subscript R; the left Cauchy-Green tensor
+% is bold B.
 % ---------------------------------------------------------------------------
 \newcommand{\ud}{\,\mathrm{d}}
 \newcommand{\Grad}{\operatorname{Grad}}
@@ -202,12 +202,9 @@ $p = \tfrac13\tr\bsig$.  In two dimensions every $3\times3$ tensor is built
 from the in-plane block with $F_{33} = 1$ (plane strain) or
 $F_{33} = \lambda_3$ (plane stress).
 
-Two notes in \file{doc/} predate this manual and are its sources where they
-overlap: \file{solid\_mechanics\_forms.tex} derives the strong and weak forms
-and the follower-pressure tangent; \file{incompressible\_hyperelasticity.tex}
-collects the incompressible models and the closed-form homogeneous
-solutions used as references.  The verification manual documents every
-input and test.
+The verification manual (\file{doc/verification\_manual.tex}) documents
+every input and test; its appendix collects the closed-form homogeneous
+states of the incompressible models that serve as reference solutions.
 
 %============================================================================
 \section{Kinematics}
@@ -328,6 +325,33 @@ where $R_{\text{fol}}$ is the contribution of follower pressures
 (Section~\ref{sec:follower}), zero when there are none.  The sign convention
 throughout the code is \emph{residual = internal minus external}.  The form
 is nonlinear in $\bu$ through $\bP(\bF)$ and through the geometry in $\bF$.
+
+\paragraph{Equivalent forms.}
+With $\bP = \bF\bS$ and the symmetry of the second Piola--Kirchhoff stress,
+$\bP:\Grad\bw = \bS:\delta\bE[\bw]$, where
+$\delta\bE[\bw] = \tfrac12(\bF^T\Grad\bw + \Grad^T\bw\,\bF)$ is the variation
+of the Green--Lagrange strain, so the internal virtual work may be written
+$\int_{\Omega_R}\bS(\bE):\delta\bE[\bw]\ud V$, the form commonly used with
+$(\bS, \bE)$ constitutive pairs such as Saint Venant--Kirchhoff; its
+linearisation splits into the familiar material and geometric stiffness,
+which the nominal tangent $\bA$ of \eqref{eq:tangent} contains together.
+Pushing forward with $\bP:\Grad\bw = J\bsig:\grad\bw$ and
+$\ud v = J\ud V$ gives the spatial statement on the current configuration
+$\Omega_t$,
+\begin{equation}
+  \int_{\Omega_t}\bsig:\grad\bw\ud v
+  = \int_{\Omega_t}\rho\,\bb\cdot\bw\ud v + \int_{\Gamma_t^N}\bar\bt\cdot\bw\ud a ,
+  \qquad
+  \dive\bsig + \rho\bb = \bm 0 \ \text{in } \Omega_t, \quad
+  \bsig\bn = \bar\bt \ \text{on } \Gamma_t^N, \quad \bsig = \bsig^T,
+\end{equation}
+with $\rho = \rho_R/J$ and $\bar\bt$ the traction per unit current area: the
+two statements are identical and differ only in the configuration on which
+the integrals are evaluated.  The code integrates on $\Omega_R$ throughout.
+With inertia the residual gains $\int_{\Omega_R}\rho_R\ddot\bu\cdot\bw\ud V$
+(spatially $\rho\dot{\bm v}$ with the material acceleration
+$\dot{\bm v} = \partial_t\bm v + (\grad\bm v)\bm v$) and needs initial data
+$\bu_0$, $\bm v_0$; dynamics is not implemented.
 
 \subsection{Linearisation}
 
@@ -753,12 +777,15 @@ and $\Psi_2 = \partial\Psi/\partial\Itwo$ the Cauchy stress is
 and the principal stress differences
 $\sigma_a - \sigma_b = \lambda_a\partial\Psi/\partial\lambda_a - \lambda_b\partial\Psi/\partial\lambda_b$
 are constitutive while the mean stress is fixed by equilibrium and the
-boundary conditions.  These relations, the neo-Hookean, Mooney--Rivlin,
-Yeoh, Gent, Arruda--Boyce and Ogden specialisations, and the closed-form
-uniaxial, equibiaxial, pure-shear and simple-shear states that serve as
-reference solutions are collected in
-\file{doc/incompressible\_hyperelasticity.tex}; the verification manual
-lists the inputs that reproduce them.
+boundary conditions.  Much of the literature writes
+$\bsig = -\tilde p\,\bI + 2\Psi_1\bB - 2\Psi_2\bB^{-1}$ and calls $\tilde p$
+the hydrostatic pressure; its value depends on which isotropic terms an
+author absorbs into it, whereas $p = \tfrac13\tr\bsig$ does not, and that is
+the unknown used here.  The closed-form uniaxial, equibiaxial, pure-shear
+and simple-shear states of these models, for a general $\Psi(\Ione, \Itwo)$
+and specialised to the six energies, serve as reference solutions and are
+collected in the appendix of the verification manual, which also lists the
+inputs that reproduce them.
 
 \subsection{Resolution of the moduli and material regions}
 \label{sec:moduli}

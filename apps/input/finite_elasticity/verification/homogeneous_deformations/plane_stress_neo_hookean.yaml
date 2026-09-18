@@ -5,8 +5,8 @@
 # u = ((lambda - 1) X, (lambda^-1/2 - 1) Y) is prescribed on the end faces X = 0
 # (left) and X = 1 (right); the faces Y = 0, 1 are free. Exact solution:
 # sigma_11 = 2 (lambda^2 - 1/lambda) (Psi_1 + Psi_2/lambda), every other stress
-# zero, thickness stretch lambda^-1/2 (doc/incompressible_hyperelasticity.tex,
-# Sec. 4.1 and 5.3); apps/homogeneous_compare.py checks the probed fields.
+# zero, thickness stretch lambda^-1/2 (doc/verification_manual.tex,
+# Appendix A, uniaxial tension and 5.3); apps/homogeneous_compare.py checks the probed fields.
 plane: stress
 mesh:
   file: apps/mesh/square.msh      # unit square, 4 x 4 quadrilaterals; physical groups bottom, right, top, left

@@ -60,7 +60,7 @@ moves into `src/` first.
 1. **Total Lagrangian on the reference mesh.** The mesh never moves. Unknown is displacement
    `u` in `[H¹(Ω₀)]^d`; residual uses the first Piola–Kirchhoff stress:
    `R(u)·w = ∫ P(F) : Grad w dV − ∫ ρ₀ b·w dV − ∫ T̄·w dA`, `F = I + Grad u`.
-   The math is written out in `doc/solid_mechanics_forms.tex` — implement exactly that weak
+   The math is written out in `doc/solid_mechanics_forms.tex` (since merged into `doc/theory_manual.tex`, Section 3) — implement exactly that weak
    form (quasi-static: no inertia term).
 2. **Materials are stateless functors templated on scalar type.** Tangents come from
    forward-mode dual numbers flowing through the same code path as the stress evaluation.

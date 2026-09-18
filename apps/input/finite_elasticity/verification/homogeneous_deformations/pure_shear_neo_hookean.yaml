@@ -4,7 +4,7 @@
 # faces X = 0, 1 (stretch) and Y = 0, 1 (held at their width); the faces
 # Z = 0, 1 are free, so sigma_33 = 0, sigma_11 = 2 (lambda^2 - lambda^-2) (Psi_1 + Psi_2)
 # and sigma_22 = 2 (1 - lambda^-2) (Psi_1 + lambda^2 Psi_2)
-# (doc/incompressible_hyperelasticity.tex, Sec. 4.3); apps/homogeneous_compare.py
+# (doc/verification_manual.tex, Appendix A, pure shear); apps/homogeneous_compare.py
 # checks the probed fields against it.
 formulation: mixed
 mesh:

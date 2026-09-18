@@ -3,7 +3,7 @@
 # displacement u = ((lambda - 1) X, (1/lambda - 1) Y) is prescribed on the end
 # faces X = 0 (left) and X = 1 (right); the faces Y = 0, 1 are free. The
 # exact solution is that affine field with constant pressure p = tr(sigma)/3,
-# sigma_11 and sigma_33 from doc/incompressible_hyperelasticity.tex, Sec. 5.1;
+# sigma_11 and sigma_33 from doc/verification_manual.tex, Appendix A, plane-strain extension;
 # apps/homogeneous_compare.py checks the probed fields against it.
 formulation: mixed
 mesh:

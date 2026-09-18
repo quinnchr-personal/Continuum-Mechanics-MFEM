@@ -4,7 +4,7 @@
 # is prescribed on the end faces X = 0 (left) and X = 1 (right); the four
 # lateral faces are free. The exact solution is that affine field with
 # sigma_11 = 2 (lambda^2 - 1/lambda) (Psi_1 + Psi_2/lambda) and p = sigma_11/3
-# (doc/incompressible_hyperelasticity.tex, Sec. 4.1);
+# (doc/verification_manual.tex, Appendix A, uniaxial tension);
 # apps/homogeneous_compare.py checks the probed fields against it.
 formulation: mixed
 mesh:

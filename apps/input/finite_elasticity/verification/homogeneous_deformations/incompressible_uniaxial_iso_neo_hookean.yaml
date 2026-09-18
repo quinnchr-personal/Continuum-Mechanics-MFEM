@@ -5,7 +5,7 @@
 # only, all other faces free, so the state is homogeneous with F = diag(lambda_1,
 # lambda_1^-1/2, lambda_1^-1/2) (J = 1 fixes the lateral stretch, sigma_22 = 0 the
 # pressure) and P_11 = mu (lambda_1 - lambda_1^-2), p = sigma_11 / 3
-# (doc/incompressible_hyperelasticity.tex, Sec. 4.1). The entry on X = 1 writes the full
+# (doc/verification_manual.tex, Appendix A, uniaxial tension). The entry on X = 1 writes the full
 # affine field u = ((lambda_1 - 1) X, (lambda_1^-1/2 - 1) Y, (lambda_1^-1/2 - 1) Z) (only
 # its x component is applied) so that apps/homogeneous_compare.py reads the stretches from
 # it and checks the probed fields against the closed form.

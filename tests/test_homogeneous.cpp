@@ -1,6 +1,6 @@
 // Homogeneous deformation gates for the incompressible models. Every
 // decoupled material at kappa = inf must reproduce the closed-form states of
-// doc/incompressible_hyperelasticity.tex:
+// doc/verification_manual.tex, Appendix A:
 //   1. at the material point, the code's Cauchy stress at F = diag(lambda_a)
 //      with the analytic mean stress equals the analytic principal stresses
 //      (plane-strain extension, uniaxial, equibiaxial, pure shear), and the
@@ -9,7 +9,7 @@
 //      affine displacement prescribed on the two end faces and the lateral
 //      faces free (plane-strain extension in 2D, uniaxial tension in 3D), and
 //      of the plane-stress displacement formulation (plane: stress) for the
-//      sheet states of Section 4: uniaxial (end faces prescribed, lateral
+//      sheet states of that appendix: uniaxial (end faces prescribed, lateral
 //      free), equibiaxial, pure shear and simple shear (affine displacement on
 //      the whole boundary, well posed since the thickness stretch and the
 //      pressure are eliminated pointwise):
@@ -69,7 +69,7 @@ std::vector<Case> Models()
 }
 
 // beta_a = lambda_a dPsi/dlambda_a up to an isotropic term, for principal
-// stretches with lambda_1 lambda_2 lambda_3 = 1 (doc, Sec. 2.2):
+// stretches with lambda_1 lambda_2 lambda_3 = 1 (the appendix's principal form):
 //   invariant models  beta_a = 2 Psi_1 lambda_a^2 - 2 Psi_2 lambda_a^{-2},
 //   Ogden             beta_a = sum_r mu_r lambda_a^alpha_r.
 // Principal stress differences are sigma_a - sigma_b = beta_a - beta_b.
