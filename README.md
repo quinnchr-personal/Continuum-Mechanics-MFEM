@@ -8,8 +8,10 @@ fluxes and sources at quadrature points and the framework owns assembly,
 Newton, and the linear solvers (architecture: `doc/flux_kernel_architecture.html`,
 plan: `doc/hyperelasticity_implementation_plan.md`). The first physics is
 quasi-static nonlinear solid mechanics (compressible hyperelasticity, total
-Lagrangian, CG, weak form in `doc/solid_mechanics_forms.tex`). The `myapps/`
-tree is legacy and separate.
+Lagrangian, CG, weak form in `doc/solid_mechanics_forms.tex`). The models and
+methods of `src/` are described in `doc/theory_manual.tex`; every input and
+test under `apps/` and `tests/`, with its reference solution and tolerance, in
+`doc/verification_manual.tex`. The `myapps/` tree is legacy and separate.
 
 ### Layout
 
@@ -27,7 +29,8 @@ src/kernels/materials/
                 neo_hookean.hpp, st_venant_kirchhoff.hpp (coupled, displacement formulation);
                 iso_neo_hookean.hpp, mooney_rivlin.hpp, yeoh.hpp, gent.hpp, arruda_boyce.hpp,
                 ogden.hpp (isochoric-volumetric split, either formulation; isochoric.hpp shared
-                I1bar pieces, spectral.hpp symmetric 3x3 eigen-solver for Ogden);
+                I1bar pieces, volumetric.hpp the selectable volumetric laws U(J),
+                spectral.hpp symmetric 3x3 eigen-solver for Ogden);
                 plane_stress.hpp (adapter: F33 = thickness stretch with P33 = 0, any base model);
                 material_tangent.hpp (dual seeding), materials.{hpp,cpp} (variants, YAML factory, moduli)
 src/physics/    solid_problem.{hpp,cpp} (common interface, factory by formulation, YAML load installer);
@@ -138,8 +141,12 @@ material: { model: neo_hookean, E: 250.0, nu: 0.3, rho0: 1.0 }
   #   arruda_boyce:    mu, N                    (mu = n k T; small-strain modulus mu (1 + 3/(5N) + ...))
   #   ogden:           mu_r: [..], alpha_r: [..] (up to 6 terms, mu_r alpha_r > 0; mu = 1/2 sum mu_r alpha_r)
   #   All take the bulk modulus from exactly one of kappa | nu (nu = 0.5 -> incompressible) |
-  #   incompressible: true; finite kappa works in either formulation (penalty U = kappa/2 (J - 1)^2
-  #   in the displacement formulation), kappa = inf needs formulation: mixed.
+  #   incompressible: true; finite kappa works in either formulation (penalty U(J) in the
+  #   displacement formulation), kappa = inf needs formulation: mixed.
+  #   volumetric: quadratic (default) | simo_taylor | logarithmic | j_log_j selects the volumetric
+  #   law U(J) = kappa u(J) of a decoupled model at finite kappa: u = (J - 1)^2/2 |
+  #   (J^2 - 1 - 2 ln J)/4 | (ln J)^2/2 (p = kappa ln J / J, Anand's FEniCSx codes) | J ln J - J + 1.
+  #   Every law has u''(1) = 1, so kappa keeps its meaning; they differ at finite strain.
   #   Closed forms and homogeneous solutions: doc/incompressible_hyperelasticity.tex.
   # regions: [ { attr: [inclusion, 3], mu: 2800.0, kappa: 2800000.0 } ]
   #   Other parameters of the same model by element attribute (physical-volume names and/or
@@ -161,6 +168,8 @@ body_force: { expression: ["0", "0"], schedule: { type: ramp } }   # per unit ma
                                                                    # weak form; omit for none
 solver:
   load_steps: 1                   # equal increments of t; or steps: [ { to: 0.5, n: 2 }, { to: 1.0, n: 4 } ]
+  predictor: none                 # none | tangent: start each increment from a linear solve about the last
+                                  # converged state with the Dirichlet increment imposed on the update
   substep: { on_failure: false, max_bisections: 4, min_dt: 1e-4 }   # halve a failed increment and retry
   newton:  { rtol: 1e-10, atol: 1e-12, max_it: 25, armijo_c: 1e-4, max_halvings: 8, print_level: 1 }
   linear:  { type: gmres_amg, amg: elasticity, rtol: 1e-12, atol: 0.0, max_it: 500, krylov_dim: 50, print_level: 0,
@@ -252,6 +261,22 @@ the area to round-off and on Cook's membrane the clamped edge carries the
 applied resultant to 1e-14. Two entries sharing nodes both count the shared
 nodal forces.
 
+**Predictor.** By default an increment starts from the last converged state
+with the new Dirichlet values written on the boundary, so the interior lags and
+the first Newton linearisation is about a state whose boundary layer of elements
+carries the whole increment (after that iterate J can range from 0.4 to 3 in a
+sheared block). `solver.predictor: tangent` instead performs one linear solve
+about the converged state with the increment imposed on the update,
+`x = x_n + d - J(x_n)^-1 (R(x_n) + J(x_n) d)`, which is how codes that put the
+boundary condition on the Newton update behave. The converged states are the
+same; Newton typically needs half the iterations and no damped steps (Cook's
+membrane with a prescribed edge: 18 -> 9). It matters most for nearly
+incompressible materials and is required in practice for the logarithmic
+volumetric law, whose pressure ln J / J is not monotone beyond J = e and whose
+stiffness varies strongly over the J range of a lagging-interior iterate. It is
+a no-op for traction-driven increments. `J(x_n) d` is formed by a forward
+difference of the residual.
+
 **Steps and recovery.** `solver.load_steps: N` takes N equal increments of
 `t`; `solver.steps: [ { to: 0.5, n: 2 }, { to: 1.0, n: 4 } ]` takes 2
 increments to `t = 0.5` and 4 more to 1 (the segments must end at 1).
@@ -302,7 +327,7 @@ references and the formulas.
 | `manufactured_solutions/mms_3d_{hex,tet}.yaml` | manufactured solution in 3D, St. Venant-Kirchhoff | third-order L2 convergence on hexahedra and on tetrahedra |
 | `manufactured_solutions/mms_3d_mixed.yaml` | isochoric manufactured solution of the mixed formulation | third-order L2 convergence, exact pressure zero |
 | `homogeneous_deformations/*_neo_hookean.yaml` | closed forms of doc/incompressible_hyperelasticity.tex (apps/homogeneous_compare.py) | every probed quantity to 1e-8 |
-| `homogeneous_deformations/compressible_uniaxial_*.yaml` | lateral stretch from P_22 = 0 with the material's own PK1 | displacements, P_11, sigma_11 and J to 1e-7 |
+| `homogeneous_deformations/compressible_uniaxial_*.yaml` | lateral stretch from P_22 = 0 with the material's own PK1 (mu = 0.5, nu = 0.45 throughout; one decoupled input per volumetric law); `apps/uniaxial_plots.py` and `apps/neo_hookean_compare.py` drive the uniaxial inputs to a stretch of 8 and plot P_11 on independently coded analytical curves | displacements, P_11, sigma_11 and J to 1e-7 (scripts: about 1e-12) |
 
 The torsion input needs 20 increments: a larger first increment leaves the
 elements under the rotated end face inverted before Newton starts (the
@@ -316,7 +341,10 @@ coupled theories in solid mechanics* (Oxford University Press, 2025;
 solidmechanicscoupledtheories.github.io, codes by Eric Stewart and Lallit
 Anand), one subdirectory per chapter of the site. `finite_elasticity/` holds
 the ten "1. Finite Elasticity" examples: Arruda-Boyce with
-G0 = 280 kPa, lambda_L = 5.12 and K = 1000 G0 in kPa and mm, mixed Q2-Q1 or
+G0 = 280 kPa, lambda_L = 5.12 and K = 1000 G0 in kPa and mm, the reference's
+logarithmic volumetric law p = K ln(J)/J (`volumetric: logarithmic`, with
+`solver.predictor: tangent`, see "Predictor" above; `02_simple_shear` keeps the
+quadratic law, see below), mixed Q2-Q1 or
 P2-P1, the same geometry, boundary conditions, load histories and step counts.
 Meshes come from `apps/mesh/*.geo` (`make meshes`); the curved ones are
 second-order. Every input probes the points of the reference's plots after
@@ -365,8 +393,11 @@ length over a full turn (Poynting effect), as does the torsion cylinder.
 Differences from the reference that change the numbers: the Arruda-Boyce
 model here is the five-term series in I1/N (`N = lambda_L^2`) rather than the
 Pade inverse Langevin, so it is softer near the locking stretch (visible in
-01 above a stretch of about 3); the volumetric law is p = K (J - 1) instead of
-p = -K ln(J)/J; hexahedra replace tetrahedra on the boxes; and a failed
+01 above a stretch of about 3); `02_simple_shear` uses p = K (J - 1) because the
+logarithmic law fails there at t = 0.064 for any increment size (its tangent bulk
+modulus K (1 - ln J)/J^2 softens in dilatation, and J grows without bound at the
+clamped corner singularities that this mesh resolves); hexahedra replace tetrahedra
+on the boxes; and a failed
 increment is bisected instead of ending the run (05 and 06 stop early in the
 reference). Reaction forces and torques are not computed; the probes give
 displacements, pressure and stresses at the reference's points.
@@ -501,8 +532,12 @@ in 2D but stall on slender 3D p = 2 meshes; the solver then falls back to the
 
 ```
 int [P_iso(F) + p J F^{-T}] : Grad w dV = int rho0 b . w dV + int T . w dA
-int q (J - 1 - p / kappa) dV = 0            (kappa = inf: int q (J - 1) dV = 0)
+int q (u'(J) - p / kappa) dV = 0            (kappa = inf: int q u'(J) dV = 0, i.e. J = 1)
 ```
+
+with U(J) = kappa u(J) the material's volumetric law (`material.volumetric`; u' = J - 1 for
+the default quadratic law, giving the familiar J - 1 - p / kappa). For a non-quadratic law the
+block K_pu = u''(J) K_up^T is not the transpose of K_up; the FGMRES solver below accepts that.
 
 on a Taylor-Hood pair (displacement H1 of order p, pressure H1 of order
 p - 1, so `mesh.order >= 2`). Materials must provide the isochoric-volumetric
@@ -568,9 +603,12 @@ A material is a cheap-to-copy value type with its parameters as public
 members and a `PK1` template over the scalar type; nothing else is required
 for the displacement formulation. `Energy` is optional (used only for the
 energy diagnostic). A material for the mixed formulation instead provides
-`PK1Iso<T>(F)`, `EnergyIso<T>(F)`, `VolumetricPressure<T>(J)`, `kappa`,
-`Incompressible()`, and `ShearModulus()` (the small-strain value, used to
-scale the saddle-point preconditioner; see `iso_neo_hookean.hpp`); it can
+`PK1Iso<T>(F)`, `EnergyIso<T>(F)`, `VolumetricPressure<T>(J)` and
+`VolumetricEnergy<T>(J)` (U' and U of the selected law, `materials/volumetric.hpp`),
+`NormalizedVolumetricPressure<T>(J)` and `NormalizedVolumetricModulus<T>(J)` (u', u''
+for the mixed constraint), `kappa`, `law`, `Incompressible()`, and `ShearModulus()`
+(the small-strain value, used to scale the saddle-point preconditioner; see
+`iso_neo_hookean.hpp`); it can
 also be used in the displacement formulation when `kappa` is finite. Models
 that depend on I1bar alone (Yeoh, Gent, Arruda-Boyce) only implement
 `DPsiDI1` and reuse `isochoric.hpp`. Ogden is the exception to the

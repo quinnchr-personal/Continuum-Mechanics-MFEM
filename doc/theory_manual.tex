@@ -1,0 +1,1477 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath,amssymb,bm}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{longtable}
+\usepackage{enumitem}
+\usepackage[hidelinks]{hyperref}
+
+% ---------------------------------------------------------------------------
+% Notation macros (shared with solid_mechanics_forms.tex and
+% incompressible_hyperelasticity.tex where they overlap). Referential
+% quantities carry the subscript R; the left Cauchy-Green tensor is bold B.
+% ---------------------------------------------------------------------------
+\newcommand{\ud}{\,\mathrm{d}}
+\newcommand{\Grad}{\operatorname{Grad}}
+\newcommand{\Dive}{\operatorname{Div}}
+\newcommand{\grad}{\operatorname{grad}}
+\newcommand{\dive}{\operatorname{div}}
+\newcommand{\dev}{\operatorname{dev}}
+\newcommand{\sym}{\operatorname{sym}}
+\newcommand{\tr}{\operatorname{tr}}
+\newcommand{\cof}{\operatorname{cof}}
+\newcommand{\diag}{\operatorname{diag}}
+\newcommand{\bx}{\bm{x}}
+\newcommand{\bX}{\bm{X}}
+\newcommand{\bu}{\bm{u}}
+\newcommand{\bw}{\bm{w}}
+\newcommand{\bb}{\bm{b}}
+\newcommand{\be}{\bm{e}}
+\newcommand{\bn}{\bm{n}}
+\newcommand{\bN}{\bm{N}}
+\newcommand{\bt}{\bm{t}}
+\newcommand{\bT}{\bm{T}}
+\newcommand{\bsig}{\bm{\sigma}}
+\newcommand{\btau}{\bm{\tau}}
+\newcommand{\beps}{\bm{\varepsilon}}
+\newcommand{\bP}{\bm{P}}
+\newcommand{\bS}{\bm{S}}
+\newcommand{\bF}{\bm{F}}
+\newcommand{\bFb}{\bar{\bm{F}}}
+\newcommand{\bC}{\bm{C}}
+\newcommand{\bB}{\bm{B}}
+\newcommand{\bE}{\bm{E}}
+\newcommand{\bI}{\bm{I}}
+\newcommand{\bH}{\bm{H}}
+\newcommand{\bA}{\mathbb{A}}
+\newcommand{\bphi}{\bm{\varphi}}
+\newcommand{\bR}{\bm{R}}
+\newcommand{\bK}{\bm{K}}
+\newcommand{\bM}{\bm{M}}
+\newcommand{\bBm}{\bm{\mathsf{B}}}
+\newcommand{\Ione}{I_1}
+\newcommand{\Itwo}{I_2}
+\newcommand{\Ib}{\bar{I}_1}
+\newcommand{\IIb}{\bar{I}_2}
+\DeclareRobustCommand{\code}[1]{{\def\_{\textunderscore\allowbreak}\texttt{#1}}}
+\DeclareRobustCommand{\file}[1]{{\def\_{\textunderscore\allowbreak}\texttt{#1}}}
+\sloppy
+\setlength{\emergencystretch}{2em}
+
+\title{Continuum-Mechanics-MFEM\\[4pt]
+\large Theory Manual of the Flux-Kernel Framework (\texttt{src/})}
+\author{}
+\date{September 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+\noindent
+This manual describes the mathematical models and the numerical methods
+implemented in the root \file{src/} library of the repository: quasi-static
+finite-strain solid mechanics in total Lagrangian form on a fixed reference
+mesh, discretised with continuous Galerkin finite elements on MFEM.  It
+covers the kinematics and balance laws, the hyperelastic constitutive
+library in four categories (compressible coupled, compressible uncoupled,
+slightly compressible and incompressible), the two-dimensional plane-strain and
+plane-stress reductions, the displacement and the mixed
+displacement--pressure formulations, boundary conditions and load
+scheduling, the element kernels and the dual-number tangents, the
+quasi-static load stepper, damped Newton, the algebraic multigrid and
+saddle-point linear solvers, and the post-processing of quadrature-point
+quantities.  The verification and validation of the implementation against
+closed-form and reference solutions is documented separately in the
+verification manual (\file{doc/verification\_manual.tex}), which covers the
+inputs and scripts under \file{apps/}.  The legacy applications under
+\file{myapps/} are not part of this document.
+\end{abstract}
+
+\tableofcontents
+
+%============================================================================
+\section{Introduction}
+%============================================================================
+
+\subsection{Scope and architecture}
+
+The framework is a multiphysics library on MFEM in which each physics is
+meant to be expressed as fluxes and sources evaluated at quadrature points,
+while the framework owns assembly, the nonlinear solver and the linear
+solvers (the design is laid out in \file{doc/flux\_kernel\_architecture.html}
+and the implementation plan in
+\file{doc/hyperelasticity\_implementation\_plan.md}).  The first, and at
+present only, physics is quasi-static nonlinear solid mechanics.  The
+library is organised in five layers:
+
+\begin{center}
+\small
+\begin{tabular}{@{}l p{11.5cm}@{}}
+\toprule
+Layer & Content \\
+\midrule
+\file{src/base/} & fixed-size tensors, forward-mode dual numbers, the YAML
+  schema and its validation, the expression language for boundary data,
+  mesh input, a named field registry, ParaView output and point probes \\
+\file{src/kernels/} & the total Lagrangian element integrators
+  (displacement and mixed $u$--$p$) and the follower-pressure boundary
+  face integrator \\
+\file{src/kernels/materials/} & the hyperelastic material functors, the
+  plane-stress adapter, the dual-number tangent, the material variant and
+  the YAML factory \\
+\file{src/physics/} & the solid mechanics modules (residual, Jacobian,
+  fields), the load set shared by both formulations, and the
+  quadrature-point post-processing \\
+\file{src/solvers/} & the quasi-static load stepper, damped Newton, the
+  Krylov--AMG linear solver and the augmented-Lagrangian saddle-point solver \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Executables under \file{apps/} only parse the input and wire library
+objects together; they contain no physics, assembly or solver code.  The
+executable \file{apps/solid\_mechanics.cpp} and its inputs are described in
+the verification manual.
+
+\subsection{What is implemented}
+
+\begin{itemize}[nosep]
+  \item Quasi-static balance of linear momentum in total Lagrangian form:
+    the mesh never moves, every integral is over the reference
+    configuration.  Loads and prescribed displacements are functions of a
+    pseudo-time $t \in [0, 1]$; inertia is absent.
+  \item Hyperelasticity in four categories (Section~\ref{sec:classification}):
+    compressible coupled models (neo-Hookean of Bonet--Wood form, Saint
+    Venant--Kirchhoff); compressible uncoupled models
+    $\Psi_{\mathrm{iso}}(\bFb) + \kappa\,u(J)$ with a selectable volumetric
+    law $u(J)$, quadratic $\tfrac12(J-1)^2$ by default (isochoric
+    neo-Hookean, Mooney--Rivlin, Yeoh, Gent, Arruda--Boyce, Ogden); the
+    same six as slightly compressible materials with the pressure as an
+    independent field; and the same six as incompressible materials with
+    $\kappa = \infty$ and a Lagrange multiplier.  Materials are stateless
+    and may vary by element attribute.
+  \item Two formulations: a pure displacement formulation with the
+    assembled tangent, and a mixed displacement--pressure formulation on
+    Taylor--Hood pairs for near- and fully incompressible materials.
+  \item Two-dimensional problems as plane strain (default) or plane stress
+    (displacement formulation; the thickness stretch is eliminated
+    pointwise at the material level).
+  \item Boundary conditions: prescribed displacements on all or some
+    components, nominal tractions, dead normal pressures, follower
+    pressures per unit current area, and a body force per unit mass, each
+    with its own load schedule and data given as expressions of the
+    reference coordinates and the pseudo-time.
+  \item Consistent tangents from forward-mode automatic differentiation of
+    the same code that evaluates the stress (Ogden and the compressible
+    plane-stress adapter use analytic or implicit derivatives where
+    eigenvectors or a root are not differentiable by duals alone).
+  \item Solvers: load stepping with bisection on failure, damped Newton
+    with Armijo backtracking, GMRES or CG with BoomerAMG, and FGMRES with a
+    block upper-triangular preconditioner for the $u$--$p$ saddle point.
+  \item Post-processing of Cauchy and first Piola--Kirchhoff stress, the
+    deformation gradient, its determinant, von Mises stress, energy density
+    and thickness stretch at quadrature points, presented as nodal fields,
+    element averages or point clouds; probes; reactions of the Dirichlet
+    entries.
+\end{itemize}
+
+Not implemented: dynamics, internal variables and inelasticity,
+temperature dependence, contact, point loads, multi-point or periodic
+constraints, discontinuous Galerkin or hybridised discretisations, partial
+assembly, and device execution.  Section~\ref{sec:seam} lists what of the
+present code is specific to the solid and what a second physics would
+generalise.
+
+\subsection{Conventions and companion notes}
+
+Referential (Lagrangian) quantities carry the subscript $R$; the current
+configuration is $\Omega_t$.  The left Cauchy--Green tensor is $\bB = \bF\bF^T$,
+the right one $\bC = \bF^T\bF$.  The pressure unknown of the mixed formulation
+and the \code{pressure} output field are the tensile-positive mean stress
+$p = \tfrac13\tr\bsig$.  In two dimensions every $3\times3$ tensor is built
+from the in-plane block with $F_{33} = 1$ (plane strain) or
+$F_{33} = \lambda_3$ (plane stress).
+
+Two notes in \file{doc/} predate this manual and are its sources where they
+overlap: \file{solid\_mechanics\_forms.tex} derives the strong and weak forms
+and the follower-pressure tangent; \file{incompressible\_hyperelasticity.tex}
+collects the incompressible models and the closed-form homogeneous
+solutions used as references.  The verification manual documents every
+input and test.
+
+%============================================================================
+\section{Kinematics}
+%============================================================================
+
+Let $\Omega_R \subset \mathbb{R}^d$, $d \in \{2, 3\}$, be the reference
+configuration with boundary $\partial\Omega_R$ and outward unit normal
+$\bN$.  The motion $\bx = \bphi(\bX, t) = \bX + \bu(\bX, t)$ carries the
+material point $\bX$ to $\bx$; $t$ is a pseudo-time that parametrises the
+load path (Section~\ref{sec:loads}).  The deformation gradient, its
+determinant and the strain measures are
+\begin{gather}
+  \bF = \Grad\bphi = \bI + \bH, \qquad \bH = \Grad\bu, \qquad
+  J = \det\bF > 0, \\
+  \bC = \bF^T\bF, \qquad \bB = \bF\bF^T, \qquad
+  \bE = \tfrac12(\bC - \bI),
+\end{gather}
+with $\Grad = \partial/\partial\bX$.  The principal invariants of $\bC$
+(equivalently of $\bB$) are
+\begin{equation}
+  \Ione = \tr\bC, \qquad
+  \Itwo = \tfrac12\bigl[(\tr\bC)^2 - \tr(\bC^2)\bigr], \qquad
+  I_3 = \det\bC = J^2,
+\end{equation}
+and in terms of the principal stretches $\lambda_a$ (square roots of the
+eigenvalues $c_a$ of $\bC$) $\Ione = \sum_a\lambda_a^2$,
+$\Itwo = \sum_{a<b}\lambda_a^2\lambda_b^2$, $J = \lambda_1\lambda_2\lambda_3$.
+The isochoric (volume-preserving) part of the deformation and the modified
+invariants are
+\begin{equation}
+  \bFb = J^{-1/3}\bF, \qquad
+  \Ib = J^{-2/3}\Ione, \qquad
+  \IIb = J^{-4/3}\Itwo, \qquad
+  \bar\lambda_a = J^{-1/3}\lambda_a .
+  \label{eq:isochoric}
+\end{equation}
+
+The stress measures are the Cauchy stress $\bsig$ (force per unit current
+area), the first Piola--Kirchhoff (nominal) stress $\bP$ (force per unit
+reference area) and the second Piola--Kirchhoff stress $\bS$, related by
+\begin{equation}
+  \bP = J\bsig\bF^{-T}, \qquad
+  \bS = \bF^{-1}\bP, \qquad
+  \bsig = J^{-1}\bP\bF^T .
+  \label{eq:piola}
+\end{equation}
+$\bsig$ and $\bS$ are symmetric; $\bP$ is not, but satisfies
+$\bP\bF^T = \bF\bP^T$.  Nanson's formula relates area elements,
+\begin{equation}
+  \bn\ud a = J\bF^{-T}\bN\ud A = \cof\bF\,\bN\ud A,
+  \label{eq:nanson}
+\end{equation}
+and is what turns a traction per unit current area into a nominal
+traction.  The reference density is $\rho_R$; mass conservation gives
+$\rho_R = J\rho$.
+
+In two dimensions the kernels form the $2\times2$ displacement gradient
+$\bH_{2D}$ and embed it as
+\begin{equation}
+  \bF = \begin{pmatrix} \bI_2 + \bH_{2D} & \bm 0 \\ \bm 0^T & F_{33} \end{pmatrix},
+  \qquad F_{33} = 1 \ \text{(plane strain)}, \qquad
+  F_{33} = \lambda_3 \ \text{(plane stress, Section~\ref{sec:planestress})},
+  \label{eq:embed}
+\end{equation}
+so that one three-dimensional constitutive code path serves every
+dimension.
+
+%============================================================================
+\section{Balance of momentum and the displacement weak form}
+\label{sec:weak}
+%============================================================================
+
+\subsection{Strong form}
+
+Quasi-static balance of linear momentum on the reference configuration
+reads
+\begin{subequations}
+\label{eq:strong}
+\begin{alignat}{2}
+  \Dive\bP + \rho_R\bb &= \bm 0 &\quad& \text{in } \Omega_R, \\
+  \bu &= \bar\bu && \text{on } \Gamma_R^D, \\
+  \bP\bN &= \bar\bT && \text{on } \Gamma_R^N,
+\end{alignat}
+\end{subequations}
+where $\bb$ is the body force per unit mass, $\bar\bu$ the prescribed
+displacement (possibly of a subset of components) and $\bar\bT$ the
+prescribed nominal traction.  Balance of angular momentum is
+$\bP\bF^T = \bF\bP^T$ and is satisfied identically by hyperelastic stresses.
+The system is closed by a hyperelastic constitutive law
+\begin{equation}
+  \bP = \frac{\partial\Psi}{\partial\bF}(\bF),
+  \label{eq:hyper}
+\end{equation}
+with $\Psi$ the stored energy per unit reference volume
+(Section~\ref{sec:materials}).
+
+\subsection{Weak form}
+
+With the trial and test spaces on the fixed reference domain,
+\begin{equation}
+  \mathcal S = \{\bu \in [H^1(\Omega_R)]^d : \bu = \bar\bu \text{ on } \Gamma_R^D\},
+  \qquad
+  \mathcal V = \{\bw \in [H^1(\Omega_R)]^d : \bw = \bm 0 \text{ on } \Gamma_R^D\},
+\end{equation}
+the total Lagrangian weak form is: find $\bu \in \mathcal S$ such that for
+all $\bw \in \mathcal V$
+\begin{equation}
+  \boxed{\;
+  R(\bu; \bw) \;=\;
+  \int_{\Omega_R}\bP(\bF):\Grad\bw\ud V
+  \;-\;\int_{\Omega_R}\rho_R\,\bb\cdot\bw\ud V
+  \;-\;\int_{\Gamma_R^N}\bar\bT\cdot\bw\ud A
+  \;+\; R_{\text{fol}}(\bu; \bw)
+  \;=\; 0 ,\;}
+  \label{eq:weak}
+\end{equation}
+where $R_{\text{fol}}$ is the contribution of follower pressures
+(Section~\ref{sec:follower}), zero when there are none.  The sign convention
+throughout the code is \emph{residual = internal minus external}.  The form
+is nonlinear in $\bu$ through $\bP(\bF)$ and through the geometry in $\bF$.
+
+\subsection{Linearisation}
+
+Newton's method needs the directional derivative of \eqref{eq:weak}.  For
+the internal term,
+\begin{equation}
+  D_{\Delta\bu}\int_{\Omega_R}\bP:\Grad\bw\ud V
+  = \int_{\Omega_R}\Grad\bw:\bA:\Grad\Delta\bu\ud V,
+  \qquad
+  \bA = \frac{\partial\bP}{\partial\bF}
+      = \frac{\partial^2\Psi}{\partial\bF\,\partial\bF},
+  \quad A_{ijkl} = \frac{\partial P_{ij}}{\partial F_{kl}} .
+  \label{eq:tangent}
+\end{equation}
+$\bA$ is the fourth-order material tangent in nominal form.  For a
+hyperelastic material it has the major symmetry $A_{ijkl} = A_{klij}$, so
+the assembled stiffness is symmetric; the follower pressure adds a
+non-symmetric part (Section~\ref{sec:follower}).  The code never writes
+$\bA$ by hand: it is produced by differentiating the stress evaluation with
+dual numbers (Section~\ref{sec:ad}).
+
+%============================================================================
+\section{Constitutive models}
+\label{sec:materials}
+%============================================================================
+
+Every material in the library is a stateless value type whose parameters
+are public members and whose stress function is a template over the scalar
+type,
+\begin{equation}
+  \bP = \mathrm{PK1}(\bF): \ \text{tensor}\langle T, 3, 3\rangle \to
+  \text{tensor}\langle T, 3, 3\rangle, \qquad T \in \{\code{double}, \code{dual}\},
+\end{equation}
+optionally with an energy $\Psi(\bF)$.  Models for the mixed formulation
+expose the split $\bP_{\mathrm{iso}}$, $\Psi_{\mathrm{iso}}$, the
+volumetric pressure $U'(J)$, the bulk modulus $\kappa$ (possibly infinite)
+and a small-strain shear modulus used to scale the saddle-point
+preconditioner.
+
+\subsection{Classification by the treatment of volume change}
+\label{sec:classification}
+
+All models are isotropic and hyperelastic; what distinguishes them is how
+the volume change $J$ enters the energy and how the resulting pressure is
+handled numerically.  Four categories are used in this manual:
+
+\begin{center}
+\small
+\renewcommand{\arraystretch}{1.2}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{2.5cm} >{\raggedright\arraybackslash}p{4.6cm} >{\raggedright\arraybackslash}p{3.2cm} >{\raggedright\arraybackslash}p{4.4cm}@{}}
+\toprule
+Category & Volumetric treatment & Models & Formulation and input \\
+\midrule
+1. Compressible, coupled &
+  one energy $\Psi(\bF)$; $J$ enters through $\ln J$ or $\tr\bE$ terms mixed with the shear response &
+  \code{neo\_hookean}, \code{st\_venant\_kirchhoff} &
+  displacement; \code{E}, \code{nu} with $\nu < \tfrac12$ \\
+2. Compressible, uncoupled &
+  $\Psi_{\mathrm{iso}}(\bFb) + \kappa\,u(J)$, $u$ one of four laws (quadratic $\tfrac12(J-1)^2$ by default); $\kappa/\mu$ of order one to ten &
+  \code{iso\_neo\_hookean}, \code{mooney\_rivlin}, \code{yeoh}, \code{gent}, \code{arruda\_boyce}, \code{ogden} &
+  displacement (mixed also allowed); \code{kappa} or \code{nu} \\
+3. Slightly compressible &
+  the same split with $\kappa \gg \mu$; the pressure $p = U'(J)$ becomes an independent field &
+  the same six &
+  mixed (the displacement formulation locks); \code{kappa} or \code{nu} close to $\tfrac12$ \\
+4. Incompressible &
+  $J = 1$ enforced by a Lagrange multiplier $p$; $\kappa = \infty$ &
+  the same six &
+  mixed, or plane stress in 2D; \code{incompressible: true} or \code{nu: 0.5} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Categories 2, 3 and 4 share one code path: the six decoupled materials
+provide $\Psi_{\mathrm{iso}}$ and $U'(J)$, and the category is set by the
+value of $\kappa$ and by the formulation chosen in the input.  The border
+between 2 and 3 is one of degree, not of kind: the displacement
+formulation is adequate up to $\kappa/\mu$ of order ten ($\nu \approx 0.45$,
+where the tests confirm that both formulations agree under refinement),
+while at $\nu = 0.4999$ ($\kappa/\mu \approx 5000$) the mixed formulation
+is required in practice.  Category 1 is a different code path with no
+split; those two models cannot be made incompressible.
+
+\subsection{Category 1: compressible, coupled}
+\label{sec:coupled}
+
+\paragraph{Neo-Hookean (Bonet--Wood form).}
+\begin{equation}
+  \Psi = \frac{\mu}{2}(\Ione - 3) - \mu\ln J + \frac{\lambda}{2}(\ln J)^2,
+  \qquad
+  \bP = \mu(\bF - \bF^{-T}) + \lambda\ln J\,\bF^{-T} .
+  \label{eq:nh}
+\end{equation}
+This is the compressible extension of the neo-Hookean energy given by
+Bonet and Wood~\cite{bonetwood} and used by the FEniCS and FEniCSx
+hyperelasticity demos and by FEBio (the source comment also names
+Simo--Hughes; the exact expression is not confirmed there).  The
+$-\mu\ln J$ term cancels the stress of the $\mu\bF$ term at $\bF = \bI$, so
+the reference state is stress free; the small-strain limit is linear
+elasticity with the Lam\'e constants $(\mu, \lambda)$; and both logarithmic
+terms diverge as $J \to 0$, so compression to zero volume costs infinite
+energy.  The shear term uses the full $\Ione$, not $\Ib$, so shear and
+volume are coupled and the volumetric response is $\lambda\ln J$ rather
+than a separate law $U(J)$.  Other coupled compressible neo-Hookean forms
+in the literature replace $\tfrac{\lambda}{2}(\ln J)^2$ by
+$\tfrac{\lambda}{2}(J-1)^2$ or by the polyconvex Ciarlet--Geymonat
+combination $\tfrac{\Lambda}{4}(J^2 - 1) - \tfrac{\Lambda}{2}\ln J$
+\cite{pencegou}; none of these is implemented.
+
+\paragraph{Saint Venant--Kirchhoff.}
+\begin{equation}
+  \Psi = \frac{\lambda}{2}(\tr\bE)^2 + \mu\,\bE:\bE,
+  \qquad
+  \bS = \lambda\tr\bE\,\bI + 2\mu\bE,
+  \qquad
+  \bP = \bF\bS .
+  \label{eq:svk}
+\end{equation}
+This is linear elasticity in the Green--Lagrange strain; it is not
+polyconvex, its energy stays finite as $J \to 0$ and it softens in
+compression, so it is used chiefly for manufactured-solution tests.
+
+Both take $(E, \nu)$ from the input and convert with
+$\mu = E/(2(1+\nu))$, $\lambda = E\nu/((1+\nu)(1-2\nu))$; the derived bulk
+modulus $\kappa = \lambda + \tfrac23\mu$ is reported but does not enter the
+stress.  Neither model separates the pressure, so neither can be used in
+the mixed formulation or at $\nu = \tfrac12$.
+
+\subsection{Category 2: compressible, uncoupled}
+\label{sec:split}
+
+The remaining six models are decoupled,
+\begin{equation}
+  \Psi(\bF) = \Psi_{\mathrm{iso}}(\bFb) + U(J),
+  \qquad
+  U(J) = \kappa\,u(J),
+  \qquad
+  u(J) = \tfrac12(J - 1)^2 \ \text{by default},
+  \label{eq:split}
+\end{equation}
+where $\Psi_{\mathrm{iso}}$ depends on $\bF$ only through the isochoric
+part \eqref{eq:isochoric} and $u(J)$ is one of the volumetric laws of the
+paragraph below, normalised so that $u''(1) = 1$.  Because $\Psi_{\mathrm{iso}}$ is invariant
+under $\bF \to \alpha\bF$, Euler's theorem gives
+$\bP_{\mathrm{iso}}:\bF = 0$, i.e.\ the isochoric Cauchy stress
+$J^{-1}\bP_{\mathrm{iso}}\bF^T$ is deviatoric for every $\bF$, not only at
+$J = 1$.  In the displacement formulation the stress is
+\begin{equation}
+  \bP = \bP_{\mathrm{iso}}(\bF) + U'(J)\,J\bF^{-T},
+  \qquad
+  \bsig = J^{-1}\bP_{\mathrm{iso}}\bF^T + U'(J)\,\bI ,
+  \qquad
+  U'(J) = \kappa\,u'(J) = \kappa(J-1) \ \text{by default},
+  \label{eq:Pdisp}
+\end{equation}
+so $p = U'(J)$ is exactly the mean stress $\tfrac13\tr\bsig$.  At
+moderate $\kappa/\mu$ this is an ordinary compressible material and the
+pure displacement discretisation is well behaved.
+
+\paragraph{Volumetric law.}
+The volumetric law is selectable per material (\code{material.volumetric},
+\file{materials/volumetric.hpp}).  Writing $U(J) = \kappa\,u(J)$, the four
+laws are
+\begin{center}
+\small
+\renewcommand{\arraystretch}{1.4}
+\begin{tabular}{@{}l l l l l@{}}
+\toprule
+Key & $u(J)$ & $u'(J)$ & $u''(J)$ & Notes \\
+\midrule
+\code{quadratic} & $\tfrac12(J-1)^2$ & $J - 1$ & $1$ & default; $U$ finite as $J \to 0$ \\
+\code{simo\_taylor} & $\tfrac14(J^2 - 1 - 2\ln J)$ & $\tfrac12(J - J^{-1})$ & $\tfrac12(1 + J^{-2})$ & Simo--Taylor; convex, $U \to \infty$ both ways \\
+\code{logarithmic} & $\tfrac12(\ln J)^2$ & $\ln J/J$ & $(1 - \ln J)/J^2$ & Anand's FEniCSx codes; $u'$ peaks at $J = e$ \\
+\code{j\_log\_j} & $J\ln J - J + 1$ & $\ln J$ & $1/J$ & polyconvex; $u'$ monotone \\
+\bottomrule
+\end{tabular}
+\end{center}
+The logarithmic law softens in dilatation: its tangent bulk modulus
+$\kappa(1 - \ln J)/J^2$ falls to $0.18\,\kappa$ at $J = 1.67$ and to zero at
+$J = e$, where the pressure peaks at $\kappa/e$.  Its Newton iterates must
+therefore stay near $J = 1$ (run it with the tangent predictor of
+Section~\ref{sec:solvers}), and it can fail at stress singularities where
+$J$ grows locally, whatever the increment size; the monotone laws do not
+have this limitation.
+Every law satisfies $u(1) = u'(1) = 0$ and $u''(1) = 1$, so $\kappa$ is the
+small-strain bulk modulus for all of them and the input semantics of
+\code{kappa} and \code{nu} do not change; the laws agree to first order in
+the strain and differ at finite strain, chiefly in strong compression and
+in the pressure of nearly incompressible problems (Doll and
+Schweizerhof~\cite{doll} survey the family).  The displacement formulation
+needs only $U'(J) = \kappa u'(J)$; the mixed formulation uses the
+normalised derivatives $u'$ and $u''$
+(Sections~\ref{sec:nearly} and~\ref{sec:mixed}).  Regions inherit the law
+of the base material.  The law is irrelevant at $\kappa = \infty$
+(category 4) and is not a key of the coupled models.
+
+\paragraph{Isochoric energies.}
+The six isochoric energies below are shared by categories 2, 3 and 4.
+
+\subsubsection{Models depending on $\Ib$ alone}
+
+For $\Psi_{\mathrm{iso}} = f(\Ib)$,
+\begin{equation}
+  \bP_{\mathrm{iso}} = f'(\Ib)\,\frac{\partial\Ib}{\partial\bF},
+  \qquad
+  \frac{\partial\Ib}{\partial\bF}
+  = J^{-2/3}\Bigl(2\bF - \tfrac23\Ione\,\bF^{-T}\Bigr),
+  \label{eq:dI1bar}
+\end{equation}
+so that a model only has to provide $f'$ (\file{isochoric.hpp}).  The
+library contains
+\begin{center}
+\small
+\renewcommand{\arraystretch}{1.6}
+\begin{tabular}{@{}l l l l@{}}
+\toprule
+Model & $\Psi_{\mathrm{iso}}$ & $f'(\Ib) = \partial\Psi_{\mathrm{iso}}/\partial\Ib$ & small-strain $\mu$ \\
+\midrule
+Isochoric neo-Hookean & $\frac{\mu}{2}(\Ib - 3)$ & $\frac{\mu}{2}$ & $\mu$ \\
+Yeoh & $\sum_{i=1}^3 c_{i0}(\Ib - 3)^i$ & $c_{10} + 2c_{20}(\Ib-3) + 3c_{30}(\Ib-3)^2$ & $2c_{10}$ \\
+Gent & $-\frac{\mu J_m}{2}\ln\bigl(1 - \frac{\Ib - 3}{J_m}\bigr)$ & $\frac{\mu}{2}\frac{J_m}{J_m - (\Ib - 3)}$ & $\mu$ \\
+Arruda--Boyce & $\mu\sum_{i=1}^5\frac{C_i}{N^{i-1}}(\Ib^{\,i} - 3^i)$ & $\mu\sum_{i=1}^5\frac{i\,C_i}{N^{i-1}}\Ib^{\,i-1}$ & $\mu_0$, eq.~\eqref{eq:abmu0} \\
+\bottomrule
+\end{tabular}
+\end{center}
+\emph{Isochoric neo-Hookean} (\code{iso\_neo\_hookean}): the Gaussian-chain
+model; the closed form is
+$\bP_{\mathrm{iso}} = \mu J^{-2/3}(\bF - \tfrac13\Ione\bF^{-T})$.
+\emph{Yeoh} (\code{yeoh}): a cubic in $\Ib - 3$; typically $c_{20} < 0$,
+$c_{30} > 0$, reproducing the softening-then-stiffening response of filled
+rubbers.  \emph{Gent} (\code{gent}): limited chain extensibility; the
+energy is defined only for $\Ib - 3 < J_m$, beyond the locking stretch it
+evaluates to NaN, which the Newton line search rejects like any non-finite
+residual, and $J_m \to \infty$ recovers the neo-Hookean model.
+\emph{Arruda--Boyce} (\code{arruda\_boyce}): the eight-chain model in its
+five-term series in $\Ib/N$ with
+$C = \{\tfrac12, \tfrac1{20}, \tfrac{11}{1050}, \tfrac{19}{7000}, \tfrac{519}{673750}\}$;
+$\mu$ is the chain-density parameter $nkT$, $N$ the number of rigid links
+per chain (locking stretch $\lambda_L = \sqrt N$), and the small-strain
+shear modulus is
+\begin{equation}
+  \mu_0 = 2f'(3)
+  = \mu\Bigl(1 + \frac{3}{5N} + \frac{99}{175N^2} + \frac{513}{875N^3} + \frac{42039}{67375N^4}\Bigr).
+  \label{eq:abmu0}
+\end{equation}
+The exact inverse-Langevin form of the model is not implemented; the
+series is softer near the locking stretch.
+
+\subsubsection{Mooney--Rivlin}
+
+\begin{gather}
+  \Psi_{\mathrm{iso}} = c_1(\Ib - 3) + c_2(\IIb - 3), \qquad
+  \Itwo = \tfrac12(\Ione^2 - \bC:\bC), \\
+  \bP_{\mathrm{iso}}
+  = c_1 J^{-2/3}\Bigl(2\bF - \tfrac23\Ione\bF^{-T}\Bigr)
+  + c_2 J^{-4/3}\Bigl(2\Ione\bF - 2\bF\bC - \tfrac43\Itwo\bF^{-T}\Bigr),
+  \qquad \mu = 2(c_1 + c_2).
+\end{gather}
+The only model in the library that depends on the second invariant.  With
+$c_2 = 0$ it is the isochoric neo-Hookean model.
+
+\subsubsection{Ogden}
+\label{sec:ogden}
+
+The Ogden energy is a function of the isochoric principal stretches,
+\begin{equation}
+  \Psi_{\mathrm{iso}} = \sum_{r=1}^{M}\frac{\mu_r}{\alpha_r}
+    \bigl(\bar\lambda_1^{\alpha_r} + \bar\lambda_2^{\alpha_r} + \bar\lambda_3^{\alpha_r} - 3\bigr),
+  \qquad M \le 6, \quad \mu_r\alpha_r > 0, \qquad
+  \mu = \tfrac12\sum_r\mu_r\alpha_r .
+\end{equation}
+It is evaluated spectrally.  With $\bC = \sum_a c_a\bN_a\otimes\bN_a$
+(cyclic Jacobi eigen-decomposition, \file{spectral.hpp}) define
+\begin{equation}
+  \beta_a = \sum_r\mu_r\bar\lambda_a^{\alpha_r}, \qquad
+  \tau_a = \beta_a - \tfrac13(\beta_1 + \beta_2 + \beta_3), \qquad
+  \bS_{\mathrm{iso}} = \sum_a\frac{\tau_a}{c_a}\bN_a\otimes\bN_a, \qquad
+  \bP_{\mathrm{iso}} = \bF\bS_{\mathrm{iso}} ,
+  \label{eq:ogden}
+\end{equation}
+where $\tau_a$ are the isochoric principal Kirchhoff stresses (the
+$\tfrac13\sum\beta$ term is the deviatoric projection that
+$\bar\lambda_a = J^{-1/3}\lambda_a$ produces).  Eigenvectors are not
+differentiable at coincident eigenvalues, so the tangent is not obtained by
+running dual numbers through the eigen-solver.  Instead the dual overload
+of $\bP_{\mathrm{iso}}$ forms the directional derivative along $\ud\bF$
+analytically (Ogden 1984; Simo and Taylor 1991): with
+$\ud\bC = \ud\bF^T\bF + \bF^T\ud\bF$ expressed in the eigenbasis,
+$\ud\hat{\bC} = \bN^T\ud\bC\,\bN$, the derivative of $\bS_{\mathrm{iso}}$
+in that basis has diagonal entries $\sum_b (\partial s_a/\partial c_b)\ud\hat C_{bb}$
+with $s_a = \tau_a/c_a$, and off-diagonal entries
+\begin{equation}
+  \ud\hat S_{ab} = \gamma_{ab}\,\ud\hat C_{ab}, \qquad
+  \gamma_{ab} = \begin{cases}
+    \dfrac{s_a - s_b}{c_a - c_b}, & |c_a - c_b| > 10^{-8}\max_c c_c, \\[8pt]
+    \dfrac{\partial s_a}{\partial c_a} - \dfrac{\partial s_a}{\partial c_b}, & \text{otherwise (limit branch)},
+  \end{cases}
+\end{equation}
+followed by $\ud\bS = \bN\ud\hat{\bS}\bN^T$ and
+$\ud\bP = \ud\bF\,\bS_{\mathrm{iso}} + \bF\ud\bS$.  The partial
+derivatives $\partial s_a/\partial c_b$ follow from
+$\partial\beta_a/\partial c_b = \beta'_a(\delta_{ab}/(2c_a) - 1/(6c_b))$
+with $\beta'_a = \sum_r\mu_r\alpha_r\bar\lambda_a^{\alpha_r}$.  Ogden with
+one term $(\mu, 2)$ is the isochoric neo-Hookean model, with two terms
+$(2c_1, 2), (-2c_2, -2)$ the Mooney--Rivlin model.
+
+\subsection{Category 3: slightly compressible}
+\label{sec:nearly}
+
+The same six materials with $\kappa \gg \mu$ describe rubber-like solids
+whose bulk modulus is finite but three or four orders of magnitude above
+the shear modulus (\code{nu} close to $\tfrac12$, or \code{kappa} given
+directly).  The constitutive law is unchanged, but its numerical treatment
+is not.  In the displacement formulation the volumetric term is a stiff
+penalty: the discrete field must satisfy $J \approx 1$ nearly pointwise,
+which the low-order continuous displacement space cannot do without
+suppressing admissible deformations (volumetric locking), and the
+pressure recovered from $U'(J)$ oscillates because small errors in
+$J$ are multiplied by $\kappa$.  Newton also sees a badly scaled tangent
+dominated by the penalty.
+
+The remedy is to treat the pressure as an independent field: replace
+$U'(J)$ in \eqref{eq:Pdisp} by an unknown $p$ and impose the volumetric law
+weakly,
+\begin{equation}
+  \bP = \bP_{\mathrm{iso}}(\bF) + p\,J\bF^{-T},
+  \qquad
+  \int_{\Omega_R} q\,\Bigl(u'(J) - \frac{p}{\kappa}\Bigr)\ud V = 0 \quad \forall q,
+  \label{eq:perturbed}
+\end{equation}
+with $p$ taken from a lower-order space (Section~\ref{sec:mixed}), which the
+Taylor--Hood pair satisfies without locking.  The constraint is written
+with the normalised pressure $u' = U'/\kappa$ so that it stays finite at
+$\kappa = \infty$; for the quadratic law it is the familiar
+$J - 1 - p/\kappa$.  For that law the pair is the stationarity of the
+perturbed Lagrangian
+$\int\Psi_{\mathrm{iso}} + p(J-1) - p^2/(2\kappa)\ud V$, the Legendre
+transform of $U$, and the Newton system is symmetric; for the other laws
+the constraint is not the derivative of a potential in $(\bu, p)$ jointly,
+and the $(2,1)$ block carries the factor $u''(J)$ (Section~\ref{sec:mixed}),
+which the FGMRES saddle-point solver accepts.  Eliminating $p$ pointwise
+from \eqref{eq:perturbed} recovers \eqref{eq:Pdisp} exactly for every law,
+so the mixed and displacement formulations solve the same continuous
+problem at any finite $\kappa$; their discrete solutions converge to each
+other under refinement, which the tests check at $\nu = 0.45$.  The
+pressure unknown is the mean stress $p = \tfrac13\tr\bsig$, tensile
+positive, and the $(2,2)$ block $-\bM_p/\kappa$ of the Newton system keeps
+it uniquely determined even when the displacement is prescribed on the
+whole boundary.  The bulk modulus is resolved from $\nu$ as
+$\kappa = 2\mu(1+\nu)/(3(1-2\nu))$ (Section~\ref{sec:moduli}); at
+$\nu = 0.4999$ this gives $\kappa/\mu \approx 5000$, the value of the
+nearly incompressible Cook input.  The saddle-point solver of
+Section~\ref{sec:saddlesolver} is built for this regime: its Schur
+complement approximation $\bM_p(1/\mu + 1/\kappa)$ reduces to the
+incompressible one as $\kappa \to \infty$.
+
+\subsection{Category 4: incompressible}
+\label{sec:incompressible}
+
+In the limit $\kappa \to \infty$ the volumetric energy becomes the
+internal constraint $J = 1$ and the pressure a Lagrange multiplier that
+does no work:
+\begin{equation}
+  \bP = \bP_{\mathrm{iso}}(\bF) + p\,J\bF^{-T}, \qquad
+  \int_{\Omega_R} q\,(J - 1)\ud V = 0 \quad \forall q .
+  \label{eq:incompressible}
+\end{equation}
+The input selects it with \code{incompressible: true} or \code{nu: 0.5};
+the materials report $\kappa = \infty$, the $(2,2)$ block of the Newton
+system vanishes, and the mixed formulation is required (the displacement
+formulation refuses the input).  With the displacement prescribed on the
+whole boundary the multiplier is determined only up to a constant
+(Section~\ref{sec:mixed}), so incompressible problems need a traction
+boundary somewhere.  The one exception to the mixed requirement is plane
+stress (Section~\ref{sec:planestress}): for a thin sheet the constraint
+fixes the thickness stretch $\lambda_3 = 1/\det\bF_{2D}$ and the
+traction-free face fixes $p = -\sigma_{\mathrm{iso},33}$ pointwise, so the
+multiplier is eliminated at the material point and the sheet is a pure
+displacement problem.
+
+On an incompressible solution the barred and unbarred invariants coincide
+and the six isochoric energies reduce to the classical incompressible
+models $\Psi(\Ione, \Itwo)$ or $\Psi(\lambda_1, \lambda_2, \lambda_3)$ with
+$\lambda_1\lambda_2\lambda_3 = 1$.  With $\Psi_1 = \partial\Psi/\partial\Ione$
+and $\Psi_2 = \partial\Psi/\partial\Itwo$ the Cauchy stress is
+\begin{equation}
+  \bsig = 2\Psi_1\dev\bB - 2\Psi_2\dev\bB^{-1} + p\,\bI,
+  \qquad
+  \mu = 2(\Psi_1 + \Psi_2)\big|_{\Ione = \Itwo = 3},
+\end{equation}
+and the principal stress differences
+$\sigma_a - \sigma_b = \lambda_a\partial\Psi/\partial\lambda_a - \lambda_b\partial\Psi/\partial\lambda_b$
+are constitutive while the mean stress is fixed by equilibrium and the
+boundary conditions.  These relations, the neo-Hookean, Mooney--Rivlin,
+Yeoh, Gent, Arruda--Boyce and Ogden specialisations, and the closed-form
+uniaxial, equibiaxial, pure-shear and simple-shear states that serve as
+reference solutions are collected in
+\file{doc/incompressible\_hyperelasticity.tex}; the verification manual
+lists the inputs that reproduce them.
+
+\subsection{Resolution of the moduli and material regions}
+\label{sec:moduli}
+
+The input names a model and its parameters; the factory
+(\file{materials.cpp}) resolves the small-strain shear and bulk moduli
+$(\mu, \kappa)$ as follows.  The coupled models take $(E, \nu)$ with
+$\nu < \tfrac12$.  For a decoupled model $\mu$ is the model's own
+small-strain value from the tables above (or $E/(2(1+\nu))$ for the
+isochoric neo-Hookean model given $E, \nu$), and the bulk modulus comes
+from exactly one of
+\begin{equation}
+  \kappa \ \text{given}, \qquad
+  \kappa = \frac{2\mu(1+\nu)}{3(1 - 2\nu)}\ \text{from } \nu < \tfrac12, \qquad
+  \kappa = \infty \ \text{from } \nu = \tfrac12 \text{ or \code{incompressible: true}},
+\end{equation}
+which places the material in category 2, 3 or 4.  The derived Lam\'e
+constant $\lambda = \kappa - \tfrac23\mu$ is used only in the small-strain
+checks of the tests.
+
+Materials may vary by element attribute (\code{material.regions}): every
+region uses the base model with other parameter values, inheriting the
+keys it does not give (a region that gives any bulk key replaces the
+base's bulk specification).  The integrators hold a table indexed by
+attribute and pick the entry per element; all regions must be
+incompressible or none, and no attribute may be covered twice.
+
+%============================================================================
+\section{Two-dimensional problems}
+\label{sec:planestress}
+%============================================================================
+
+\subsection{Plane strain}
+
+By default a two-dimensional mesh is treated as plane strain: the
+displacement has two components, $F_{33} = 1$ in \eqref{eq:embed}, and the
+three-dimensional material returns the full $\bP$, of which the kernels
+contract only the in-plane block with $\Grad\bw$.  The out-of-plane stress
+$\sigma_{33}$ is a reaction; it is generally non-zero and is included in
+the pressure, the von Mises stress and the stress outputs.  An
+incompressible plane-strain state has in-plane stretches
+$(\lambda, \lambda^{-1})$.
+
+\subsection{Plane stress}
+
+For a thin sheet loaded in its plane the appropriate reduction is
+$\sigma_{i3} = 0$.  The thickness stretch $\lambda_3 = F_{33}$ is then not
+prescribed but determined by the material.  \code{plane: stress}
+(two-dimensional, displacement formulation) wraps the material in the
+adapter of \file{plane\_stress.hpp}: the kernels still pad $\bF$ with
+$F_{33} = 1$, the adapter replaces $F_{33}$ by $\lambda_3$ (and drops the
+out-of-plane shears) such that $P_{33} = 0$, and returns $\bP$ at the
+completed $\bF_c$; its $(3,3)$ entry is zero and the in-plane block is the
+plane-stress response.  Two branches:
+
+\paragraph{Incompressible base ($\kappa = \infty$).}
+The constraint fixes the thickness pointwise and $\sigma_{33} = 0$ fixes
+the mean stress:
+\begin{equation}
+  \lambda_3 = \frac{1}{\det\bF_{2D}}, \qquad
+  p = -\sigma_{\mathrm{iso},33} = -\lambda_3\,P_{\mathrm{iso},33}, \qquad
+  \bP = \bP_{\mathrm{iso}}(\bF_c) + p\,\bF_c^{-T}
+  \quad (J = 1).
+  \label{eq:psinc}
+\end{equation}
+The Lagrange multiplier is eliminated at the material point: the sheet
+problem is a pure displacement problem in the two in-plane components with
+no pressure unknown, no inf-sup condition and no locking.  This is the one
+way to run an incompressible model in the displacement formulation.
+
+\paragraph{Compressible base.}
+$\lambda_3$ solves the scalar equation $r(\lambda_3) = P_{33}(\bF_{2D}, \lambda_3) = 0$
+by Newton's method from $\lambda_3 = 1$, with $\ud r/\ud\lambda_3$ from a
+dual evaluation of $P_{33}$, steps clipped to $[-\lambda_3/2, \lambda_3]$
+to keep the stretch positive, a relative tolerance of $10^{-14}$ and at
+most 100 iterations; a non-finite state (an inverted in-plane block during
+a line search) returns NaN, which the outer Newton rejects.  When the
+adapter is evaluated with dual numbers the converged root is refined by
+\emph{one Newton step in dual arithmetic},
+\begin{equation}
+  \lambda_3^{\mathrm{dual}} = \lambda_3 - \frac{r(\lambda_3)^{\mathrm{dual}} - r(\lambda_3)}{\ud r/\ud\lambda_3},
+\end{equation}
+which leaves the value unchanged and gives the derivative part
+$-(\partial P_{33}/\partial\bF:\ud\bF)/(\partial P_{33}/\partial F_{33})$,
+the implicit-function derivative $\ud\lambda_3/\ud\bF$.  The in-plane
+tangent obtained by dual seeding is therefore the consistent plane-stress
+tangent.  The energy is the base energy at the completed $\bF_c$; since
+$P_{33} = 0$ there, its in-plane derivative is the in-plane $\bP$
+(envelope theorem).  In the small-strain limit the adapter reproduces the
+plane-stress moduli $E/(1-\nu^2)$, $E\nu/(1-\nu^2)$ and the thickness
+strain $-\nu/(1-\nu)\,\tr\beps$.
+
+Every quadrature quantity uses the completed $\bF_c$ (so \code{jacobian}
+is the true $J$, one for an incompressible sheet), and
+\code{thickness\_stretch} $= \lambda_3$ becomes available.  Two cautions:
+the idealisation assumes stress uniform through the thickness and no
+bending; and because each load step starts with the boundary displaced and
+the interior lagging, shear-dominated sheet problems need increments that
+shear a boundary layer of elements by no more than a few percent, since the
+energy grows like $(\det\bF_{2D})^{-2}$.
+
+%============================================================================
+\section{Mixed displacement--pressure formulation}
+\label{sec:mixed}
+%============================================================================
+
+For near- and fully incompressible materials the pressure is introduced as
+an independent field.  With $U(J) = \kappa\,u(J)$ the material's volumetric
+law (Section~\ref{sec:split}), the two-field residuals are, for all
+$\bw \in \mathcal V$ and all $q$ in the pressure space,
+\begin{equation}
+  \boxed{\;
+  \begin{aligned}
+  R_u(\bu, p; \bw) &= \int_{\Omega_R}\bigl[\bP_{\mathrm{iso}}(\bF) + p\,J\bF^{-T}\bigr]:\Grad\bw\ud V \\
+    &\quad - \int_{\Omega_R}\rho_R\bb\cdot\bw\ud V - \int_{\Gamma_R^N}\bar\bT\cdot\bw\ud A
+    + R_{\text{fol}}(\bu; \bw) = 0, \\
+  R_p(\bu, p; q) &= \int_{\Omega_R} q\,\Bigl(u'(J) - \frac{p}{\kappa}\Bigr)\ud V = 0 .
+  \end{aligned}\;}
+  \label{eq:mixedweak}
+\end{equation}
+For the default quadratic law $u'(J) = J - 1$ and the second equation is
+the familiar $\int q\,(J - 1 - p/\kappa)\ud V = 0$; for the quadratic law
+alone the pair is the stationarity of the perturbed Lagrangian
+\begin{equation}
+  \Pi(\bu, p) = \int_{\Omega_R}\Bigl[\Psi_{\mathrm{iso}}(\bF) + p\,(J - 1) - \frac{p^2}{2\kappa}\Bigr]\ud V
+  - \Pi_{\mathrm{ext}}(\bu).
+  \label{eq:lagrangian}
+\end{equation}
+For finite $\kappa$ the second equation is the weak form of the volumetric
+law $p = U'(J)$, and the mixed and displacement formulations solve the same
+continuous problem; for $\kappa = \infty$ it reads $\int q\,u'(J)\ud V = 0$,
+the incompressibility constraint $J = 1$ in weak form for every law, and
+$p$ is a Lagrange multiplier.  With $\bP_{\mathrm{iso}}:\bF = 0$ the Cauchy stress is
+$\bsig = J^{-1}\bP_{\mathrm{iso}}\bF^T + p\bI$, so the unknown $p$ is the
+mean stress $\tfrac13\tr\bsig$, tensile positive, and the constitutive
+models need only provide the split of Section~\ref{sec:split}.
+
+\paragraph{Spaces.}
+Displacement and pressure are discretised on a Taylor--Hood pair,
+$[H^1]^d$ of order $k$ for $\bu$ and $H^1$ of order $k - 1$ for $p$, so the
+input needs $k \ge 2$.  The affine displacement and the constant pressure
+lie in these spaces, which is why homogeneous states are reproduced to
+solver tolerance.  Dirichlet conditions act on the displacement only; the
+pressure carries no essential conditions.  With the displacement prescribed
+on the whole boundary an incompressible pressure is determined only up to a
+constant, because
+$c\int J\bF^{-T}:\Grad\bw\ud V = c\int_{\partial\Omega_R}\bw\cdot J\bF^{-T}\bN\ud A = 0$
+for every admissible $\bw$ (Piola identity); a traction boundary somewhere
+fixes it.
+
+\paragraph{Tangent.}
+The Newton system is the block system
+\begin{equation}
+  \begin{bmatrix} \bK & \bBm \\ \bBm_{pu} & -\bM_p/\kappa \end{bmatrix}
+  \begin{bmatrix} \Delta\bu \\ \Delta p \end{bmatrix}
+  = -\begin{bmatrix} R_u \\ R_p \end{bmatrix},
+  \label{eq:saddle}
+\end{equation}
+with, at each quadrature point,
+\begin{gather}
+  \bK: \ \Grad\bw:\bA(\bF, p):\Grad\Delta\bu, \qquad
+  \bA = \frac{\partial}{\partial\bF}\bigl[\bP_{\mathrm{iso}} + pJ\bF^{-T}\bigr]_{p\ \text{fixed}}, \\
+  \bBm: \ q\,(J\bF^{-T}):\Grad\bw, \qquad
+  \bBm_{pu}: \ q\,u''(J)\,(J\bF^{-T}):\Grad\Delta\bu, \qquad
+  \bM_p: \ q\,\Delta p .
+\end{gather}
+The $(2,2)$ block vanishes when $\kappa = \infty$.  $\bA$ at fixed $p$ is
+again produced by dual seeding of the combined stress; $\bBm$ and
+$\bBm_{pu}$ use $\partial J/\partial\bF = J\bF^{-T}$.  For the quadratic
+law $u'' = 1$ and $\bBm_{pu} = \bBm^T$, so the system is symmetric; for the
+other laws it is not, and the linear solver of
+Section~\ref{sec:saddlesolver} is written for the general case.
+
+%============================================================================
+\section{Boundary conditions and loading}
+\label{sec:loads}
+%============================================================================
+
+All boundary conditions and the body force are entries of a \emph{load
+set} (\file{physics/loads.hpp}) attached to the displacement space and
+shared by both formulations.  Each entry $i$ has data (an MFEM coefficient
+built from the input expressions) and a scalar schedule $s_i(t)$ of the
+pseudo-time.
+
+\subsection{Pseudo-time and schedules}
+
+The load path is parametrised by $t \in [0, 1]$.  The data of entry $i$
+enters as $s_i(t)\,f_i(\bX, t)$, where $f_i$ may itself depend on $t$
+through its expression.  Schedules are piecewise linear:
+\begin{equation}
+  s(t) = \begin{cases}
+  \text{ramp}(t_0, t_1): & 0 \ (t \le t_0),\ \ \dfrac{t - t_0}{t_1 - t_0}\ (t_0 < t < t_1),\ \ 1 \ (t \ge t_1), \\[6pt]
+  \text{constant}: & 1 \ (t > 0), \\[2pt]
+  \text{table}(t_k, s_k): & \text{linear interpolation of } (t_k, s_k), \text{ clamped outside}.
+  \end{cases}
+\end{equation}
+The default is the ramp over $[0, 1]$, unless the expression mentions $t$,
+in which case it is the constant schedule and $t$ enters through the
+function only; a schedule given together with such an expression
+multiplies it.  With the ramp on every entry, $t < 1$ solves a
+proportionally scaled problem and $t = 1$ the problem of the weak form.
+Since hyperelasticity without follower loads is conservative, the converged
+state at $t = 1$ does not depend on the path; staged loading is a test of
+the implementation, not a different problem.  Follower pressures are not
+conservative and can produce path dependence in the presence of
+instabilities.
+
+\subsection{Prescribed displacements}
+
+A Dirichlet entry prescribes, on a set of boundary attributes, either all
+components or the listed subset (\code{components}), which is how rollers
+and symmetry planes are expressed.  The essential true degrees of freedom
+of each entry are collected per component; their union is the essential
+set of the problem.  Before each Newton solve the stepper overwrites the
+essential entries of the solution vector with $s_i(t)$ times the boundary
+projection of $\bar\bu_i$ (\code{ApplyDirichlet}); the residual is zeroed
+and the Jacobian rows and columns eliminated there.  Two entries may
+overlap on shared edges or corners; the later entry wins and a warning
+names entries that prescribe the same component on the same attribute.
+
+\subsection{Dead loads}
+
+Nominal tractions $\bar\bT$ (per unit reference area), dead normal
+pressures $\bar\bT = -p\bN$ on the reference outward normal, and the body
+force $\rho_R\bb$ are assembled once each into true-dof vectors $L_i$ with
+stock MFEM linear-form integrators; entries whose expression depends on
+$t$ are reassembled whenever $t$ changes.  The external load at time $t$
+is $\sum_i s_i(t)\,L_i$ and is subtracted from the internal force in the
+residual.
+
+\subsection{Follower pressure}
+\label{sec:follower}
+
+A pressure $p$ per unit \emph{current} area on $\Gamma_R^p$ exerts the
+spatial traction $-p\bn$; by Nanson's formula \eqref{eq:nanson} its
+nominal counterpart is $\bar\bT(\bu) = -p\,J\bF^{-T}\bN = -p\,\cof\bF\,\bN$,
+which depends on the displacement.  It is therefore a boundary term of the
+nonlinear form,
+\begin{equation}
+  R_{\text{fol}}(\bu; \bw) = \sum_i s_i(t)\int_{\Gamma_R^{p_i}} p_i\,(\cof\bF\,\bN)\cdot\bw\ud A ,
+\end{equation}
+with the load stiffness
+\begin{equation}
+  D_{\Delta\bu}\int_{\Gamma_R^p} p\,(\cof\bF\,\bN)\cdot\bw\ud A
+  = \int_{\Gamma_R^p} p\,\bigl[(\bF^{-T}:\Grad\Delta\bu)\,J\bF^{-T}\bN
+    - J\bF^{-T}(\Grad\Delta\bu)^T\bF^{-T}\bN\bigr]\cdot\bw\ud A ,
+  \label{eq:foltangent}
+\end{equation}
+using $DJ = J\bF^{-T}:\Grad\Delta\bu$ and
+$D\bF^{-T} = -\bF^{-T}(\Grad\Delta\bu)^T\bF^{-T}$.  This tangent is not
+symmetric, so the conjugate gradient option of the linear solver is refused
+for inputs with a follower pressure.  The dead pressure and the follower
+pressure coincide at $\bF = \bI$ and differ at $O(p^2)$.  The
+implementation (\file{kernels/follower\_pressure.hpp}) is described in
+Section~\ref{sec:folkernel}.
+
+\subsection{Reactions}
+
+The reaction of a Dirichlet entry is the resultant of the nodal forces the
+constraint exerts on the body: the residual \eqref{eq:weak} evaluated with
+the essential rows \emph{not} zeroed, restricted to the entry's essential
+degrees of freedom (internal minus external nodal forces).  This is the
+exact discrete counterpart of the traction integral over the constrained
+face.  The moment is taken about the origin at the current nodal positions
+$\bX + \bu$.  Two entries that share nodes both count the shared forces.
+
+\subsection{Expressions}
+
+Boundary data and the body force are strings $f(x, y, z, t)$ in the
+reference coordinates and the pseudo-time ($z = 0$ in two dimensions),
+parsed once into a postfix program and evaluated per point without
+allocation.  The grammar has numbers, \code{x y z t}, \code{pi}, the
+operators \code{+ - * / \^{}} (\code{\^{}} binds tightest, associates to the
+right, and unary minus binds looser, so \code{-x\^{}2} $= -(x^2)$),
+parentheses, the functions \code{sin cos tan exp log sqrt abs pow min max},
+and \code{if(cond, a, b)} with the comparisons \code{< <= > >= == !=}
+evaluating to 1 or 0.  Expressions cannot refer to the solution; a load
+that depends on the deformation is a follower load, and only the follower
+pressure is provided.
+
+%============================================================================
+\section{Finite element discretisation}
+\label{sec:fem}
+%============================================================================
+
+\subsection{Spaces and quadrature}
+
+The displacement lives in the vector $H^1$ space of polynomial order $k$
+(\code{mesh.order}) on the reference mesh, ordered by vector dimension
+(the components of a node are consecutive), so that true-dof vectors can be
+read node by node; the pressure of the mixed formulation in the scalar
+$H^1$ space of order $k-1$.  Quadrilaterals, triangles, hexahedra and
+tetrahedra, including mixed and curved (second-order geometry) meshes, are
+accepted.  Volume and face integrals use the Gauss rule of order $2k + 3$
+on the element geometry; the same rule defines the quadrature space of the
+post-processed quantities (Section~\ref{sec:post}).
+
+\subsection{Element residual and tangent of the displacement formulation}
+
+At a quadrature point with weight $w_q$ (the rule weight times the
+reference map's Jacobian determinant) the physical shape-function gradients
+$\mathsf{D}_{aj} = \partial N_a/\partial X_j$ give
+$H_{ij} = \sum_a u_{ai}\mathsf{D}_{aj}$ and the material returns $\bP$ and
+$\bA$ at $\bF = \bI + \bH$.  The element residual and tangent are
+\begin{equation}
+  r_{ai} = \sum_q w_q\,P_{ij}\,\mathsf{D}_{aj},
+  \qquad
+  K_{(ai),(bk)} = \sum_q w_q\,\mathsf{D}_{aj}\,A_{ijkl}\,\mathsf{D}_{bl},
+  \label{eq:element}
+\end{equation}
+summed over the in-plane indices $j, l < d$ (in two dimensions the
+out-of-plane components of $\bA$ are never used).  The loops are written in
+\file{kernels/total\_lagrangian.hpp} as plain host code without allocation
+or virtual calls; the quadrature-point bodies (deformation gradient,
+stress, tangent, Cauchy stress) are free functions on plain tensors.  The
+integrator is a template over the material type, instantiated once per
+model through \code{std::visit} at setup, so no dispatch happens per
+quadrature point.  The energy $\int\Psi\ud V$ is provided by the same
+integrator when the material has an energy, and is used only as a
+diagnostic.
+
+\subsection{Element blocks of the mixed formulation}
+
+The block integrator (\file{kernels/mixed\_total\_lagrangian.hpp}) adds the
+pressure shape functions $\mathsf{N}_b$ and forms, per quadrature point,
+\begin{equation}
+  \begin{aligned}
+  r^u_{ai} &= w_q\,\bigl[P_{\mathrm{iso},ij} + p\,(J F^{-T})_{ij}\bigr]\mathsf{D}_{aj}, &
+  r^p_b &= w_q\,\Bigl(u'(J) - \frac{p}{\kappa}\Bigr)\mathsf{N}_b, \\
+  K^{uu}_{(ai),(bk)} &= w_q\,\mathsf{D}_{aj}A_{ijkl}\mathsf{D}_{bl}, &
+  K^{up}_{(ai),b} &= w_q\,(JF^{-T})_{ij}\mathsf{D}_{aj}\mathsf{N}_b, \\
+  K^{pu}_{b,(ai)} &= u''(J)\,K^{up}_{(ai),b}, &
+  K^{pp}_{ab} &= -\frac{w_q}{\kappa}\mathsf{N}_a\mathsf{N}_b,
+  \end{aligned}
+\end{equation}
+with $p = \sum_b p_b\mathsf{N}_b$, $\bA$ the dual tangent of
+$\bP_{\mathrm{iso}} + pJ\bF^{-T}$ at fixed $p$, and $u', u''$ the
+normalised derivatives of the volumetric law.  In two dimensions $J$ and
+$J\bF^{-T}$ are those of the $2\times2$ block (plane strain).  The energy
+of this integrator is the mixed functional
+$\Psi_{\mathrm{iso}} + p(J-1) - \kappa\,u^*(p/\kappa)$, with $u^*$ the
+Legendre transform of the volumetric law
+(Section~\ref{sec:post}); the last term is absent when $\kappa = \infty$.
+
+\subsection{Follower-pressure face kernel}
+\label{sec:folkernel}
+
+On each boundary face of $\Gamma_R^p$ the integrator takes the adjacent
+element's displacement degrees of freedom, evaluates $\bH$ and
+$\bF = \bI + \bH$ at the face quadrature points, and obtains $\bN\ud A$ as
+the area-weighted reference normal of the face map (\code{CalcOrtho}),
+oriented outward by a one-time check against the vector from the element
+centre to the face centre.  The face residual is
+$r_{ai} = \sum_q s\,\hat w_q\,p\,N_a\,(\cof\bF\,\bN)_i$ with $\hat w_q$ the
+face rule weight; the tangent is obtained by seeding $\bF$ with dual numbers
+in the direction of each element displacement degree of freedom
+($\Delta u_k = N_b \Rightarrow \ud F_{kj} = \mathsf{D}_{bj}$) and reading
+the derivative part of $\cof\bF\,\bN$, which reproduces
+\eqref{eq:foltangent} without writing it out.  The scale $s$ is the
+schedule value $s_i(t)$, owned by the load set and read through a pointer
+so that the integrator needs no rebuild when $t$ changes.  In the mixed
+formulation the same kernel acts on the displacement block only.
+
+\subsection{The assembled operator}
+
+Each physics module is an \code{mfem::Operator} on true degrees of
+freedom: \code{Mult} returns the residual \eqref{eq:weak} or
+\eqref{eq:mixedweak} with the essential rows zeroed;
+\code{GetGradient} returns the assembled \code{HypreParMatrix} (or the
+$2\times2$ \code{BlockOperator} of such matrices) with the essential rows
+and columns eliminated.  Full assembly through
+\code{ParNonlinearForm} and \code{ParBlockNonlinearForm} is used; partial
+assembly is not implemented.
+
+%============================================================================
+\section{Automatic differentiation of the tangents}
+\label{sec:ad}
+%============================================================================
+
+A dual number $a = (a_v, a_d)$ carries a value and one directional
+derivative with the arithmetic $(a + b) = (a_v + b_v, a_d + b_d)$,
+$(ab) = (a_vb_v, a_db_v + a_vb_d)$, and the chain rule for $/$, $\log$,
+$\exp$, $\sqrt{\ }$, $\mathrm{pow}$, $|\cdot|$, $\sin$, $\cos$
+(\file{base/dual.hpp}).  The fixed-size tensors of \file{base/tensor.hpp}
+are templated on the scalar type, so any material written with their
+operations compiles for $T = $ \code{dual} unchanged.
+
+The material tangent \eqref{eq:tangent} is obtained by seeding: for each
+in-plane index pair $(k, l)$ the entry $F_{kl}$ is given derivative part
+one, $\bP$ is evaluated once with duals, and its derivative parts fill
+$A_{ijkl}$.  This costs $d^2$ stress evaluations per quadrature point (nine
+in three dimensions, four in plane strain) and produces the exact tangent
+of the implemented stress to round-off, with no hand-coded derivatives.
+The same seeding gives the tangent of $\bP_{\mathrm{iso}} + pJ\bF^{-T}$ at
+fixed $p$ in the mixed kernel and the follower load stiffness.  Two places
+need more than plain forward mode: the Ogden model, whose eigenvectors are
+not differentiable at coincident stretches (Section~\ref{sec:ogden}), and
+the compressible plane-stress adapter, whose thickness stretch is the root
+of a scalar equation (Section~\ref{sec:planestress}); both supply the
+derivative part analytically or implicitly inside their dual overloads,
+so the seeding loop is unchanged.  All tangents are checked against central
+finite differences in the tests.
+
+%============================================================================
+\section{Solution algorithms}
+\label{sec:solvers}
+%============================================================================
+
+\subsection{Quasi-static load stepping}
+
+The stepper (\file{solvers/quasi\_static.hpp}) advances $t$ through a
+sequence of breakpoints $0 < t_1 < \dots < t_n = 1$ (equal increments from
+\code{load\_steps}, or the segments of \code{steps}).  For each increment
+it sets the pseudo-time of the load set (schedules evaluated, coefficients'
+time set, time-dependent dead loads reassembled, follower scales updated),
+applies the Dirichlet data to the current solution vector, and runs Newton
+warm-started from the last converged state.  If Newton fails and
+\code{substep.on\_failure} is set, the last converged state is restored,
+the increment is halved and retried, at most \code{max\_bisections} times
+and never below \code{min\_dt}; after a converged reduced increment the
+stepper aims at the planned breakpoint again and never grows beyond the
+planned grid.  Each accepted increment triggers the output callback
+(fields, ParaView cycle, probes, reactions).
+
+\paragraph{Initial guess of an increment.}
+By default the increment starts from the last converged state $x_n$ with
+the new Dirichlet values written on the boundary.  The interior lags, so
+the first Newton linearisation is about a state whose boundary layer of
+elements carries the whole increment; in a sheared block the iterate that
+follows can have $J$ between $0.4$ and $3$ at quadrature points, and the
+next step can invert elements.  With \code{solver.predictor: tangent} the
+stepper instead imposes the increment on a linear solve about the converged
+state.  With $g$ the state $x_n$ carrying the new boundary values and
+$d = g - x_n$ (nonzero on the essential degrees of freedom only),
+\begin{equation}
+  J(x_n)\,s = R(x_n) + J(x_n)\,d, \qquad x^{(0)} = x_n + d - s ,
+\end{equation}
+where $R$ is evaluated with the loads at the new pseudo-time and $s$
+vanishes on the essential rows.  Because the assembled Jacobian has its
+essential columns eliminated, $J(x_n)d$ is formed by a forward difference of
+the residual, $[R(x_n + \epsilon d) - R(x_n)]/\epsilon$.  This is the start
+that codes imposing the boundary condition on the Newton update obtain
+implicitly.  The converged states are unchanged; Newton typically needs
+half the iterations and no damped steps.  The predictor matters most for
+nearly incompressible materials and is needed in practice for the
+logarithmic volumetric law, whose pressure $\ln J/J$ is not monotone beyond
+$J = e$ and whose stiffness $u''$ varies by two orders of magnitude over
+the range of $J$ of a lagging-interior iterate.  It is a no-op for
+traction-driven increments, and it falls back to the default start if the
+predicted state has a non-finite residual.
+
+\subsection{Damped Newton}
+
+For $R(x) = 0$ with Jacobian $J(x) = \partial R/\partial x$
+(\file{solvers/newton.hpp}):
+\begin{enumerate}[nosep]
+  \item evaluate $R_0 = R(x_0)$; converged if $\|R\| \le \text{atol}$ or
+    $\|R\| \le \text{rtol}\,\|R_0\|$, where $\|\cdot\|$ is the global
+    $\ell_2$ norm over the communicator and $R_0$ is the residual at the
+    start of the increment (after the Dirichlet data are applied);
+  \item solve $J\,\delta = R$ with the linear solver; a Krylov solve that
+    hits its iteration cap is reported and the inexact step is used;
+  \item Armijo backtracking: with $\alpha = 1$, accept $x - \alpha\delta$
+    if $\|R(x - \alpha\delta)\| \le (1 - c\,\alpha)\|R(x)\|$ and the norm is
+    finite, otherwise halve $\alpha$, at most \code{max\_halvings} times
+    ($c = 10^{-4}$ by default).  A non-finite trial residual (an inverted
+    element, a Gent state beyond locking) is simply rejected;
+  \item stop with failure when the line search cannot reduce the residual
+    or after \code{max\_it} iterations.
+\end{enumerate}
+The report carries the iteration history and the failure reason, which the
+stepper uses to decide on bisection.
+
+\subsection{Linear solver of the displacement formulation}
+
+The Jacobian is a \code{HypreParMatrix}; the solver
+(\file{solvers/linear\_solver.hpp}) is GMRES (default, restart
+\code{krylov\_dim}) or CG, preconditioned by BoomerAMG with either the
+\emph{elasticity} options (rigid-body-mode interpolation, needs the finite
+element space) or the plain \emph{systems} options (unknown-based
+coarsening for $d$ components).  MFEM's Krylov tolerances are relative to
+the left-preconditioned residual $\|M^{-1}r\|$, which with AMG behaves like
+an error norm, so the true residual reduction is typically 10 to 100 times
+weaker than \code{rtol}.  The elasticity options converge quickly in two
+dimensions but stall on slender three-dimensional $k = 2$ meshes; they are
+given at most 100 iterations, after which the solver rebuilds the
+preconditioner with the systems options, repeats the solve, and keeps the
+systems options for the rest of the run.  The AMG hierarchy is rebuilt for
+every Newton Jacobian.
+
+\subsection{Saddle-point solver of the mixed formulation}
+\label{sec:saddlesolver}
+
+Each Newton system has the structure \eqref{eq:saddle},
+$\mathcal J = \bigl[\begin{smallmatrix}\bK & \bBm\\ \bBm_{pu} & -\bC\end{smallmatrix}\bigr]$
+with $\bC = \bM_p/\kappa$ (zero when incompressible) and
+$\bBm_{pu} = \bBm^T$ for the quadratic volumetric law only.  When the pressure is
+comparable to the shear modulus the raw $\bK$ carries an indefinite
+$p$-weighted geometric stiffness, which AMG handles poorly.  The solver
+(\file{solvers/saddle\_point\_solver.hpp}) therefore first rewrites the
+system in the algebraically equivalent \emph{augmented Lagrangian} form:
+with $\gamma = \code{augmentation}\times\mu$ and
+$\bm W = \diag(\bM_p)^{-1}$, adding $\gamma\bBm\bm W$ times the second block
+row to the first gives
+\begin{equation}
+  \begin{bmatrix} \bK + \gamma\bBm\bm W\bBm_{pu} & \bBm - \gamma\bBm\bm W\bC \\ \bBm_{pu} & -\bC \end{bmatrix}
+  \begin{bmatrix} \Delta\bu \\ \Delta p \end{bmatrix}
+  = \begin{bmatrix} b_u + \gamma\bBm\bm W b_p \\ b_p \end{bmatrix},
+  \label{eq:augmented}
+\end{equation}
+whose displacement block stays well conditioned (the augmentation acts as
+a penalty of strength $\gamma$ on the discrete constraint).  This is solved
+by flexible GMRES with the block upper-triangular preconditioner
+\begin{equation}
+  \Delta p = -\tilde{\bS}^{-1} r_p, \qquad
+  \Delta\bu = \tilde{\bK}^{-1}\bigl(r_u - \tilde{\bBm}\Delta p\bigr),
+\end{equation}
+where $\tilde{\bK}^{-1}$ is an inner GMRES + BoomerAMG (systems options)
+solve of the augmented displacement block to \code{inner\_rtol}, and
+$\tilde{\bS}$ approximates the Schur complement by a scaled pressure mass
+matrix,
+\begin{equation}
+  \tilde{\bS} = \frac{1 + \mu/\kappa}{\mu + \gamma}\,\bM_p ,
+\end{equation}
+applied by CG with Jacobi smoothing.  The scale interpolates between the
+classical estimates: without augmentation it is
+$\bM_p(1/\mu + 1/\kappa)$, the sum of the incompressible Stokes-like
+estimate $\bBm^T\bK^{-1}\bBm \approx \bM_p/\mu$ and the penalty term
+$\bM_p/\kappa$; in the incompressible limit it is $\bM_p/(\mu + \gamma)$,
+the augmented-Lagrangian estimate.  On the Cook and manufactured-solution
+problems this takes about 20 outer iterations independent of the mesh.
+\code{augmentation: 0} disables the transformation.  The shear modulus that
+scales $\gamma$ and $\tilde{\bS}$ is the base material's small-strain value
+(Section~\ref{sec:moduli}).  The row operation multiplies by $\bBm\bm W$,
+the $(1,2)$ block itself, not by the transpose of the $(2,1)$ block; the
+two coincide only for the quadratic law, and the distinction is what keeps
+Newton quadratic with the other laws.
+
+%============================================================================
+\section{Post-processing}
+\label{sec:post}
+%============================================================================
+
+Two kinds of output fields exist (\file{physics/quadrature\_fields.hpp}).
+The nodal unknowns, \code{displacement} and (mixed) \code{pressure}, are
+the $H^1$ fields the solver computes and are written as they are.  The
+quadrature quantities are computed once per load step at the quadrature
+points of the kernels' rule into a \code{QuadratureFunction}, the source of
+truth, from the state $(\bF, \bP, \Psi)$ at each point:
+\begin{center}
+\small
+\begin{tabular}{@{}l l l@{}}
+\toprule
+Name & Components & Definition \\
+\midrule
+\code{cauchy\_stress} & 6 ($xx\,yy\,zz\,xy\,yz\,xz$) & $\bsig = J^{-1}\bP\bF^T$, symmetrised \\
+\code{pk1\_stress} & 9 (row-major) & $\bP$ \\
+\code{deformation\_gradient} & 9 (row-major) & $\bF$ (completed $\bF_c$ under plane stress) \\
+\code{jacobian} & 1 & $J = \det\bF$ \\
+\code{vonmises} & 1 & $\sigma_{vm} = \sqrt{\tfrac32\,\bsig':\bsig'}$, $\bsig' = \dev\sym\bsig$ \\
+\code{energy\_density} & 1 & $\Psi(\bF)$; mixed: $\Psi_{\mathrm{iso}} + p(J-1) - \kappa\,u^*(p/\kappa)$ \\
+\code{thickness\_stretch} & 1 & $F_{33} = \lambda_3$ (plane stress only) \\
+\bottomrule
+\end{tabular}
+\end{center}
+In two dimensions $\bF$ carries $F_{33}$, so the out-of-plane terms are
+included.  Derived scalars are formed at the quadrature points and then
+presented, never computed from a presented field.  Each quantity is
+presented where \code{output.quadrature\_at} asks:
+\begin{description}[nosep]
+  \item[\code{nodes}] a continuous $H^1$ field of the mesh order.
+    \code{nodal\_projection: averaged} projects the data onto each
+    element's own polynomial space (element mass matrix
+    $\bM_e a = \int N f$) and takes the arithmetic mean of the element
+    values at shared nodes (the classical extrapolate-and-average,
+    communicated across ranks); \code{projected} solves the global $L^2$
+    projection with the consistent mass matrix (CG to $10^{-14}$), which is
+    optimal in the least-squares sense but can overshoot near stress
+    concentrations.
+  \item[\code{elements}] the quadrature-weighted volume average per element,
+    an order-0 field named \code{<name>\_elem}.
+  \item[\code{quadrature\_points}] the raw values, written as a point cloud
+    \code{<name>\_qp} (one VTU per rank, listed in the same PVD as the
+    mesh).
+\end{description}
+For a homogeneous state all presentations agree to machine precision; on a
+real problem their differences are discretisation error.  Probes evaluate
+every registered grid function (nodal unknowns, \code{<name>} and
+\code{<name>\_elem}) at physical points, averaging when several ranks find
+the point.  The internal energy $\int\Psi\ud V$ (or the mixed functional)
+is printed at the end; it is computed by a domain-only form, so follower
+pressure work is not included (that load is not conservative).  For the
+mixed formulation the integrand is
+$\Psi_{\mathrm{iso}} + p(J-1) - \kappa\,u^*(p/\kappa)$, where
+$u^*(\pi) = \sup_J[\pi(J-1) - u(J)]$ is the Legendre transform of the
+normalised volumetric law ($\pi^2/2$ for the quadratic law, so that the
+integrand is the perturbed Lagrangian \eqref{eq:lagrangian}; closed forms
+for the Simo--Taylor and $J\ln J$ laws, a scalar Newton solve for the
+logarithmic one).  The stored energy $\Psi_{\mathrm{iso}} + U(J)$ is
+deliberately not used: the discrete displacement satisfies the constraint
+only weakly, and $\kappa$ times the square of its pointwise violation
+would dominate the value for nearly incompressible materials.  The last
+term is absent when $\kappa = \infty$, where the integrand is the
+Lagrangian and equals $\Psi_{\mathrm{iso}}$ on the constraint.
+
+%============================================================================
+\section{Mesh input}
+%============================================================================
+
+Meshes come from files (Gmsh 2.2 or 4.x, or any format MFEM reads).  Every
+physical group becomes an element or boundary attribute numbered by its tag,
+and the group names are kept as attribute sets, so boundary conditions and
+material regions may name groups instead of numbers; both are checked
+against the mesh and the error lists what the mesh provides.  The loader
+constructs the mesh in place because MFEM's move operations drop the
+attribute sets.  Options: \code{serial\_refine} and \code{parallel\_refine}
+uniform refinements (a second-order Gmsh mesh refines along the curved
+geometry, independently of the finite element order), and \code{perturb},
+a deterministic pseudo-random jitter of the interior vertices by at most
+the given fraction of the smallest element size in each coordinate
+(straight-sided meshes only, applied before refinement so that all levels
+share one distortion pattern; inverted elements are refused).  The
+Cartesian box and the bilinear corner map remain available
+programmatically for the tests.
+
+%============================================================================
+\section{Framework architecture and state of the seam}
+\label{sec:seam}
+%============================================================================
+
+The architecture document defines a \emph{flux/source seam}: a physics
+declares a flux $\bm{\mathcal F}(u, \nabla u)$, a source $\mathcal S(u)$ and
+a numerical flux $\hat{\bm{\mathcal F}}(u^-, u^+, \bn)$ per quadrature
+point, and the framework turns one definition into CG volume, DG face or
+HDG trace operators, with partial or full assembly and device execution.
+Solid mechanics fits this shape with $\bm{\mathcal F} = \bP(\bF)$ in total
+Lagrangian form.  The present code implements the seam as the minimum the
+solid needs; the following is still solid-specific and would generalise
+with a second physics:
+
+\begin{itemize}[nosep]
+  \item The displacement integrator hard-codes the flux $\bP(\bF)$
+    contracted with $\Grad\bw$, a vector $H^1$ unknown and the contraction
+    $\Grad\bw:\bA:\Grad\Delta\bu$.  The quadrature-point bodies are free
+    functions on plain tensors and can be lifted into a general
+    $\bm{\mathcal F}(u, \nabla u)$, $\mathcal S(u)$ contract; the element
+    loops would become the framework's CG volume kernel.
+  \item The mixed kernel is a second block integrator with its own loops;
+    a multi-field CG kernel over a list of unknowns with a block
+    flux/source contract would absorb both.  The saddle-point solver is
+    specific to the $2\times2$ $u$--$p$ structure and the pressure-mass
+    Schur approximation.
+  \item Sources are not part of the integrator: the body force is a dead
+    load on the linear-form side.  A reaction or heat source needs a domain
+    source term inside the nonlinear form with its own tangent.
+  \item Boundary terms are stock linear-form integrators plus one
+    hand-written face integrator (the follower pressure).  Robin and flux
+    conditions and DG/HDG numerical fluxes have no home yet.
+  \item Dirichlet conditions prescribe components of the vector unknown on
+    an attribute; scalar unknowns are not expressible in the input's
+    \code{bcs} block.
+  \item The physics owns its space, essential dofs and loads.  A coupling
+    layer needs these behind the common interface (\code{QuasiStaticProblem}:
+    residual, Jacobian, pseudo-time, Dirichlet application) plus field
+    exchange by name through the field registry.
+  \item Materials are stateless, one model per problem with region-wise
+    parameters; internal variables, temperature dependence and hand-coded
+    tangents are absent by design.
+  \item All kernels are CPU host code written without allocation or
+    virtual calls in the quadrature loops, so device annotations and
+    \code{mfem::forall} can be added without restructuring; partial
+    assembly is not implemented.
+\end{itemize}
+
+%============================================================================
+\appendix
+\section{Symbols and input keys}
+%============================================================================
+
+\begin{center}
+\small
+\begin{tabular}{@{}l l l@{}}
+\toprule
+Symbol & Meaning & Input key \\
+\midrule
+$k$ & polynomial order of the displacement space & \code{mesh.order} \\
+$E, \nu$ & Young's modulus, Poisson ratio & \code{material.E}, \code{material.nu} \\
+$\mu, \kappa$ & shear and bulk modulus & \code{material.mu}, \code{material.kappa} \\
+$u(J)$ & volumetric law $U = \kappa u$ & \code{material.volumetric} \\
+$c_1, c_2$ & Mooney--Rivlin constants & \code{material.c1}, \code{material.c2} \\
+$c_{10}, c_{20}, c_{30}$ & Yeoh constants & \code{material.c10}, \code{c20}, \code{c30} \\
+$J_m$ & Gent limit of $\Ib - 3$ & \code{material.Jm} \\
+$N$ & Arruda--Boyce links per chain & \code{material.N} \\
+$\mu_r, \alpha_r$ & Ogden terms & \code{material.mu\_r}, \code{material.alpha\_r} \\
+$\rho_R$ & reference density & \code{material.rho0} \\
+$\bar\bu, \bar\bT, p, \bb$ & prescribed data & \code{bcs.dirichlet}, \code{bcs.traction}, \code{body\_force} \\
+$s_i(t)$ & load schedule & \code{schedule} of an entry \\
+$t_1, \dots, t_n$ & load-step breakpoints & \code{solver.load\_steps} or \code{solver.steps} \\
+$x^{(0)}$ & initial guess of an increment & \code{solver.predictor} \\
+rtol, atol, $c$ & Newton tolerances, Armijo constant & \code{solver.newton} \\
+$\gamma/\mu$ & augmentation parameter & \code{solver.linear.augmentation} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{Source files}
+
+\begin{center}
+\small
+\begin{tabular}{@{}l p{7.4cm}@{}}
+\toprule
+File & Content \\
+\midrule
+\file{base/tensor.hpp} & \code{tensor<T, n...>} of rank 1, 2, 4; products, contractions, transpose, trace, deviator, determinant and inverse up to $3\times3$ \\
+\file{base/dual.hpp} & forward-mode dual number and elementary functions \\
+\file{base/config.\{hpp,cpp\}} & YAML schema, validation with key paths, schedules \\
+\file{base/expression.\{hpp,cpp\}} & parser and evaluator of $f(x, y, z, t)$ \\
+\file{base/coefficients.hpp} & expression and affine MFEM coefficients \\
+\file{base/mesh\_input.\{hpp,cpp\}} & mesh loading, attribute resolution, jitter, refinement \\
+\file{base/fields.hpp}, \file{output}, \file{probes} & field registry, ParaView writer, point probes \\
+\file{kernels/total\_lagrangian.hpp} & quadrature-point functions and the displacement integrator \\
+\file{kernels/mixed\_total\_lagrangian.hpp} & $u$--$p$ quadrature-point functions and block integrator \\
+\file{kernels/follower\_pressure.hpp} & follower-pressure face integrators (both formulations) \\
+\file{kernels/materials/*.hpp} & material functors, isochoric helpers, volumetric laws, spectral solver, plane-stress adapter, dual tangent \\
+\file{kernels/materials/materials.\{hpp,cpp\}} & material variants, factory, moduli resolution, region tables \\
+\file{physics/loads.\{hpp,cpp\}} & load set: Dirichlet entries, dead loads, follower scales, schedules, reactions \\
+\file{physics/solid\_mechanics\_tl.\{hpp,cpp\}} & displacement formulation module \\
+\file{physics/mixed\_solid\_mechanics\_tl.\{hpp,cpp\}} & mixed formulation module \\
+\file{physics/solid\_problem.\{hpp,cpp\}} & common interface, factory by formulation, YAML load installer \\
+\file{physics/quadrature\_fields.\{hpp,cpp\}} & quadrature quantities and their presentations \\
+\file{solvers/quasi\_static.\{hpp,cpp\}} & load stepping with bisection \\
+\file{solvers/newton.\{hpp,cpp\}} & damped Newton with Armijo backtracking \\
+\file{solvers/linear\_solver.\{hpp,cpp\}} & GMRES/CG + BoomerAMG with the systems fallback \\
+\file{solvers/saddle\_point\_solver.\{hpp,cpp\}} & augmented-Lagrangian FGMRES for the $u$--$p$ Jacobian \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+%============================================================================
+\small\begin{thebibliography}{9}
+%============================================================================
+\bibitem{bonetwood} J. Bonet, R.\,D. Wood, \emph{Nonlinear Continuum Mechanics for Finite Element Analysis}, 2nd ed., Cambridge University Press, 2008.
+\bibitem{holzapfel} G.\,A. Holzapfel, \emph{Nonlinear Solid Mechanics: A Continuum Approach for Engineering}, Wiley, 2000.
+\bibitem{ogden} R.\,W. Ogden, \emph{Non-Linear Elastic Deformations}, Ellis Horwood, 1984 (Dover, 1997).
+\bibitem{simotaylor} J.\,C. Simo, R.\,L. Taylor, Quasi-incompressible finite elasticity in principal stretches: continuum basis and numerical algorithms, \emph{Comput. Methods Appl. Mech. Engrg.} 85 (1991) 273--310.
+\bibitem{pencegou} T.\,J. Pence, K. Gou, On compressible versions of the incompressible neo-Hookean material, \emph{Math. Mech. Solids} 20 (2015) 157--182.
+\bibitem{doll} S. Doll, K. Schweizerhof, On the development of volumetric strain energy functions, \emph{J. Appl. Mech.} 67 (2000) 17--21.
+\bibitem{ab} E.\,M. Arruda, M.\,C. Boyce, A three-dimensional constitutive model for the large stretch behavior of rubber elastic materials, \emph{J. Mech. Phys. Solids} 41 (1993) 389--412.
+\bibitem{gent} A.\,N. Gent, A new constitutive relation for rubber, \emph{Rubber Chem. Technol.} 69 (1996) 59--61.
+\bibitem{yeoh} O.\,H. Yeoh, Some forms of the strain energy function for rubber, \emph{Rubber Chem. Technol.} 66 (1993) 754--771.
+\bibitem{benzi} M. Benzi, M.\,A. Olshanskii, An augmented Lagrangian-based approach to the Oseen problem, \emph{SIAM J. Sci. Comput.} 28 (2006) 2095--2113.
+\bibitem{mfem} R. Anderson et al., MFEM: A modular finite element methods library, \emph{Comput. Math. Appl.} 81 (2021) 42--74.
+\end{thebibliography}
+
+\end{document}

@@ -2,3 +2,4 @@
 # out/ holds ParaView output of the app inputs. myapps/ is untouched.
 /build/
 /out/
+__pycache__/

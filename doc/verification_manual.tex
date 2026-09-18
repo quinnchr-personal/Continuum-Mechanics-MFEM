@@ -1,0 +1,762 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath,amssymb,bm}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{longtable}
+\usepackage{enumitem}
+\usepackage[hidelinks]{hyperref}
+
+\newcommand{\ud}{\,\mathrm{d}}
+\newcommand{\Grad}{\operatorname{Grad}}
+\newcommand{\Dive}{\operatorname{Div}}
+\newcommand{\dev}{\operatorname{dev}}
+\newcommand{\tr}{\operatorname{tr}}
+\newcommand{\diag}{\operatorname{diag}}
+\newcommand{\bx}{\bm{x}}
+\newcommand{\bX}{\bm{X}}
+\newcommand{\bu}{\bm{u}}
+\newcommand{\be}{\bm{e}}
+\newcommand{\bN}{\bm{N}}
+\newcommand{\bsig}{\bm{\sigma}}
+\newcommand{\bP}{\bm{P}}
+\newcommand{\bF}{\bm{F}}
+\newcommand{\bB}{\bm{B}}
+\newcommand{\bI}{\bm{I}}
+\newcommand{\bR}{\bm{R}}
+\newcommand{\bb}{\bm{b}}
+\newcommand{\bw}{\bm{w}}
+\newcommand{\Ione}{I_1}
+\newcommand{\Itwo}{I_2}
+\DeclareRobustCommand{\code}[1]{{\def\_{\textunderscore\allowbreak}\texttt{#1}}}
+\DeclareRobustCommand{\file}[1]{{\def\_{\textunderscore\allowbreak}\texttt{#1}}}
+\sloppy
+\setlength{\emergencystretch}{2em}
+
+\title{Continuum-Mechanics-MFEM\\[4pt]
+\large Verification Manual (\texttt{apps/} and \texttt{tests/})}
+\author{}
+\date{September 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+\noindent
+This manual documents how the flux-kernel framework of the root \file{src/}
+library is verified.  It describes the application executable and the
+scripts under \file{apps/}, the example meshes, and every input under
+\file{apps/input/}: the problem it poses, the reference it is compared
+with, the quantity checked and the tolerance, and the test that runs it.
+The unit-level checks of the test suite (\file{tests/}) are summarised
+first, since they verify the ingredients the application cases rely on.
+The models and methods themselves are described in the theory manual
+(\file{doc/theory\_manual.tex}); the closed-form solutions of the
+homogeneous states are derived in \file{doc/incompressible\_hyperelasticity.tex}.
+\end{abstract}
+
+\tableofcontents
+
+%============================================================================
+\section{Organisation}
+%============================================================================
+
+\subsection{Levels of verification}
+
+The checks form three tiers, each relying on the previous one.
+
+\begin{enumerate}[nosep]
+  \item \textbf{Unit and consistency tests} (\file{tests/test\_base},
+    \file{test\_materials}): tensor algebra against hand values, dual
+    derivatives against finite differences, the YAML schema and the
+    expression parser, and every material's stress-free reference state,
+    tangent, objectivity and small-strain limit.
+  \item \textbf{Discretisation tests} (\file{tests/test\_solid\_mms},
+    \file{test\_mixed}, \file{test\_homogeneous}, \file{test\_loading}):
+    patch tests, assembled Jacobians against finite differences, manufactured
+    solutions with measured convergence rates, homogeneous states against
+    closed forms, and the boundary-condition and load-scheduling features.
+  \item \textbf{Application cases} (\file{apps/input/}, driven by
+    \file{tests/test\_verification}, \file{test\_benchmarks},
+    \file{test\_loading}, \file{test\_parallel} and
+    \file{apps/homogeneous\_compare.py}): complete inputs run through the
+    same library wiring as the executable and compared with analytical
+    solutions, literature benchmarks, frozen regression values, or a
+    reference code.
+\end{enumerate}
+
+\subsection{Running the suite}
+
+\begin{center}
+\small
+\begin{tabular}{@{}l p{11cm}@{}}
+\toprule
+Target & Content \\
+\midrule
+\code{make} & \file{build/libcmf.a}, \file{build/apps/solid\_mechanics}, \file{build/tests/*} \\
+\code{make meshes} & regenerates \file{apps/mesh/*.msh} from the \file{.geo} sources with Gmsh (the \file{.msh} files are kept in the tree) \\
+\code{make check} & serial, about 20 s: \file{test\_base}, \file{test\_materials}, \file{test\_solid\_mms}, \file{test\_mixed}, \file{test\_homogeneous}, \file{test\_loading} \\
+\code{make homogeneous} & the executable on the homogeneous-deformation inputs, compared with the closed forms by \file{apps/homogeneous\_compare.py} \\
+\code{make test} & everything: \code{check}, the Cook inputs serial and with four ranks, parallel consistency with two and four ranks, the incompressible Cook input, the homogeneous comparison, \file{test\_mixed --full}, \file{test\_benchmarks} serial and parallel, \file{test\_loading} with four ranks, \file{test\_verification}, and finally the Cook ratio gate \\
+\bottomrule
+\end{tabular}
+\end{center}
+Targets are run from the repository root, since inputs are referenced as
+\file{apps/input/<set>/<case>.yaml}.  Every test returns a non-zero exit
+status on the first failed check and prints the measured quantities next
+to their references.
+
+\subsection{The executable}
+
+\file{apps/solid\_mechanics.cpp} contains no physics: it parses the input,
+builds the parallel mesh, creates the problem selected by
+\code{formulation}, installs the loads, and runs the quasi-static stepper
+with a callback that writes ParaView cycles, probes and reactions after
+every converged increment.  At startup it prints the mesh statistics and
+the element and boundary attributes with their names; at the end the
+Newton report, $\|\bu\|_{L^2}$, the internal energy, the probes and the
+reactions.  The exit status is 0 on convergence, 2 if the load path did
+not complete, and 1 on an input error.  Run as
+\begingroup\small
+\begin{verbatim}
+./build/apps/solid_mechanics -i apps/input/finite_elasticity/cooks_membrane/cook.yaml
+mpirun -np 4 ./build/apps/solid_mechanics -i <input.yaml>
+\end{verbatim}
+\endgroup
+
+\subsection{Meshes}
+
+Every input reads a Gmsh mesh from \file{apps/mesh/}, generated from a
+\file{.geo} source with named physical groups that the boundary conditions
+refer to.  The box-like geometries keep MFEM's Cartesian numbering (2D:
+bottom 1, right 2, top 3, left 4; 3D: bottom $z{=}0$ 1, front $y{=}0$ 2,
+right $x{=}L$ 3, back $y{=}L$ 4, left $x{=}0$ 5, top $z{=}L$ 6).
+
+\begin{center}
+\small
+\begin{tabular}{@{}l p{3.3cm} p{6.6cm}@{}}
+\toprule
+Source & Meshes & Geometry and groups \\
+\midrule
+\file{square.geo} & \file{square.msh} & unit square, $n\times n$ quadrilaterals; bottom, right, top, left \\
+\file{cook.geo} & \file{cook.msh} & Cook's membrane, transfinite quadrilaterals (the bilinear map of the former Cartesian input); bottom, right, top, left \\
+\file{box.geo} & \file{cube}, \file{beam}, \file{cube10}, \file{shear\_cube}, \file{column\_*} & $L_x\times L_y\times L_z$ hexahedra; bottom, front, right, back, left, top \\
+\file{cube\_tet.geo} & \file{cube\_tet.msh} & unit cube in tetrahedra, same groups \\
+\file{annulus.geo} & \file{annulus.msh} & quarter annulus $A{=}1$, $B{=}2$, second order; bottom, outer, left, inner \\
+\file{cylinder\_torsion.geo} & \file{cylinder\_torsion.msh} & solid cylinder $a{=}12.7$, $L{=}25.4$, second-order tetrahedra; bottom, top, wall \\
+\file{plate\_hole.geo} & \file{plate\_hole.msh} & quarter plate $15\times10\times1$ with a 3\,mm hole, second order; xbot, ybot, xtop, ytop, hole, zbot, ztop \\
+\file{plate\_hole\_2d.geo} & \file{plate\_hole\_2d.msh} & quarter of a $40\times40$ plate with a unit hole, second-order quadrilaterals \\
+\file{tube\_quarter.geo} & \file{tube\_quarter.msh} & quarter tube $10/11\times5$, second order; xplane, yplane, zbot, ztop, inner, outer \\
+\file{sphere\_octant.geo} & \file{sphere\_octant.msh} & octant shell $10/11$, second order; xplane, yplane, zplane, inner, outer \\
+\file{footing.geo} & \file{footing.msh} & 50\,mm cube with a quarter patch on top; left, front, bottom, patch, top\_rest, right, back \\
+\file{inclusion.geo} & \file{inclusion.msh} & octant of a cube with a spherical inclusion; volumes inclusion, matrix; the six box faces \\
+\file{perturb\_column.py} & \file{column\_buckling}, \file{column\_euler} & adds the imperfection $x, y \mathrel{-}= \delta_0(1 - \cos 2\pi z/L)$ to a straight box mesh \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+%============================================================================
+\section{Unit and consistency tests}
+%============================================================================
+
+\subsection{\texttt{test\_base}}
+Tensor algebra (determinant, inverse, contractions of rank 2 and 4) against
+hand values in two and three dimensions; dual-number derivatives of scalar
+composites and of $\det$, $\mathrm{inv}$ and tensor compositions against
+Richardson-extrapolated central differences to $10^{-10}$; the YAML
+schema: the documented example parses to the expected values, defaults for
+omitted sections, malformed files give an error rather than a crash,
+missing keys, wrong types, unknown keys and bad enumerations name the full
+key path; boundary attributes by number and by physical-group name; load
+schedules and their YAML forms (ramp, constant, table, components, step
+segments, bisection control); the expression grammar (precedence,
+right-associative power, functions, comparisons, parse errors with column
+numbers); and material regions (inheritance, bulk-key replacement, errors).
+
+\subsection{\texttt{test\_materials}}
+For every model, at five random deformation gradients $\bF = \bI + 0.4\bR$
+with $\det\bF > 0.3$:
+\begin{itemize}[nosep]
+  \item stress-free reference state $\bP(\bI) = \bm 0$ to machine precision;
+  \item the dual-number tangent against central finite differences of
+    $\bP$ (step $10^{-6}$), relative error $\le 10^{-6}$;
+  \item objectivity $\bP(\bm Q\bF) = \bm Q\bP(\bF)$ for random rotations
+    $\bm Q$ to $10^{-12}$;
+  \item the small-strain limit: for $\bF = \bI + \epsilon\bm H$ the stress
+    equals $\lambda\tr\bm\varepsilon\,\bI + 2\mu\bm\varepsilon$ with the
+    resolved moduli ($\lambda = \kappa - \tfrac23\mu$ for the decoupled
+    models);
+  \item for the decoupled models, $\bP = \partial\Psi/\partial\bF$ and
+    $\bP_{\mathrm{iso}} = \partial\Psi_{\mathrm{iso}}/\partial\bF$ by
+    duals against finite differences, and the deviatoric property
+    $\tr(\bP_{\mathrm{iso}}\bF^T) = 0$ at every $\bF$;
+  \item Ogden reduces to the isochoric neo-Hookean model for
+    $(\mu, \alpha) = (\mu, 2)$ and to Mooney--Rivlin for
+    $(2c_1, 2), (-2c_2, -2)$; its analytic tangent matches finite
+    differences also at coincident principal stretches;
+  \item the plane-stress adapter: $P_{33} = 0$ and no out-of-plane shear
+    stress, $J = 1$ for incompressible bases, the in-plane dual tangent
+    against finite differences (the compressible branch differentiates a
+    converged root), $\partial\Psi/\partial\bF = \bP$ in the plane
+    (envelope theorem), objectivity under in-plane rotations, the
+    small-strain plane-stress moduli $E/(1-\nu^2)$, $E\nu/(1-\nu^2)$ and
+    the thickness strain $-\nu/(1-\nu)\,\varepsilon$, and uniaxial tension
+    of an incompressible sheet, $P_{11} = \mu(\lambda - \lambda^{-2})$;
+  \item the volumetric laws (quadratic, Simo--Taylor, logarithmic,
+    $J\ln J$): $u(1) = u'(1) = 0$, $u''(1) = 1$, $u'$ and $u''$ against
+    dual and finite-difference derivatives of $u$ and $u'$, and the
+    isochoric neo-Hookean and Ogden models through the full decoupled
+    checks above with each law; the factory applies the key and the
+    coupled models refuse it;
+  \item resolution of $(\mu, \kappa)$ from every admissible key combination
+    and the refusal of the inadmissible ones.
+\end{itemize}
+
+%============================================================================
+\section{Discretisation tests}
+%============================================================================
+
+\subsection{Patch tests, manufactured solutions, Jacobians (\texttt{test\_solid\_mms})}
+On a perturbed quadrilateral mesh an affine displacement $\bu = \bm A\bX + \bm c$
+prescribed on the boundary is reproduced exactly (patch test) for both
+coupled models.  The smooth manufactured field
+$\bu = \alpha(\sin\pi X\sin\pi Y,\ X^2Y(1-Y))$ with the body force
+$\bb = -\rho_R^{-1}\Dive\bP(\bF(\bu))$ (divergence by central differences of
+the closed-form stress) gives $L^2$ convergence rates of at least
+$k + 0.9$ for $k = 1, 2$; on the finest $k = 2$ mesh the last Newton steps
+above the round-off floor contract quadratically (order estimate
+$\ge 1.5$); the assembled Jacobian matches central differences of the
+residual along a random direction at a nonzero state.
+
+\subsection{Mixed formulation (\texttt{test\_mixed})}
+Affine patch tests with a constant pressure $p_0 = U'(\det(\bI + \bm A))$
+for the decoupled materials at $\nu = 0.45$ and at $\kappa = \infty$, and
+at $\nu = 0.45$ with the Simo--Taylor, logarithmic and $J\ln J$ volumetric
+laws (exact to $10^{-14}$, quadratic Newton convergence); the block
+Jacobian against finite differences ($4\times10^{-9}$), with the pressure
+rows checked separately so that the law-dependent block $K_{pu}$ is
+exercised; manufactured
+solutions with a volume-preserving motion (the composition of two shears
+$x = X + a\sin\pi Y$, $y = Y + b\sin\pi x$, $J = 1$, with the smooth
+pressure $p = c\sin\pi X\cos\pi Y$) for the incompressible case, rates
+$u \ge 3.0$, $p \ge 2.0$, and a compressible field at $\nu = 0.45$ with
+$p = \kappa(J-1)$, rates $u \ge 3.4$, $p \ge 2.0$; and agreement of the
+mixed and displacement formulations at finite $\kappa$ under refinement.
+The pressure is made unique by a manufactured traction on one edge.
+\code{--full} adds the $32\times32$ levels.
+
+\subsection{Homogeneous deformations (\texttt{test\_homogeneous})}
+For the six incompressible models with rubber-like parameters (isochoric
+neo-Hookean $\mu = 1$; Mooney--Rivlin $c_1 = 0.4$, $c_2 = 0.1$; Yeoh
+$0.5, -0.05, 0.01$; Gent $\mu = 1$, $J_m = 10$; Arruda--Boyce $\mu = 1$,
+$N = 5$; Ogden $(0.63, 0.0012, -0.01)$, $(1.3, 5.0, -2.0)$):
+\begin{enumerate}[nosep]
+  \item at the material point, the code's Cauchy stress at
+    $\bF = \diag(\lambda_a)$ with the analytic mean stress equals the
+    analytic principal stresses of the plane-strain, uniaxial, equibiaxial
+    and pure-shear states, and the deviatoric stress in simple shear equals
+    its spectral closed form with $\sigma_{11} - \sigma_{22} = \gamma\sigma_{12}$;
+  \item as finite element solutions of the mixed formulation on $4\times4$
+    (plane strain) and $2\times2\times2$ (uniaxial) Q2/Q1 meshes, and of the
+    plane-stress displacement formulation for the sheet states uniaxial,
+    equibiaxial, pure shear and simple shear on a $4\times4$ Q2 mesh:
+    displacement, pressure and every quadrature quantity (Cauchy and first
+    Piola--Kirchhoff stress, $J$, von Mises, energy density, thickness
+    stretch) in all presentations (both nodal projections, element
+    averages, raw quadrature values), exact to solver tolerance with
+    quadratic Newton convergence.
+\end{enumerate}
+
+\subsection{Boundary conditions and loading (\texttt{test\_loading})}
+On Cook's membrane and unit boxes: staged loading (a traction ramped over
+$[0, 0.5]$ and held, a second ramped over $[0.5, 1]$) equals the
+single-stage solve, and the state at $t = 0.5$ equals the first traction
+alone (path independence); a load-unload table returns to zero; with a
+capped Newton the planned step fails and bisection recovers, while without
+substepping the failure is reported; the tangent predictor reaches the
+same converged state as the default start with fewer Newton iterations
+(Cook's membrane with a prescribed edge, 18 to 9; a clamped sheared square
+in the mixed formulation with the logarithmic volumetric law at
+$\kappa/\mu = 1000$, 17 with a damped step to 6 full steps) and leaves a
+traction-driven path unchanged; a programmatic time-dependent
+coefficient with the constant schedule reproduces the ramp; the
+manufactured problem written entirely as YAML expressions converges at
+rate $\ge 2.8$ for $k = 2$, also with only the $x$ component prescribed on
+two faces and the exact traction supplied for the other; a traction
+expression linear in $t$ equals value plus ramp and one without $t$ is
+assembled once; the uniaxial symmetry cube with rollers reproduces the
+affine field and closed-form pressure of the full cube, with exactly the
+expected number of essential degrees of freedom; rollers on all six faces
+under a body force leave no rigid mode; the follower tangent matches
+central differences on distorted quadrilateral and hexahedral meshes at a
+random state; the follower pressure equals the dead pressure at $\bF = \bI$
+and agrees to $O(p^2)$ under a small load; the thick-walled cylinder
+inflates as Rivlin says (Section~\ref{sec:rivlincyl}); two-region
+materials reproduce the single-material run when the parameters agree, have
+a consistent tangent and deform less in the stiff half; and the reactions
+equal $P_{11}$ times the face area on the uniaxial cube and balance the
+applied resultant on Cook's membrane to $10^{-14}$.
+
+\subsection{Parallel consistency (\texttt{test\_parallel})}
+The Cook inputs of both formulations are run serially with tightened
+tolerances (\code{--write}) and the recorded norms are matched to
+$10^{-10}$ relative by runs with two and four ranks (\code{--check}).
+
+%============================================================================
+\section{Verification cases (\texttt{apps/input/finite\_elasticity/verification/})}
+%============================================================================
+
+Every input in this directory is compared with an independent reference
+by a test.  The header of each input states the reference and the
+formulas.  Unless noted, the material parameters are dimensionless.
+
+\subsection{Homogeneous deformations of incompressible models}
+\label{sec:homogeneous}
+
+\paragraph{Problem.}
+A unit square or cube carries an affine displacement $\bu = \bm G\bX$,
+$\bm G = \diag(\lambda_a - 1)$, on its constrained faces, written as
+expression strings (for example \code{["x", "-0.5*y"]}), with the remaining
+faces free; the isochoric neo-Hookean model with \code{incompressible: true}
+and $\mu = 1$ ($\mu = 0.5$\,MPa in the three uniaxial inputs, which share
+their shear modulus with Section~\ref{sec:compuniaxial}).  The state is homogeneous, so
+$\Dive\bP = 0$ holds identically and the affine field with a constant
+pressure is the exact solution, which lies in the Taylor--Hood spaces.
+
+\begin{center}
+\small
+\begin{tabular}{@{}l l l p{4.2cm}@{}}
+\toprule
+Input & Formulation & Stretches & Constrained faces \\
+\midrule
+\file{plane\_strain\_neo\_hookean} & mixed, 2D & $(2, \tfrac12, 1)$ & left, right \\
+\file{plane\_stress\_neo\_hookean} & plane stress, 2D & $(2, 2^{-1/2}, 2^{-1/2})$ & left, right \\
+\file{uniaxial\_neo\_hookean} & mixed, 3D & $(2, 2^{-1/2}, 2^{-1/2})$ & left, right \\
+\file{symmetry\_uniaxial\_neo\_hookean} & mixed, 3D & same, octant model & rollers on $X, Y, Z = 0$; $u_x$ on right \\
+\file{incompressible\_uniaxial\_iso\_neo\_hookean} & mixed, 3D & $(1.5, 1.5^{-1/2}, 1.5^{-1/2})$, octant model & rollers on $X, Y, Z = 0$; $u_x$ on right \\
+\file{equibiaxial\_neo\_hookean} & mixed, 3D & $(1.5, 1.5, 1.5^{-2})$ & left, right, front, back \\
+\file{pure\_shear\_neo\_hookean} & mixed, 3D & $(1.5, 1, 1.5^{-1})$ & left, right, front, back \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\paragraph{Reference.}
+The closed forms of \file{incompressible\_hyperelasticity.tex}, Sections
+4.1--4.3 and 5.1--5.3.  With $\beta_a = \lambda_a\,\partial\Psi/\partial\lambda_a$
+up to an isotropic term ($\beta_a = 2\Psi_1\lambda_a^2 - 2\Psi_2\lambda_a^{-2}$
+for invariant models, $\sum_r\mu_r\lambda_a^{\alpha_r}$ for Ogden), the
+principal Cauchy stresses are $\sigma_a = \beta_a - \beta_f$ where $f$ is
+the traction-free axis, $p = \tfrac13\sum\sigma_a$,
+$\sigma_{vm} = \sqrt{\tfrac32\sum(\sigma_a - p)^2}$, $P_a = \sigma_a/\lambda_a$.
+For the neo-Hookean model: uniaxial $\sigma_1 = \mu(\lambda^2 - \lambda^{-1})$;
+equibiaxial $\sigma_1 = \sigma_2 = \mu(\lambda^2 - \lambda^{-4})$; pure shear
+$\sigma_1 = \mu(\lambda^2 - \lambda^{-2})$, $\sigma_2 = \mu(1 - \lambda^{-2})$;
+plane-strain extension $\sigma_{11} = \mu(\lambda^2 - \lambda^{-2})$,
+$\sigma_{33} = \mu(1 - \lambda^{-2})$.
+
+\paragraph{Check.}
+\file{apps/homogeneous\_compare.py} (\code{make homogeneous}) runs every
+input, reads the affine data and the constrained faces from the YAML to
+derive the stretches and the free axis, and compares the probed
+displacement, pressure or thickness stretch, von Mises stress, $J$ and
+every component of $\bsig$ and $\bP$, in the nodal and the element
+presentations, with the closed forms; relative tolerance $10^{-8}$
+(measured agreement about $10^{-13}$).  Any of the six models runs in the
+same inputs by changing the \code{material} line; the script's closed
+forms cover all of them.
+
+\subsection{Compressible uniaxial tension}
+\label{sec:compuniaxial}
+
+\paragraph{Problem.}
+The unit cube with rollers on $X, Y, Z = 0$ and the face $X = 1$ moved by
+$0.5\,t$ in $x$ only (stretch $\lambda_1 = 1.5$), all other faces free.
+Six inputs with the same small-strain moduli, $\mu = 0.5$\,MPa and
+$\nu = 0.45$ ($\kappa = 29/6$\,MPa, $\kappa/\mu \approx 9.7$, compressible
+enough for the volumetric laws to differ): coupled neo-Hookean and
+Saint Venant--Kirchhoff with $E = 1.45$, $\nu = 0.45$ (displacement
+formulation), and the isochoric neo-Hookean model with $\mu = 0.5$,
+$\kappa = 29/6$ in the mixed formulation with each volumetric law:
+quadratic (\file{\ldots\_mixed}), \code{simo\_taylor}, \code{j\_log\_j} and
+\code{logarithmic} (the mixed constraint with $u'' \ne 1$).
+\file{incompressible\_uniaxial\_iso\_neo\_hookean}
+(Section~\ref{sec:homogeneous}) is their limit $\kappa = \infty$.
+
+\paragraph{Reference.}
+The state is homogeneous with $\bF = \diag(\lambda_1, \lambda_2, \lambda_2)$
+and the lateral stretch fixed by $\sigma_{22} = 0$.  The test solves
+$P_{22}(\diag(\lambda_1, \lambda_2, \lambda_2)) = 0$ for $\lambda_2$ with
+the material's own stress function (which carries the volumetric law), then
+forms $P_{11}$, $\sigma_{11}$ and $J$.
+
+\paragraph{Check} (\file{test\_verification}).  Axial displacement to
+$10^{-10}$, lateral displacements to $10^{-8}$, $P_{11}$, $\sigma_{11}$ and
+$J$ to $10^{-7}$ relative, and the lateral nominal stresses vanish to
+$10^{-7}P_{11}$.
+
+\paragraph{Large stretch} (\file{apps/uniaxial\_plots.py},
+\file{apps/neo\_hookean\_compare.py}).  The first script drives every
+uniaxial input of this and the previous section to $\lambda_1 = 8$ in 70
+load steps (Saint Venant--Kirchhoff to 0.95 of $\sqrt{1 + 1/\nu}$, where its
+lateral stretch $\lambda_2^2 = 1 - \nu(\lambda_1^2 - 1)$ vanishes), reads the
+ParaView series back and plots $P_{11}(\lambda_1)$ on an analytical curve
+coded independently of \file{src/}: $\lambda_2$ by bisection of
+$P_{22} = 0$ with
+$P_{aa} = \mu(\lambda_a - \lambda_a^{-1}) + \lambda\ln J/\lambda_a$ (coupled
+neo-Hookean) or
+$P_{aa} = \mu J^{-2/3}(\lambda_a - I_1/(3\lambda_a)) + U'(J)J/\lambda_a$
+(decoupled), the closed forms $\lambda_2^2 = 1 - \nu(\lambda_1^2 - 1)$,
+$P_{11} = E\lambda_1(\lambda_1^2 - 1)/2$ for Saint Venant--Kirchhoff, and
+$P_{11} = \mu(\lambda_1 - \lambda_1^{-2})$ when incompressible.  Measured
+agreement is $3\times10^{-12}$ relative or better at every step, and the
+nodal $P_{11}$ is uniform to $2\times10^{-11}$.  The second script overlays
+the neo-Hookean responses: at $\lambda_1 = 8$ the decoupled models lie 33\%
+(quadratic) to 51\% (logarithmic, $J = 2.9$, beyond the peak of $\ln J/J$
+at $J = e$) below the incompressible curve, while the coupled model, for
+which $P_{22} = 0$ gives $P_{11} = \mu(\lambda_1 - \lambda_2^2/\lambda_1)$,
+stays on it.
+
+\subsection{Manufactured solutions}
+
+\paragraph{Problem.}
+An exact displacement is prescribed on the whole boundary and the body
+force $\bb = -\rho_R^{-1}\Dive\bP(\bF(\bu))$ that makes it the solution is
+supplied as expression strings generated by sympy (expanded, no
+simplification).  Saint Venant--Kirchhoff with $E = 250$, $\nu = 0.3$,
+$\rho_R = 2.5$ unless noted, $k = 2$.
+
+\begin{center}
+\small
+\begin{tabular}{@{}l l p{7.8cm}@{}}
+\toprule
+Input & Mesh & Exact displacement \\
+\midrule
+\file{mms\_2d\_plane\_strain} & \file{square.msh} & $0.05\,(\sin\pi x\sin\pi y,\ x^2y(1-y))$ \\
+\file{mms\_3d\_hex} & \file{cube.msh} & $0.05\,(\sin\pi x\sin\pi y\sin\pi z,\ x^2y(1-y)z,\ xz(1-z)\cos\tfrac{\pi y}{2})$ \\
+\file{mms\_3d\_tet} & \file{cube\_tet.msh} & the same field on tetrahedra \\
+\file{mms\_3d\_mixed} & \file{cube.msh} & $0.05\,(\sin\pi y\sin\pi z,\ z(1-z),\ 0)$; isochoric neo-Hookean, $\mu = 40$, $\kappa = 400$, mixed formulation \\
+\bottomrule
+\end{tabular}
+\end{center}
+The mixed field has a strictly upper-triangular gradient, so $J = 1$
+exactly and the exact pressure $\kappa(J - 1)$ vanishes; it is applied in
+four increments because on fine meshes the exact boundary data applied at
+once inverts the elements next to the boundary while the interior is still
+at rest.
+
+\paragraph{Check.}
+$L^2$ displacement error under \code{serial\_refine} 1, 2, 3 (two
+dimensions, \file{test\_loading}) or 1, 2 (three dimensions,
+\file{test\_verification}); the rate $\log_2(e_{h}/e_{h/2})$ must be at
+least 2.8, i.e.\ third order for $k = 2$.
+
+\subsection{Rivlin's inflation of a thick-walled cylinder}
+\label{sec:rivlincyl}
+
+\paragraph{Problem.}
+Quarter annulus $A = 1$, $B = 2$ (\file{annulus.msh}, second-order
+geometry), plane strain, incompressible neo-Hookean with $\mu = 1$, mixed
+formulation; rollers on the two symmetry lines through component-wise
+Dirichlet data; follower pressure $P = 0.3$ per unit current area on the
+inner surface, ramped over the load path.
+
+\paragraph{Reference} (Rivlin; Ogden, \emph{Non-linear Elastic
+Deformations}, Section 5.3.1).  With $a, b$ the deformed radii and
+$b^2 = B^2 - A^2 + a^2$,
+\begin{equation}
+  P = \mu\Bigl[\ln\frac{B}{A} - \ln\frac{b}{a} + \frac{A^2 - a^2}{2}\Bigl(\frac1{b^2} - \frac1{a^2}\Bigr)\Bigr];
+  \qquad P = 0.3 \ \Rightarrow\ a = 1.28158,\ b = 2.15463 .
+\end{equation}
+
+\paragraph{Check} (\file{test\_loading}).  On the base mesh and one
+refinement: inner and outer radii within $0.2\%$ of the inflation
+$(a - A)$, $(b - B)$; the radial displacement is the same at $(A, 0)$ and
+$(0, A)$ to $10^{-6}$; the rollers hold the symmetry lines to $10^{-12}$;
+the final Newton solve takes at most six iterations (quadratic convergence
+with the follower tangent); and the error decreases under refinement.  The
+README quotes the agreement as $10^{-6}$ on the refined mesh.
+
+\subsection{Green--Zerna inflation of a thick-walled sphere}
+
+\paragraph{Problem.}
+Octant of a spherical shell $A = 10$, $B = 11$ (\file{sphere\_octant.msh},
+curved second-order tetrahedra), incompressible neo-Hookean $\mu = 1$,
+mixed formulation, rollers on the three symmetry planes, follower pressure
+$P = 0.100975807337556$ on the inner surface.
+
+\paragraph{Reference} (Green and Zerna; Ogden).  With $\lambda_a = a/A$,
+$\lambda_b = b/B$ and $b^3 = B^3 - A^3 + a^3$,
+\begin{equation}
+  P = \frac{\mu}{2}\Bigl[\Bigl(\frac4{\lambda_b} + \frac1{\lambda_b^4}\Bigr) - \Bigl(\frac4{\lambda_a} + \frac1{\lambda_a^4}\Bigr)\Bigr],
+\end{equation}
+and the chosen $P$ gives $\lambda_a = 1.2$ exactly ($a = 12$,
+$b = 12.72190$), below the pressure maximum of this shell near
+$\lambda_a = 1.4$.  The test inverts the relation by bisection.
+
+\paragraph{Check} (\file{test\_verification}).  Inner and outer radii
+within $0.5\%$ of the inflation; the inner radius on the $z$ axis equals
+that on the $x$ axis to $10^{-3}(a - A)$ (spherical symmetry).
+
+\subsection{Rivlin's torsion of a solid cylinder}
+
+\paragraph{Problem.}
+Solid cylinder $a = 12.7$, $L = 25.4$ (\file{cylinder\_torsion.msh}, curved
+second-order tetrahedra), incompressible neo-Hookean $\mu = 1$, mixed
+formulation.  The bottom face is clamped and the top face rotated rigidly
+by $\theta = 1$\,rad with $u_z = 0$ ($\bu = \bR(\psi z)\bX - \bX$ on the
+face, twist $\psi = \theta/L$, rim shear $\psi a = 0.5$) in 20 increments; a
+larger first increment leaves the elements under the rotated face inverted
+before Newton starts.
+
+\paragraph{Reference.}
+Rivlin's universal solution holds exactly: $\bu = \bR(\psi z)\bX - \bX$
+throughout, the lateral surface is traction free by itself, and in
+cylindrical components with $\gamma = \psi r$
+\begin{gather}
+  \sigma_{rz} = 0, \quad \sigma_{\theta z} = \mu\psi r, \quad
+  \sigma_{rr} = \sigma_{zz} = -\tfrac12\mu\psi^2(a^2 - r^2), \quad
+  \sigma_{\theta\theta} = \sigma_{rr} + \mu\psi^2r^2, \\
+  p = \sigma_{rr} + \tfrac13\mu\psi^2r^2, \qquad
+  \sigma_{vm} = \mu\sqrt{\gamma^4 + 3\gamma^2}.
+\end{gather}
+
+\paragraph{Check} (\file{test\_verification}).  Displacement field to
+$2\times10^{-3}$; on the mid-plane the shear stress $\sigma_{\theta z}$
+and the von Mises stress to $2\%$, the normal stresses and the pressure to
+$3\%$ of the stress scale, and the absence of $r\theta$ and $rz$ shear to
+$2\%$ (curved P2 tetrahedra).
+
+\subsection{Euler--Bernoulli cantilever in the linear limit}
+
+\paragraph{Problem.}
+A $10\times1\times1$ beam (\file{beam.msh}, $20\times2\times2$ hexahedra,
+$k = 2$) clamped at $x = 0$ with a downward shear traction on $x = L$ small
+enough that $\max|\Grad\bu| \approx 5\times10^{-5}$; compressible
+neo-Hookean, and the same problem with Saint Venant--Kirchhoff.  The
+systems AMG options are selected in the input because the elasticity
+options stall on this slender mesh; the test also checks that the
+automatic fallback converges.
+
+\paragraph{Reference.}
+Euler--Bernoulli tip deflection $PL^3/(3EI) = 3.2\times10^{-4}$.
+
+\paragraph{Check} (\file{test\_benchmarks}).  $\max|\Grad\bu| \le 10^{-4}$
+(the load is in the linear regime); tip deflection within $0.15\%$ of the
+beam value; the two materials agree in the linear limit.
+
+\subsection{Euler buckling of a clamped column (Southwell plot)}
+
+\paragraph{Problem.}
+A $1\times1\times20$ column (\file{column\_euler.msh}, $2\times2\times40$
+hexahedra) carrying the first-mode imperfection
+$x, y \mathrel{-}= 0.0025\,(1 - \cos 2\pi z/20)$; compressible neo-Hookean
+$E = 100$, $\nu = 0.3$.  The base is clamped, the top held in $x, y$ and
+shortened by $u_z = -0.12\,t$, an axial strain up to $0.6\%$, about $73\%$
+of the Euler strain of the clamped-clamped column,
+$\varepsilon_{cr} = 4\pi^2I/(AL^2) = 8.22\times10^{-3}$.
+
+\paragraph{Reference.}
+Below the limit point the mid-height lateral deflection of an imperfect
+column grows as $u = \delta_0\,(P/P_{cr})/(1 - P/P_{cr})$ (Southwell), so
+$1/u$ is linear in $1/\varepsilon$ with slope $\varepsilon_{cr}/\delta_0$
+and intercept $-1/\delta_0$.
+
+\paragraph{Check} (\file{test\_verification}).  A least-squares fit of
+$1/u$ against $1/\varepsilon$ over the load steps recovers
+$\varepsilon_{cr}$ within $5\%$ of the Euler value and the imperfection
+amplitude $\delta_0$ within $15\%$ of the geometric one (0.005).
+
+\subsection{Kirsch's plate with a circular hole}
+
+\paragraph{Problem.}
+Quarter of a $40\times40$ plate with a hole of radius $a = 1$
+(\file{plate\_hole\_2d.msh}, quadrilaterals of size 0.04 at the hole,
+curved second-order geometry), plane stress, compressible neo-Hookean
+$E = 1000$, $\nu = 0.3$; rollers on the symmetry lines, far-field traction
+$\sigma_0 = 0.1$ on $x = 20$ (strain $10^{-4}$, linear regime).
+
+\paragraph{Reference.}
+Kirsch's infinite-plate solution: $\sigma_{xx} = 3\sigma_0$ at the hole top
+$(0, a)$, $\sigma_{yy} = -\sigma_0$ at the hole side $(a, 0)$, and along
+the $y$ axis $\sigma_{xx}/\sigma_0 = 1 + a^2/(2y^2) + 3a^4/(2y^4)$.  The
+finite width $W = 20a$ raises the concentration by a few tenths of a
+percent (Howland).
+
+\paragraph{Check} (\file{test\_verification}).  Probed Cauchy stresses
+$\sigma_{xx}$, $\sigma_{yy}$ within $2\%$ of $3\sigma_0$ at the probe
+points, and no shear stress on the symmetry axes to $1\%$ of $3\sigma_0$.
+
+%============================================================================
+\section{Benchmarks (\texttt{apps/input/finite\_elasticity/cooks\_membrane/})}
+%============================================================================
+
+\paragraph{Problem.}
+Cook's membrane: the quadrilateral with corners $(0,0)$, $(48,44)$,
+$(48,60)$, $(0,44)$ (\file{cook.msh}), plane strain, left edge clamped,
+uniform upward shear traction on the right edge, $k = 2$.  Three inputs:
+\begin{center}
+\small
+\begin{tabular}{@{}l l p{5.6cm} l@{}}
+\toprule
+Input & Formulation & Material & Traction (resultant) \\
+\midrule
+\file{cook} & displacement & neo-Hookean $E = 250$, $\nu = 0.3$ & 3.75 (60) \\
+\file{cook\_incompressible} & mixed Q2--Q1 & isochoric neo-Hookean $\mu = 80.194$, $\kappa = \infty$ & 6.25 (100) \\
+\file{cook\_nearly\_incompressible} & mixed Q2--Q1 & the same with $\nu = 0.4999$ ($\kappa = 4\times10^5$) & 6.25 (100) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\paragraph{Reference.}
+There is no closed form; the benchmark is a literature standard for
+locking and mesh convergence.  The test performs a self-convergence study
+(the base $4\times4$ mesh and four uniform refinements up to $64\times64$
+for the compressible case, up to $32\times32$ for the incompressible one)
+and holds the finest corner displacement as a frozen regression value.
+
+\paragraph{Check} (\file{test\_benchmarks}).  Monotone self-convergence of
+the vertical displacement of the top-right corner $(48, 60)$; the frozen
+values $u_y = 4.905891700497$ (compressible, $64\times64$; $30.7\%$ of the
+16\,mm edge) and $u_y = 6.930412595013$ (incompressible, $32\times32$;
+$43.3\%$) reproduced to $10^{-8}$ relative, serially and with four ranks.
+The final step of \code{make test}, \code{--cook-ratio-gate}, asserts the
+plan's requirement that successive differences shrink by at least three
+per refinement.  That threshold is \emph{not} met (measured ratios 2.34,
+2.45, 2.31): uniform refinement is limited by the singularity at the
+108-degree clamped-free corner, so the point value converges at about
+$h^{1.3}$.  Everything before that step is green; the threshold is kept
+as written rather than relaxed, so \code{make test} ends with this known
+failure.
+
+%============================================================================
+\section{Validation against a reference code: Anand\textquotesingle s examples}
+\label{sec:anand}
+%============================================================================
+
+The inputs of \file{apps/input/anand\_coupled\_theories/finite\_elasticity/}
+reproduce a published set of finite element examples.
+
+\paragraph{Reference.}
+The ten "Finite Elasticity" examples of Lallit Anand's \emph{Introduction
+to Coupled Theories in Solid Mechanics} (Oxford University Press, 2025),
+from the FEniCSx companion codes by Eric Stewart and Lallit Anand
+(\url{solidmechanicscoupledtheories.github.io}).  All use Arruda--Boyce
+with $G_0 = 280$\,kPa, $\lambda_L = 5.12$ ($N = \lambda_L^2 = 26.2144$) and
+$K = 1000\,G_0$, in kPa and mm, the reference's logarithmic volumetric law
+$p = K\ln J/J$ (\code{volumetric: logarithmic}, run with
+\code{solver.predictor: tangent}), the mixed formulation on
+Q2--Q1 or P2--P1 elements, and the reference's geometry, boundary
+conditions, load histories and step counts.  Every input probes the points of the
+reference's plots after every step and prints the reactions, so the curves
+can be read from the log.  These are validation cases: the comparison is
+with another code's results and with analytical curves where they exist,
+not a test with a tolerance.
+
+\begin{center}
+\small
+\begin{tabular}{@{}l l p{8.6cm}@{}}
+\toprule
+Input & Reference & Problem \\
+\midrule
+\file{01\_uniaxial\_tension} & 3D01 & 10\,mm cube, rollers on three planes, stretch 7.75 in $y$ over 100 steps \\
+\file{02\_simple\_shear} & 3D02 & 1\,mm cube, base clamped, top face $u_x = \sin 4\pi t$ (two cycles of shear strain 1) \\
+\file{03\_cylinder\_torsion} & 3D03 & cylinder $R = 12.7$, $L = 25.4$, top face rotated rigidly by 2.5\,rad with $u_z = 0$, 20 steps \\
+\file{04\_plate\_with\_hole} & 3D04 & quarter plate $15\times10\times1$ with a 3\,mm hole, stretch 3 in $x$ \\
+\file{05\_cylinder\_inflation} & 3D05 & quarter tube $10/11\times5$, plane-strain rollers, follower pressure to 50\,kPa \\
+\file{06\_sphere\_inflation} & 3D06 & octant shell $10/11$, follower pressure to 35\,kPa \\
+\file{07\_cube\_footing} & 3D07 & 50\,mm cube, follower pressure 1500\,kPa on a quarter patch of the top, held in $x, y$ there \\
+\file{08\_column\_buckling} & 3D08 & $1\times1\times20$ column with the first-mode imperfection, shortened by 2.5\,mm \\
+\file{09\_spherical\_inclusion} & 3D09 & octant of a cube with a ten times stiffer spherical inclusion (\code{material.regions}), stretch 2 \\
+\file{10\_column\_twist} & 3D10 & $1\times1\times3$ column, top face turned through $2\pi$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\paragraph{Differences from the reference that change the numbers.}
+The Arruda--Boyce model here is the five-term series in $\Ione/N$ rather
+than the Pad\'e approximation of the inverse Langevin function, so it is
+softer near the locking stretch (visible in case 01 above a stretch of
+about 3); case 02 keeps the quadratic law $p = K(J-1)$, because with the
+logarithmic law the run fails at $t = 0.064$ for any increment size: the
+tangent bulk modulus $K(1 - \ln J)/J^2$ of that law softens in dilatation
+($0.18\,K$ at $J = 1.67$, zero at $J = e$), and at the clamped top corners,
+stress singularities that this mesh and quadrature resolve sharply, $J$
+grows with the shear until the volumetric response is lost; hexahedra
+replace tetrahedra on the boxes; and a failed
+increment is bisected instead of ending the run (cases 05 and 06 stop early
+in the reference).
+
+\paragraph{Plots.}
+\file{apps/anand\_plots.py} reproduces the result plots of the reference
+pages from the logs (save the stdout of each run as
+\file{out/anand\_coupled\_theories/finite\_elasticity/logs/<case>.log}, or
+pass \code{--logs}) and overlays an analytical curve where one exists:
+the homogeneous incompressible and nearly incompressible Arruda--Boyce
+response for the uniaxial and shear blocks (with both this code's series
+and the reference's Pad\'e form), Rivlin's universal torsion for torque and
+axial force by quadrature in $r$, the incompressible thick-walled cylinder
+and sphere inflation by quadrature with their limit points, the Euler load
+$4\pi^2EI/L^2$ for the clamped column, and the matrix-only curve for the
+inclusion.
+
+\paragraph{What the plots show.}
+The uniaxial cube, the torsion and both inflations lie on their reference
+curves (the uniaxial one on the nearly incompressible solution at
+$K = 1000\,G$, with the incompressible limit a few percent above at the
+largest stretch).  The sheared block carries about $17\%$ less nominal
+shear stress than homogeneous simple shear at a shear strain of 1, because
+its lateral faces are free where simple shear needs tractions, and its two
+cycles retrace one curve (elastic, no hysteresis).  The sphere stops at its
+limit pressure of 34\,kPa and the cylinder near 38\,kPa, where the
+reference also stopped.  The buckling column reaches 7.3\,mN at 0.2\,mm of
+shortening, $5\%$ above the Euler load of the clamped column, and then
+rises slowly to 7.5\,mN at 2.5\,mm along the hardening post-buckling path
+of the elastica (the Euler value uses $E = 3G$ and neglects the finite
+section).  The twisted column needs a compressive axial force of 78\,mN to
+keep its length over a full turn (Poynting effect), as does the torsion
+cylinder.
+
+%============================================================================
+\section{Summary}
+%============================================================================
+
+\begin{center}
+\small
+\renewcommand{\arraystretch}{1.15}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{3.0cm} >{\raggedright\arraybackslash}p{3.9cm} >{\raggedright\arraybackslash}p{4.4cm} >{\raggedright\arraybackslash}p{3.6cm}@{}}
+\toprule
+Case & Reference & Check & Test \\
+\midrule
+homogeneous deformations & closed forms (six models) & all probed fields, $10^{-8}$ & \file{homogeneous\_compare.py} \\
+compressible uniaxial & lateral stretch from $P_{22} = 0$ & $u$, $P_{11}$, $\sigma_{11}$, $J$ to $10^{-7}$ & \file{test\_verification} \\
+manufactured solutions & exact field, sympy body force & $L^2$ rate $\ge 2.8$ ($k = 2$) & \file{test\_loading}, \file{test\_verification} \\
+cylinder inflation & Rivlin & radii to $0.2\%$, refinement & \file{test\_loading} \\
+sphere inflation & Green--Zerna & radii to $0.5\%$, symmetry & \file{test\_verification} \\
+torsion & Rivlin universal solution & $u$ to $2\times10^{-3}$, stresses 2--3\% & \file{test\_verification} \\
+cantilever & Euler--Bernoulli & tip deflection to $0.15\%$ & \file{test\_benchmarks} \\
+column buckling & Euler load, Southwell & $\varepsilon_{cr}$ to $5\%$ & \file{test\_verification} \\
+plate with hole & Kirsch & stresses to $2\%$ & \file{test\_verification} \\
+Cook's membrane & frozen values, self-convergence & $10^{-8}$; ratio gate not met & \file{test\_benchmarks} \\
+Anand examples & FEniCSx codes, analytical curves & plots & \file{anand\_plots.py} \\
+parallel consistency & serial run & norms to $10^{-10}$ & \file{test\_parallel} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+%============================================================================
+\small\begin{thebibliography}{9}
+%============================================================================
+\bibitem{ogden} R.\,W. Ogden, \emph{Non-Linear Elastic Deformations}, Ellis Horwood, 1984 (Dover, 1997).
+\bibitem{rivlin} R.\,S. Rivlin, Large elastic deformations of isotropic materials IV, \emph{Phil. Trans. R. Soc. A} 241 (1948) 379--397.
+\bibitem{greenzerna} A.\,E. Green, W. Zerna, \emph{Theoretical Elasticity}, 2nd ed., Oxford University Press, 1968.
+\bibitem{kirsch} E.\,G. Kirsch, Die Theorie der Elastizit\"at und die Bed\"urfnisse der Festigkeitslehre, \emph{Z. VDI} 42 (1898) 797--807.
+\bibitem{howland} R.\,C.\,J. Howland, On the stresses in the neighbourhood of a circular hole in a strip under tension, \emph{Phil. Trans. R. Soc. A} 229 (1930) 49--86.
+\bibitem{southwell} R.\,V. Southwell, On the analysis of experimental observations in problems of elastic stability, \emph{Proc. R. Soc. A} 135 (1932) 601--616.
+\bibitem{cook} R.\,D. Cook, Improved two-dimensional finite element, \emph{J. Struct. Div. ASCE} 100 (1974) 1851--1863.
+\bibitem{anand} L. Anand, \emph{Introduction to Coupled Theories in Solid Mechanics}, Oxford University Press, 2025; companion codes by E. Stewart and L. Anand, \url{solidmechanicscoupledtheories.github.io}.
+\bibitem{ab} E.\,M. Arruda, M.\,C. Boyce, A three-dimensional constitutive model for the large stretch behavior of rubber elastic materials, \emph{J. Mech. Phys. Solids} 41 (1993) 389--412.
+\end{thebibliography}
+
+\end{document}
