@@ -270,7 +270,8 @@ struct ProbeConfig
 struct OutputConfig
 {
   std::string paraview;              // collection path; empty -> no output
-  // Nodal unknowns: displacement | pressure (mixed). Quadrature-point
+  // Nodal unknowns: displacement | pressure (mixed) | velocity | acceleration
+  // (dynamic analysis). Quadrature-point
   // quantities: cauchy_stress | pk1_stress | deformation_gradient | strain
   // (Green-Lagrange; the infinitesimal strain for a small-strain model) |
   // jacobian | vonmises | energy_density | thickness_stretch (plane stress).
