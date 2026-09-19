@@ -7,7 +7,8 @@ trailers). This extends the framework of `doc/hyperelasticity_implementation_pla
 mesh never moves, thin `apps/`, `myapps/` untouched, materials are stateless value types, no
 per-exercise drivers) still hold.
 
-**Status (2026-09-18):** DY1 to DY4 complete.
+**Status (2026-09-18):** DY1 to DY5 complete; DY6 (Rayleigh damping) and DY7 (explicit central
+differences) remain optional and are not started.
 DY1 complete: `tests/test_dynamics.cpp` (177 checks, 5.5 s, in `make check`); every existing
 test line and the logs of `cook.yaml`, `bar_linear.yaml` and `cook_linear_incompressible.yaml`
 are identical to those of the commit before. Measured: total mass `1.M.1 = sum rho_r V_r` to
@@ -114,6 +115,16 @@ tolerance times `c_M`. (b) "Mixed and displacement formulations agree to 1e-6" i
 are different discretisations of the same problem, and the exact-in-space order study says more.
 (c) The pressure check of the tube is made at mid-wall, where inertia carries it, not at the
 wall, where the free surface ties it to the kinematics.
+DY5 complete: theory manual (new section "Elastodynamics": strong and weak form, the constant
+mass matrix, the scheme family with its parameter table, the step equation, initial state and
+right-limit loads, prescribed motion and reactions, the energy identity, the linear case, the
+mixed system as a differential-algebraic one with its two properties; physical time in the
+loading section, time stepping in the stepper's, the inertial part of the Schur complement
+approximation in the saddle-point solver's, outputs, seam, keys, source files, four references),
+verification manual (`test_dynamics` subsection, section "Dynamic cases" with problem / reference
+/ check for the six inputs and the derivation of Knowles' equation and of the pressure inside the
+wall, the iteration-count table, summary rows), README (schema, section "Dynamics" with the scheme
+and case tables, layout, targets, the "not supported" lists). Both manuals build with `latexmk`.
 
 **Goal:** an optional top-level `dynamics:` block turns the quasi-static problem into
 

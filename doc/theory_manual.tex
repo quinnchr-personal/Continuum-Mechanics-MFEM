@@ -72,19 +72,20 @@
 \begin{abstract}
 \noindent
 This manual describes the mathematical models and the numerical methods
-implemented in the root \file{src/} library of the repository: quasi-static
-finite-strain solid mechanics in total Lagrangian form on a fixed reference
-mesh, discretised with continuous Galerkin finite elements on MFEM.  It
+implemented in the root \file{src/} library of the repository: finite-strain
+solid mechanics in total Lagrangian form on a fixed reference mesh,
+quasi-static or, when the input asks for it, with inertia, discretised with
+continuous Galerkin finite elements on MFEM.  It
 covers the kinematics and balance laws, the hyperelastic constitutive
 library in four categories (compressible coupled, compressible uncoupled,
 slightly compressible and incompressible), small-strain linear elasticity as
 a special case of the same forms, the two-dimensional plane-strain and
 plane-stress reductions, the displacement and the mixed
 displacement--pressure formulations, boundary conditions and load
-scheduling, the element kernels and the dual-number tangents, the
-quasi-static load stepper, damped Newton, the algebraic multigrid and
-saddle-point linear solvers, and the post-processing of quadrature-point
-quantities.  The verification and validation of the implementation against
+scheduling, the inertial term and its implicit time integration, the element
+kernels and the dual-number tangents, the load and time stepper, damped
+Newton, the algebraic multigrid and saddle-point linear solvers, and the
+post-processing of quadrature-point quantities.  The verification and validation of the implementation against
 closed-form and reference solutions is documented separately in the
 verification manual (\file{doc/verification\_manual.tex}), which covers the
 inputs and scripts under \file{apps/}.  The legacy applications under
@@ -141,10 +142,17 @@ the verification manual.
 \subsection{What is implemented}
 
 \begin{itemize}[nosep]
-  \item Quasi-static balance of linear momentum in total Lagrangian form:
-    the mesh never moves, every integral is over the reference
-    configuration.  Loads and prescribed displacements are functions of a
-    pseudo-time $t \in [0, 1]$; inertia is absent.
+  \item Balance of linear momentum in total Lagrangian form: the mesh never
+    moves, every integral is over the reference configuration.  By default
+    the analysis is quasi-static: loads and prescribed displacements are
+    functions of a pseudo-time $t \in [0, 1]$ and inertia is absent.
+  \item Elastodynamics on request (Section~\ref{sec:dynamics}): the inertial
+    term $\int_{\Omega_R}\rho_R\ddot\bu\cdot\bw\ud V$ with a constant,
+    consistent mass matrix and the reference density by element attribute,
+    integrated in physical time by the generalized-$\alpha$ family in
+    displacement form (Newmark, HHT-$\alpha$, generalized-$\alpha$), for
+    every material and both formulations.  It is a decorator over the
+    quasi-static problem, not a second set of kernels.
   \item Hyperelasticity in four categories (Section~\ref{sec:classification}):
     compressible coupled models (neo-Hookean of Bonet--Wood form, Saint
     Venant--Kirchhoff); compressible uncoupled models
@@ -175,17 +183,21 @@ the verification manual.
     the same code that evaluates the stress (Ogden and the compressible
     plane-stress adapter use analytic or implicit derivatives where
     eigenvectors or a root are not differentiable by duals alone).
-  \item Solvers: load stepping with bisection on failure, damped Newton
-    with Armijo backtracking, GMRES or CG with BoomerAMG, and FGMRES with a
-    block upper-triangular preconditioner for the $u$--$p$ saddle point.
+  \item Solvers: load stepping, and time stepping, with bisection on
+    failure, damped Newton with Armijo backtracking, GMRES or CG with
+    BoomerAMG, and FGMRES with a block upper-triangular preconditioner for
+    the $u$--$p$ saddle point, whose Schur complement approximation gains an
+    inertial part in a dynamic analysis.
   \item Post-processing of Cauchy and first Piola--Kirchhoff stress, the
     deformation gradient, the strain, the volume ratio, von Mises stress, energy density
     and thickness stretch at quadrature points, presented as nodal fields,
     element averages or point clouds; probes; reactions of the Dirichlet
-    entries.
+    entries; in a dynamic analysis the nodal velocity and acceleration, and
+    the kinetic and internal energy with the external work.
 \end{itemize}
 
-Not implemented: dynamics, internal variables and inelasticity,
+Not implemented: explicit time integration, physical damping, modal
+analysis, internal variables and inelasticity,
 temperature dependence, contact, point loads, multi-point or periodic
 constraints, discontinuous Galerkin or hybridised discretisations, partial
 assembly, and device execution.  Section~\ref{sec:seam} lists what of the
@@ -351,7 +363,7 @@ the integrals are evaluated.  The code integrates on $\Omega_R$ throughout.
 With inertia the residual gains $\int_{\Omega_R}\rho_R\ddot\bu\cdot\bw\ud V$
 (spatially $\rho\dot{\bm v}$ with the material acceleration
 $\dot{\bm v} = \partial_t\bm v + (\grad\bm v)\bm v$) and needs initial data
-$\bu_0$, $\bm v_0$; dynamics is not implemented.
+$\bu_0$, $\bm v_0$: Section~\ref{sec:dynamics}.
 
 \subsection{Linearisation}
 
@@ -1132,6 +1144,205 @@ $|\Grad\bu| \gtrsim 10^{-4}$ and scale the results, never the reverse; the
 $|\Grad\bu|$ small, do not have that freedom.
 
 %============================================================================
+\section{Elastodynamics}
+\label{sec:dynamics}
+%============================================================================
+
+A \code{dynamics} block in the input adds the inertial term to either weak
+form.  Without it nothing of this section exists: the quasi-static analysis
+is unchanged to the last digit.
+
+\subsection{Strong and weak form; the constant mass matrix}
+
+With $t$ now the physical time, balance of linear momentum on the reference
+configuration and its weak form are
+\begin{equation}
+  \rho_R\ddot\bu = \Dive\bP + \rho_R\bb \ \text{in } \Omega_R, \qquad
+  \int_{\Omega_R}\rho_R\ddot\bu\cdot\bw\ud V + R(\bu; \bw) = 0
+  \quad \forall \bw \in \mathcal V ,
+  \label{eq:dynweak}
+\end{equation}
+with $R$ the quasi-static residual \eqref{eq:weak} (internal minus
+external) and initial data $\bu(\cdot, 0) = \bu_0$,
+$\dot\bu(\cdot, 0) = \bm v_0$.  In total Lagrangian form the inertial term is
+integrated over the \emph{fixed} mesh with the \emph{reference} density: mass
+conservation, $\rho_R = J\rho$, is built in, and the mass matrix
+\begin{equation}
+  M_{ai,bj} = \delta_{ij}\int_{\Omega_R}\rho_R N_a N_b\ud V
+\end{equation}
+is constant.  It is assembled once, the same for finite and small strain and
+for every material; it is the consistent mass, with $\rho_R$ piecewise
+constant by element attribute (\code{material.rho0} and the regions'), the
+same coefficient that multiplies the body force.  In two dimensions it is
+the mass per unit reference thickness, also under plane stress, where the
+current thickness changes and the mass does not.  The semi-discrete system
+is
+\begin{equation}
+  \bM\ddot{\bm u} + \bm S(\bm u, t) = \bm 0 ,
+  \label{eq:semidiscrete}
+\end{equation}
+where $\bm S$ is the static residual vector of the wrapped problem (its
+\code{Mult}) and $\bK = \partial\bm S/\partial\bm u$ its Jacobian.
+
+\subsection{Time integration in displacement form}
+
+One family of implicit one-step schemes is implemented
+(\file{solvers/time\_integration.hpp}), with the displacement of the new
+time level as the unknown, so that prescribed displacements, Newton, the
+line search and the linear solvers are those of the quasi-static analysis.
+With $(\bm u_n, \bm v_n, \bm a_n)$ known and $\Delta t = t_{n+1} - t_n$,
+\begin{equation}
+\begin{aligned}
+  \bm u^* &= \bm u_n + \Delta t\,\bm v_n + \Delta t^2(\tfrac12 - \beta)\bm a_n, &
+  \bm a(\bm u) &= \frac{\bm u - \bm u^*}{\beta\Delta t^2}, \\
+  \bm v^* &= \bm v_n + \Delta t(1 - \gamma)\bm a_n, &
+  \bm v(\bm u) &= \bm v^* + \gamma\Delta t\,\bm a(\bm u),
+\end{aligned}
+\end{equation}
+the balance is imposed between the time levels with \emph{interpolated
+forces} (the form of the HHT operator of general-purpose codes),
+\begin{equation}
+  \bM\bigl[(1 - \alpha_m)\bm a(\bm u) + \alpha_m\bm a_n\bigr]
+  + (1 - \alpha_f)\,\bm S(\bm u, t_{n+1}) + \alpha_f\,\bm S_n = \bm 0,
+  \qquad \bm S_n = \bm S(\bm u_n, t_n) .
+  \label{eq:genalpha}
+\end{equation}
+Interpolating the forces rather than the state means $\bm S$ is only ever
+evaluated at $(\bm u_{n+1}, t_{n+1})$: the load set, the Dirichlet data and
+the follower loads keep one time.  The parameter sets are
+\begin{center}
+\small
+\begin{tabular}{@{}l l l l l@{}}
+\toprule
+\code{scheme} & $\alpha_m$ & $\alpha_f$ & $\beta$ & $\gamma$ \\
+\midrule
+\code{newmark} & 0 & 0 & given ($\tfrac14$) & given ($\tfrac12$) \\
+\code{hht} & 0 & $\alpha \in [0, \tfrac13]$ & $\tfrac14(1 + \alpha)^2$ & $\tfrac12 + \alpha$ \\
+\code{generalized\_alpha} & $\dfrac{2\rho_\infty - 1}{\rho_\infty + 1}$ & $\dfrac{\rho_\infty}{\rho_\infty + 1}$ & $\tfrac14(1 - \alpha_m + \alpha_f)^2$ & $\tfrac12 - \alpha_m + \alpha_f$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+(Newmark~\cite{newmark}; Hilber, Hughes and Taylor~\cite{hht}; Chung and
+Hulbert~\cite{chunghulbert}).  All are second-order accurate with
+$\gamma = \tfrac12 - \alpha_m + \alpha_f$ and, for a linear problem,
+unconditionally stable; \code{newmark} with $\gamma > \tfrac12$ is first
+order, and with $2\beta < \gamma$ only conditionally stable (the run header
+says so).  $\rho_\infty \in [0, 1]$ is the spectral radius of the
+amplification matrix at infinite frequency: $1$ means no numerical
+dissipation, $0$ annihilates in a few steps whatever the step does not
+resolve.  The default \code{newmark} pair $(\tfrac14, \tfrac12)$ is the
+trapezoidal rule, which for a linear problem conserves the energy exactly
+and lengthens a period by the factor $(\omega\Delta t/2)/\arctan(\omega\Delta
+t/2) \approx 1 + (\omega\Delta t)^2/12$.  For a nonlinear problem it is not
+unconditionally stable, and what a mesh cannot resolve behind a wave front
+rings for ever; \code{generalized\_alpha} with $\rho_\infty$ between $0.8$
+and $0.9$ removes the unresolved part at little cost to the resolved one.
+It dissipates in a norm of its own, not step by step in the physical
+energy, which may rise slightly between two steps but does not exceed its
+initial value.
+
+\paragraph{The step equation.}
+Divided by $1 - \alpha_f$, \eqref{eq:genalpha} reads
+\begin{equation}
+  \boxed{\;
+  \bm G(\bm u) = \bm S(\bm u, t_{n+1}) + c_M\bM(\bm u - \bm u^*) + \bm h_n = \bm 0,
+  \qquad
+  \frac{\partial\bm G}{\partial\bm u} = \bK(\bm u) + c_M\bM ,\;}
+  \label{eq:step}
+\end{equation}
+\begin{equation}
+  c_M = \frac{1 - \alpha_m}{(1 - \alpha_f)\,\beta\Delta t^2}, \qquad
+  \bm h_n = \frac{\alpha_m\bM\bm a_n + \alpha_f\bm S_n}{1 - \alpha_f} .
+\end{equation}
+The static operator enters with unit weight: inertia is a linear spring
+$c_M\bM$ plus a known history load.  This is why it needs no kernel of its
+own.  \code{DynamicSolidProblem} (\file{physics/dynamic\_solid\_problem.hpp})
+wraps any solid problem and \emph{is} equation~\eqref{eq:step} behind the
+interface the stepper already drives; a linear problem stays linear (the
+floor logic of Section~\ref{sec:linearsolve} applies unchanged), and the
+consistent Jacobian $\bK + c_M\bM$ keeps Newton quadratic (measured order
+$1.9$ at displacements of $0.75$ of the body's size).  After convergence,
+$\bm a_{n+1} = \bm a(\bm u_{n+1})$ and $\bm v_{n+1} = \bm v(\bm u_{n+1})$.
+$\bM$ is kept twice: whole, for the residual, the energies and the
+reactions (it couples the acceleration of a prescribed boundary into the
+free rows), and with the essential rows and columns zeroed for the
+Jacobian.
+
+\paragraph{Initial state.}
+$\bu_0$ and $\bm v_0$ are given as expressions of the reference coordinates
+(zero by default); the Dirichlet data of $t = 0$ overwrite $\bu_0$ on the
+prescribed degrees of freedom, with a warning if that changes it.  The
+initial acceleration is the consistent one,
+$\bM\bm a_0 = -\bm S(\bm u_0, 0)$ on the free degrees of freedom and zero
+on the prescribed ones, with the loads at $t = 0$ taken as their \emph{right
+limit}: a load that is switched on at $t = 0$ and held is on from the first
+instant and enters $\bm a_0$.
+
+\paragraph{Prescribed motion and reactions.}
+Dirichlet data are imposed on $\bm u_{n+1}$; velocity and acceleration of
+those degrees of freedom follow from the update formulas like everywhere
+else.  The reaction of a Dirichlet entry is the full balance
+$\bm S_{\text{full}}(\bm u_{n+1}, t_{n+1}) + \bM\bm a_{n+1}$ on its rows: a
+support force includes the inertia it carries.
+
+\paragraph{Energy balance.}
+The kinetic energy is $\tfrac12\bm v\cdot\bM\bm v$, the internal energy that
+of Section~\ref{sec:post}, and the external work is accumulated by the
+trapezoidal rule over the dead loads and over the supports,
+$\tfrac12(\bm f_n + \bm f_{n+1} + \bm r_n + \bm r_{n+1})\cdot(\bm u_{n+1} -
+\bm u_n)$ with $\bm r$ the reactions on the prescribed rows.  For a linear
+problem and the trapezoidal rule, kinetic plus internal energy minus
+external work is constant \emph{exactly} (it is an algebraic identity of the
+scheme), which makes the balance a test of the implementation and not only
+an output; for a nonlinear problem its error is $O(\Delta t^2)$.  Follower
+pressures are not dead loads and are not counted.
+
+\paragraph{A linear problem.}
+$\bK + c_M\bM$ is constant while $\Delta t$ is, so it is formed, and the
+AMG hierarchy built, once per run (the operator stamp of
+Section~\ref{sec:linearsolve}, now of the sum).  Equal steps
+$t_{\text{final}}k/n$ differ in the last digits of $t_{k+1} - t_k$; the
+increment of the previous step is kept when the new one agrees with it to
+$10^{-12}$, which also makes a run independent of how its time grid was
+formed.  Such a run is bound by its residual evaluations (three per step
+against one Krylov solve); the full static residual that reactions and the
+external work need is evaluated only when one of them is asked for.
+
+\subsection{Mixed formulation: a differential-algebraic system}
+\label{sec:dynmixed}
+
+In the $u$--$p$ formulation the pressure carries no inertia: $\bM$ acts on
+the displacement block, the constraint row is that of the static problem at
+$t_{n+1}$, unweighted, and $\bm h_n$ has no pressure block.  The Jacobian is
+that of Section~\ref{sec:mixed} with $\bK + c_M\bM$ in place of $\bK$.  Two
+properties follow.
+\begin{itemize}[nosep]
+  \item \emph{The pressure mode.}  The pressure force is part of $\bm S_u$
+    and is interpolated with it, so an error $e_n$ in $p_n$ returns as
+    $e_{n+1} = -\alpha_f/(1 - \alpha_f)\,e_n = -\rho_\infty e_n$: a
+    sign-alternating mode that decays only for $\rho_\infty < 1$ (measured:
+    two runs that differ in $p_0$ alone differ at every later step by
+    $0.6000$ times the step before, for $\rho_\infty = 0.6$).  The trapezoidal
+    rule has the same factor $1$ through the acceleration.  A mixed dynamic
+    analysis therefore uses a dissipative scheme, and the run header warns
+    otherwise.  The initial pressure is that of $\bu_0$ at finite $\kappa$
+    (one solve with the constraint row) and zero for an incompressible
+    material, whose true initial pressure would follow from a constraint on
+    the acceleration that is not enforced; the start-up error decays with
+    the same factor.
+  \item \emph{The pressure carries the tolerance of the solves multiplied by
+    $c_M$.}  It balances $\bM\bm a$, and $\bm a = (\bm u - \bm u^*)/(\beta
+    \Delta t^2)$ amplifies the error of a solve by $O(\Delta t^{-2})$.  With
+    \code{newton.rtol} $10^{-10}$ this noise, not the time integration,
+    limits the pressure at small steps; tighten the tolerances when the
+    pressure matters.
+\end{itemize}
+With $u$ and $p$ held exactly by the spaces, both are second order in
+$\Delta t$, for $\nu = 0.4999$ and for $\kappa = \infty$.  The linear solver
+is extended for the mass-dominated displacement block
+(Section~\ref{sec:saddlesolver}).
+
+%============================================================================
 \section{Boundary conditions and loading}
 \label{sec:loads}
 %============================================================================
@@ -1164,6 +1375,17 @@ state at $t = 1$ does not depend on the path; staged loading is a test of
 the implementation, not a different problem.  Follower pressures are not
 conservative and can produce path dependence in the presence of
 instabilities.
+
+\paragraph{Physical time.}
+In a dynamic analysis (Section~\ref{sec:dynamics}) $t$ is the physical time
+in $[0, t_{\text{final}}]$.  Ramps and tables are given on that interval (a
+ramp without bounds spans it), the value at $t = 0$ is the right limit, so
+the constant schedule is $1$ for $t \ge 0$, and an entry \emph{without} a
+schedule is constant: its data is the expression as it stands, a step load
+when the expression does not mention $t$.  The quasi-static default ramp
+over the pseudo-time has no meaning there.  Because that default depends on
+the analysis, the executable prints the resolved time dependence of every
+entry in the header of a dynamic run.
 
 \subsection{Prescribed displacements}
 
@@ -1382,6 +1604,28 @@ stepper aims at the planned breakpoint again and never grows beyond the
 planned grid.  Each accepted increment triggers the output callback
 (fields, ParaView cycle, probes, reactions).
 
+\paragraph{Time stepping.}
+A dynamic analysis is advanced by the same loop (\code{SolveDynamic}) over
+targets $0 < t_1 < \dots < t_n = t_{\text{final}}$ from \code{dynamics.dt}
+or the segments of \code{dynamics.steps}.  The problem is then the step
+equation \eqref{eq:step}: setting the time begins a step (increment,
+$c_M$, $\bm u^*$, $\bm h_n$, the time of the loads), and an accept hook,
+called once per accepted increment, advances the history
+$(\bm u_n, \bm v_n, \bm a_n, \bm S_n)$.  A rejected increment leaves the
+history untouched, so bisection needs nothing else; a run with a halved
+step equals the run with the two half steps planned.  Two details differ
+from the pseudo-time.  A target counts as reached within $10^{-9}$ of the
+planned increment, not within an absolute $10^{-14}$, which is below the
+spacing of floating-point numbers once $t > 100$ and would leave a
+degenerate last step with $c_M \sim \Delta t^{-2}$.  And Newton starts from
+the last converged state with the new Dirichlet data, never from an
+extrapolation in time: a better start makes $\|R_0\|$ small, and
+$\text{rtol}\,\|R_0\|$ then lies below the round-off floor of the residual,
+the trap that excludes the tangent predictor for linear problems.
+\code{substep.min\_dt} is a time in a dynamic analysis ($10^{-3}$ of the
+smallest planned step by default); \code{load\_steps}, \code{steps} and
+\code{predictor} of the solver section are input errors.
+
 \paragraph{Initial guess of an increment.}
 By default the increment starts from the last converged state $x_n$ with
 the new Dirichlet values written on the boundary.  The interior lags, so
@@ -1499,6 +1743,27 @@ the $(1,2)$ block itself, not by the transpose of the $(2,1)$ block; the
 two coincide only for the quadratic law, and the distinction is what keeps
 Newton quadratic with the other laws.
 
+\paragraph{Dynamic analysis.}
+The displacement block is then $\bK + c_M\bM$, and for small time steps the
+mass dominates it.  The Schur complement of a mass-dominated block is a
+discrete pressure Laplacian, $\bBm_{pu}(c_M\bM)^{-1}\bBm$, which a scaled
+pressure mass does not represent: on the quarter annulus of the tube
+problem the outer iterations rise from $18$ (quasi-static) to $43$ at
+$\Delta t = 0.002$ and, one refinement on, to $81$.  Following Cahouet and
+Chabard~\cite{cahouetchabard} the two limits are added,
+\begin{equation}
+  \tilde{\bS}^{-1} = \Bigl[\frac{1 + \mu/\kappa}{\mu + \gamma}\bM_p\Bigr]^{-1}
+  + \Bigl[\frac{1}{c_M}\bBm_{pu}\bm D^{-1}\bBm + \bC\Bigr]^{-1},
+\end{equation}
+with $\bm D$ the lumped mass (the diagonal of $\bM$ scaled to the total
+mass, positive on every element type and order, which row sums are not) and
+the second inverse by CG with BoomerAMG.  The second matrix is formed from
+the blocks of the Jacobian at hand, so it carries their boundary conditions
+(prescribed displacements: Neumann; free surfaces: Dirichlet) without a
+pressure Laplacian being assembled.  The count becomes $6$ to $16$ over
+three decades of $\Delta t$, independent of the mesh.  The term exists only
+when the dynamic problem hands the solver $c_M$.
+
 %============================================================================
 \section{Post-processing}
 \label{sec:post}
@@ -1570,6 +1835,14 @@ would dominate the value for nearly incompressible materials.  The last
 term is absent when $\kappa = \infty$, where the integrand is the
 Lagrangian and equals $\Psi_{\mathrm{iso}}$ on the constraint.
 
+In a dynamic analysis the nodal fields \code{velocity} and
+\code{acceleration} of the time integrator join the unknowns (written and
+probed like the displacement), \code{output.energy} prints after every step
+the kinetic and the internal energy, the external work and their balance
+(Section~\ref{sec:dynamics}), and \code{output.every} writes every $n$-th
+step to ParaView (and always the last); the probe, reaction and energy
+lines stay per step, which is how time histories are read from a log.
+
 %============================================================================
 \section{Mesh input}
 %============================================================================
@@ -1630,6 +1903,16 @@ with a second physics:
     layer needs these behind the common interface (\code{QuasiStaticProblem}:
     residual, Jacobian, pseudo-time, Dirichlet application) plus field
     exchange by name through the field registry.
+  \item Time integration is a decorator over that interface, not a term of
+    the kernels: with the unknown of the new time level as the variable,
+    a second-order system adds $c_M\bM$ and a history vector to the static
+    residual (Section~\ref{sec:dynamics}).  A first-order physics (heat,
+    species) would add $c\,\bm C$ and its history in the same way, with the
+    first-order generalized-$\alpha$ parameters and the same $\rho_\infty$,
+    which is what a monolithic coupling of the two needs.  The mass matrix
+    is assembled by a stock MFEM integrator here because it is constant; a
+    capacity that depends on the state would have to enter the nonlinear
+    form as a source kernel.
   \item Materials are stateless, one model per problem with region-wise
     parameters; internal variables, temperature dependence and hand-coded
     tangents are absent by design.  The kinematics (finite or small strain)
@@ -1664,7 +1947,10 @@ $c_{10}, c_{20}, c_{30}$ & Yeoh constants & \code{material.c10}, \code{c20}, \co
 $J_m$ & Gent limit of $\Ib - 3$ & \code{material.Jm} \\
 $N$ & Arruda--Boyce links per chain & \code{material.N} \\
 $\mu_r, \alpha_r$ & Ogden terms & \code{material.mu\_r}, \code{material.alpha\_r} \\
-$\rho_R$ & reference density & \code{material.rho0} \\
+$\rho_R$ & reference density, also by region & \code{material.rho0} \\
+$t_{\text{final}}, \Delta t$ & end time, time step & \code{dynamics.t\_final}, \code{dt} | \code{steps} \\
+$\beta, \gamma$; $\alpha$; $\rho_\infty$ & time integration parameters & \code{dynamics.scheme} and its keys \\
+$\bu_0, \bm v_0$ & initial displacement, velocity & \code{dynamics.initial} \\
 $\bar\bu, \bar\bT, p, \bb$ & prescribed data & \code{bcs.dirichlet}, \code{bcs.traction}, \code{body\_force} \\
 $s_i(t)$ & load schedule & \code{schedule} of an entry \\
 $t_1, \dots, t_n$ & load-step breakpoints & \code{solver.load\_steps} or \code{solver.steps} \\
@@ -1679,7 +1965,7 @@ $\gamma/\mu$ & augmentation parameter & \code{solver.linear.augmentation} \\
 
 \begin{center}
 \small
-\begin{tabular}{@{}l p{7.4cm}@{}}
+\begin{tabular}{@{}l p{6.9cm}@{}}
 \toprule
 File & Content \\
 \midrule
@@ -1701,10 +1987,12 @@ File & Content \\
 \file{physics/mixed\_solid\_mechanics\_tl.\{hpp,cpp\}} & mixed formulation module \\
 \file{physics/solid\_problem.\{hpp,cpp\}} & common interface, factory by formulation, YAML load installer \\
 \file{physics/quadrature\_fields.\{hpp,cpp\}} & quadrature quantities and their presentations \\
-\file{solvers/quasi\_static.\{hpp,cpp\}} & load stepping with bisection \\
+\file{physics/dynamic\_solid\_problem.\{hpp,cpp\}} & inertia as a decorator over a solid problem: mass matrix, step equation, initial state, energies, reactions with inertia \\
+\file{solvers/time\_integration.\{hpp,cpp\}} & parameters of the generalized-$\alpha$ family, spectral radius at infinity \\
+\file{solvers/quasi\_static.\{hpp,cpp\}} & load stepping and time stepping with bisection \\
 \file{solvers/newton.\{hpp,cpp\}} & damped Newton with Armijo backtracking; acceptance of a linear problem at the floor of its residual \\
 \file{solvers/linear\_solver.\{hpp,cpp\}} & GMRES/CG + BoomerAMG with the systems fallback \\
-\file{solvers/saddle\_point\_solver.\{hpp,cpp\}} & augmented-Lagrangian FGMRES for the $u$--$p$ Jacobian \\
+\file{solvers/saddle\_point\_solver.\{hpp,cpp\}} & augmented-Lagrangian FGMRES for the $u$--$p$ Jacobian; inertial part of the Schur complement approximation \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -1723,6 +2011,10 @@ File & Content \\
 \bibitem{yeoh} O.\,H. Yeoh, Some forms of the strain energy function for rubber, \emph{Rubber Chem. Technol.} 66 (1993) 754--771.
 \bibitem{herrmann} L.\,R. Herrmann, Elasticity equations for incompressible and nearly incompressible materials by a variational theorem, \emph{AIAA J.} 3 (1965) 1896--1900.
 \bibitem{benzi} M. Benzi, M.\,A. Olshanskii, An augmented Lagrangian-based approach to the Oseen problem, \emph{SIAM J. Sci. Comput.} 28 (2006) 2095--2113.
+\bibitem{newmark} N.\,M. Newmark, A method of computation for structural dynamics, \emph{J. Eng. Mech. Div. ASCE} 85 (1959) 67--94.
+\bibitem{hht} H.\,M. Hilber, T.\,J.\,R. Hughes, R.\,L. Taylor, Improved numerical dissipation for time integration algorithms in structural dynamics, \emph{Earthquake Eng. Struct. Dyn.} 5 (1977) 283--292.
+\bibitem{chunghulbert} J. Chung, G.\,M. Hulbert, A time integration algorithm for structural dynamics with improved numerical dissipation: the generalized-$\alpha$ method, \emph{J. Appl. Mech.} 60 (1993) 371--375.
+\bibitem{cahouetchabard} J. Cahouet, J.-P. Chabard, Some fast 3D finite element solvers for the generalized Stokes problem, \emph{Int. J. Numer. Methods Fluids} 8 (1988) 869--895.
 \bibitem{mfem} R. Anderson et al., MFEM: A modular finite element methods library, \emph{Comput. Math. Appl.} 81 (2021) 42--74.
 \end{thebibliography}
 

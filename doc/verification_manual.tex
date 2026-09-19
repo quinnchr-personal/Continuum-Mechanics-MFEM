@@ -29,6 +29,8 @@
 \newcommand{\bF}{\bm{F}}
 \newcommand{\bB}{\bm{B}}
 \newcommand{\bI}{\bm{I}}
+\newcommand{\bK}{\bm{K}}
+\newcommand{\bM}{\bm{M}}
 \newcommand{\bR}{\bm{R}}
 \newcommand{\bb}{\bm{b}}
 \newcommand{\bw}{\bm{w}}
@@ -107,11 +109,12 @@ Target & Content \\
 \midrule
 \code{make} & \file{build/libcmf.a}, \file{build/apps/solid\_mechanics}, \file{build/tests/*} \\
 \code{make meshes} & regenerates \file{apps/mesh/*.msh} from the \file{.geo} sources with Gmsh (the \file{.msh} files are kept in the tree) \\
-\code{make check} & serial, about 40 s: \file{test\_base}, \file{test\_materials}, \file{test\_solid\_mms}, \file{test\_mixed}, \file{test\_homogeneous}, \file{test\_loading}, \file{test\_linear\_elasticity} \\
+\code{make check} & serial, about 45 s: \file{test\_base}, \file{test\_materials}, \file{test\_solid\_mms}, \file{test\_mixed}, \file{test\_homogeneous}, \file{test\_loading}, \file{test\_linear\_elasticity}, \file{test\_dynamics} \\
 \code{make homogeneous} & the executable on the homogeneous-deformation inputs, compared with the closed forms by \file{apps/homogeneous\_compare.py} \\
 \code{make elastic\_bar} & the elastic bar exercise (Section~\ref{sec:elasticbar}): table and plot of force against displacement by \file{apps/elastic\_bar\_compare.py} \\
 \code{make plate\_with\_hole} & the plate-with-a-hole exercise (Section~\ref{sec:platewithhole}): errors against Kirsch's closed form and plot by \file{apps/plate\_with\_hole\_compare.py} \\
-\code{make test} & everything: \code{check}, the Cook inputs (finite strain and small strain, both formulations) serial and with four ranks, \file{test\_linear\_verification} (about 30 s), parallel consistency with two and four ranks, the homogeneous comparison, \file{test\_mixed --full}, \file{test\_benchmarks} serial and parallel, \file{test\_loading} with four ranks, \file{test\_verification}, and finally the Cook ratio gate \\
+\code{make dynamics} & the dynamic cases (Section~\ref{sec:dynamiccases}): time histories over their closed forms, measures and plots by \file{apps/dynamics\_compare.py} (about two and a half minutes) \\
+\code{make test} & everything: \code{check}, the Cook inputs (finite strain and small strain, both formulations) serial and with four ranks, \file{test\_linear\_verification} (about 30 s), \file{test\_dynamic\_verification} (about two minutes, then its parallel consistency part with two and four ranks) and \file{dynamics\_compare.py --check}, parallel consistency with two and four ranks, the homogeneous comparison, \file{test\_mixed --full}, \file{test\_benchmarks} serial and parallel, \file{test\_loading} with four ranks, \file{test\_verification}, and finally the Cook ratio gate \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -126,7 +129,12 @@ to their references.
 builds the parallel mesh, creates the problem selected by
 \code{formulation}, installs the loads, and runs the quasi-static stepper
 with a callback that writes ParaView cycles, probes and reactions after
-every converged increment.  At startup it prints the mesh statistics and
+every converged increment.  With a \code{dynamics} block in the input it
+wraps the same problem with inertia and runs the same loop in physical time;
+the header then lists the scheme, the time steps and the time dependence of
+every load and Dirichlet entry, the per-step lines gain the energies
+(\code{output.energy}), and the reactions include the inertia a support
+carries.  At startup it prints the mesh statistics and
 the element and boundary attributes with their names; at the end the
 Newton report, $\|\bu\|_{L^2}$, the internal energy, the probes and the
 reactions.  The exit status is 0 on convergence, 2 if the load path did
@@ -392,6 +400,91 @@ the classical linear elasticity operator, and the solve must be linear.
     conditions the Jacobian is reassembled once and the solution is that of
     a fresh problem.  A \code{st\_venant\_kirchhoff} path assembles and sets
     up once per Newton iteration, as before.
+\end{itemize}
+
+\subsection{Inertia and time integration (\texttt{test\_dynamics})}
+\label{sec:testdynamics}
+The dynamic analysis is a decorator over the quasi-static problem (theory
+manual, Section ``Elastodynamics''): a constant mass matrix, the step
+equation $\bm S(\bm u) + c_M\bM(\bm u - \bm u^*) + \bm h_n = \bm 0$ with
+Jacobian $\bK + c_M\bM$, and the load stepper in physical time.  221 checks
+in seven seconds.
+\begin{itemize}[nosep]
+  \item \emph{Mass.}  On perturbed quadrilateral, triangular, hexahedral and
+    tetrahedral meshes, $k = 1, 2$, with two densities by region:
+    $\bm 1\cdot\bM\bm 1 = \sum_r\rho_r V_r$ to $2\times10^{-16}$ (the
+    reference volumes by a rule that is exact for the trilinear Jacobian),
+    symmetry, no coupling between components, and the eliminated copy acting
+    as $\bM$ on the free degrees of freedom.
+  \item \emph{Free fall.}  No supports, a body force $\bm g$, two densities,
+    \code{linear\_elastic} and \code{neo\_hookean}, quadrilaterals and
+    tetrahedra: the trapezoidal rule is exact for a constant acceleration, so
+    $\bu = \tfrac12\bm g t^2$ at every node on any mesh.  Measured:
+    $\bm a_0 = \bm g$ to $4\times10^{-14}$ (the step load is on at $t = 0$),
+    $\bu$ to $1.4\times10^{-13}$ over 50 steps, no strain energy.  The test
+    fails at once if the mass and the body force disagree on the density of
+    a region, which they did before this test existed: a region's
+    \code{rho0} was read and ignored.
+  \item \emph{Order in $\Delta t$ without spatial error.}
+    $\bu = \sin(\omega t)\,\bm U(\bX)$ with $\bm U$ quadratic, which the
+    $k = 2$ space on an affine mesh holds exactly, with tractions or with
+    prescribed motion on the boundary: rates $1.999$--$2.000$ and
+    $2.05 \to 2.005$ for displacement and velocity, for \code{newmark},
+    \code{hht} ($0.1$) and \code{generalized\_alpha} ($0.8$).  The mesh is
+    $2\times2$ elements and the steps resolve its every mode: the error at a
+    fixed time carries the free vibrations that the truncation error
+    excites, each with the phase of its numerical frequency, and on a finer
+    mesh with coarser steps the ratios scatter between $1.1$ and $3.2$ while
+    the errors still fall as $\Delta t^2$.
+  \item \emph{Energy and numerical dissipation.}  Linear free vibration: the
+    trapezoidal rule keeps the energy to $3\times10^{-14}$ over 500 steps;
+    with $\rho_\infty = 0.8$ the energy never exceeds its initial value (it
+    is not monotone: the scheme dissipates in a norm of its own).  With
+    $\omega\Delta t \gg 1$ for every mode, $\rho_\infty = 0$ leaves
+    $10^{-32}$ of the energy after ten steps, $\rho_\infty = 0.5$ makes
+    $\ln E_n$ fall with the slope $-1.331$ against $2\ln\rho_\infty =
+    -1.386$ (the roots at infinity are a defective $-\rho_\infty$, hence a
+    slope and not a ratio), and $\rho_\infty = 1$ keeps it to twelve digits:
+    the parameter map of the family.
+  \item \emph{Balances.}  A step traction and a moving support, trapezoidal
+    rule, linear: kinetic plus internal energy minus the external work of
+    load and support is constant to $1.6\times10^{-14}$ of the peak energy
+    (an algebraic identity of the scheme), and the reactions plus the
+    external force equal the resultant of $\bM\bm a$ to $5\times10^{-13}$.
+  \item \emph{Nonlinear path.}  Neo-Hookean block thrown to displacements of
+    $0.75$ of its size: Newton order $1.90$ with $\bK + c_M\bM$,
+    self-convergence ratios $3.989$ and $3.982$; a manufactured solution in
+    space and time converges at the spatial rate $3.015$ under joint
+    refinement.
+  \item \emph{One Jacobian per run.}  Linear problem, 200 steps: one
+    assembly of $\bK$, one of $\bK + c_M\bM$, one AMG setup, and not a digit
+    different from 200 of each.  A step made to fail once is halved and the
+    run equals the one with the two half steps planned; $\bK + c_M\bM$ is
+    then formed three times (for $\Delta t$, $\Delta t/2$ and $\Delta t$
+    again).  Without the external work the accepted step does not evaluate
+    the full static residual; state and reactions are the same to the last
+    digit.
+  \item \emph{Stepper.}  $t_{\text{final}} = 10^{-3}$ and $10^{3}$ with 1000
+    steps, one of them halved: 1001 accepted steps, the end time is
+    $t_{\text{final}}$ exactly, no degenerate step.
+  \item \emph{Input.}  The bar input through the library: fields
+    \code{velocity} and \code{acceleration} registered and probed, the tip
+    displacement equal to $A\cos(\tilde\omega t)$ with the scheme's own
+    dispersion $\tan(\tilde\omega\Delta t/2) = \omega\Delta t/2$ to
+    $10^{-9}A$.  The parser (85 checks in \file{test\_base}): every error of
+    the \code{dynamics} block, schedules in physical time, the default
+    schedule of each analysis.
+  \item \emph{Mixed formulation.}  A Herrmann problem whose displacement
+    (quadratic) and pressure (linear) the Taylor--Hood pair holds exactly, at
+    $\nu = 0.4999$ and incompressible: order $2.00$ for $\bu$ and $1.97$ to
+    $2.11$ for $p$.  The pressure carries the tolerance of the solves
+    multiplied by $c_M = O(\Delta t^{-2})$, so the study uses tight solves
+    and 50 to 400 steps; with the usual tolerances that noise ($4\times
+    10^{-5}$) hides the order of $p$ from 400 steps on.  Two incompressible
+    runs that differ in $p_0$ alone differ at every later step by exactly
+    $\rho_\infty$ times the step before ($0.6000$, seven times): the
+    pressure mode.  At finite $\kappa$ the initial pressure is
+    $\kappa\,\dive\bu_0$ to $6\times10^{-14}$.
 \end{itemize}
 
 \subsection{Parallel consistency (\texttt{test\_parallel})}
@@ -878,6 +971,181 @@ $\nu = 0.4999$, $k = 2$ gives $19.164$ ($1.3\%$).  Both membranes are part
 of \file{test\_parallel}.
 
 %============================================================================
+\section{Dynamic cases (\texttt{apps/input/dynamics/})}
+\label{sec:dynamiccases}
+%============================================================================
+
+The inputs of this directory carry a \code{dynamics} block and are checked
+twice: by \file{tests/test\_dynamic\_verification} (54 checks, about two
+minutes, driving the library), and by \file{apps/dynamics\_compare.py}, which
+runs the executable, reads the time histories from its per-step lines,
+draws them over the closed forms (\code{make dynamics}) and, with
+\code{--check} in \code{make test}, asserts the same measures on the
+executable's own output.  The same test compares runs with two and four
+ranks against the serial one (130 steps of the two bar inputs to
+$5\times10^{-14}$, 20 steps of the tube to $2\times10^{-12}$ in the
+pressure).  Bar and beam are the $10\times1\times1$ body of
+\file{box.geo}: \file{beam.msh} ($20\times2\times2$ hexahedra) and the new
+\file{bar.msh} ($100\times1\times1$), $E = 250$, $\rho_R = 2.5$, $k = 2$.
+
+\subsection{Free axial vibration of a bar}
+\paragraph{Problem} (\file{bar\_free\_vibration.yaml}).  Fixed--free bar,
+\code{linear\_elastic} with $\nu = 0$, so that the clamp leaves the motion
+one-dimensional; released from rest in its first mode,
+$\bu_0 = A\sin(\pi X/2L)\,\be_x$; trapezoidal rule, 2000 steps over five
+periods.
+\paragraph{Reference.}  $u = A\sin(\pi X/2L)\cos(\omega_1 t)$ with
+$\omega_1 = \pi c/2L$, $c = \sqrt{E/\rho_R} = 10$; the trapezoidal rule has
+the numerical frequency $\tan(\tilde\omega\Delta t/2) = \omega\Delta t/2$,
+a period elongation of $(\omega\Delta t)^2/12$ to leading order.
+\paragraph{Check.}  Tip history within $6.1\times10^{-4}A$ of the closed
+form over five periods (gate $10^{-3}A$; the difference is the accumulated
+phase error of the scheme), energy to $7\times10^{-14}$.  At $\Delta t =
+0.2$, twenty steps per period, the period read from the zero crossings
+grows by $8.135\times10^{-3}$ against $8.225\times10^{-3}$ to leading order
+and $8.171\times10^{-3}$ from the dispersion relation (gates 10 and 2
+percent).
+
+\subsection{Step load on the bar: d'Alembert's wave}
+\paragraph{Problem} (\file{bar\_step\_load.yaml}, \file{bar.msh}).  The same
+bar with an axial traction $p$ switched on at $t = 0$ on its free end and
+held: no \code{schedule} key, since the default of a dynamic analysis is the
+constant schedule, on from the first instant.  One time step is the time a
+wave needs from one node to the next; two periods.
+\paragraph{Reference.}  A front of height $p$ leaves the loaded end, doubles
+at the wall at $t = L/c$ and runs back and forth with the period $4L/c$: the
+tip displacement is a triangle wave between $0$ and $2pL/E$, twice the
+static value, and the wall carries $2pA$ for $L/c < t < 3L/c$ and nothing for
+the rest of the period.
+\paragraph{Check.}  With generalized-$\alpha$ ($\rho_\infty = 0.8$, the
+input) and with the trapezoidal rule: tip peak $1.9895$ and $1.9897$ of the
+static deflection, mean $1.0001$; front at mid-span at $t = 0.5001$ (a line
+through the rise; gate one element crossing time, $0.01$); wall reaction
+$1.0000\,pA$ on average.  The solution is discontinuous and the finite
+element one rings behind every front.  The first overshoot of the wall
+reaction is made by the mesh and is the same for both schemes, 28 percent;
+what the dissipation removes is the ringing that follows: late in the
+plateau its root mean square is $0.18$ percent of $2pA$ against $1.62$ with
+the trapezoidal rule, which keeps it for ever (checked: less than half).
+
+\subsection{First bending frequency of a cantilever}
+\paragraph{Problem} (\file{cantilever\_vibration.yaml}).  The beam of the
+small-strain cantilever case, $\nu = 0.3$, under a half-sine pulse of the
+tip shear traction half a period long, which feeds the first mode and
+little else, then free for three periods; $\rho_\infty = 0.9$, 124 steps per
+period.
+\paragraph{Reference.}  Euler--Bernoulli,
+$\omega_1 = 1.875104^2\sqrt{EI/(\rho_R A L^4)} = 0.101499$.
+\paragraph{Check.}  $\omega_1 = 0.101321$ from the zero crossings after the
+pulse, $0.17$ percent below the reference (gate 2 percent, and below it:
+shear deformation and rotary inertia lower the frequency of a beam of
+slenderness 10).
+
+\subsection{Manufactured solutions in space and time}
+\paragraph{Problem} (\file{mms\_dynamic\_2d.yaml}, \file{mms\_dynamic\_3d.yaml}).
+$\bu(\bX, t) = \sin(\omega t)\,\bm U(\bX)$ with the fields $\bm U$ of the
+small-strain manufactured solutions, prescribed on the whole boundary (a
+moving support on every side), $\bu_0 = \bm 0$, $\bm v_0 = \omega\bm U$; the
+body force per unit mass is $\sin(\omega t)(\bm b_s - \omega^2\bm U)$ with
+$\bm b_s$ the static one, all as expressions of $x, y, z, t$.
+\paragraph{Check.}  At a small fixed step, $L^2$ rates $3.006$, $3.002$
+(2D, refinements 1 to 3) and $3.012$, $3.022$ (3D, 0 to 2).  The order in
+$\Delta t$ by self-convergence, in which the spatial error cancels, on the
+unrefined mesh with 800 to 6400 steps: ratios $4.033$, $4.010$ (on the
+refined mesh with fewer steps they are $3.74$--$3.78$, for the reason given
+in Section~\ref{sec:testdynamics}).
+
+\subsection{Large-amplitude vibration of a neo-Hookean block}
+\paragraph{Problem} (\file{neo\_hookean\_block\_vibration.yaml}).  Unit
+square, plane strain, clamped on the left, \code{neo\_hookean}, thrown
+upwards with $\bm v_0 = (0, 6X)$: the free corner swings through $0.7$ of
+the block's size with a period of about one time unit.  There is no closed
+form; what is checked is the order of the time integration and what each
+scheme does with the energy.
+\paragraph{Check.}  Corner displacement at $t = 0.16$ for $\Delta t$ halved
+from $5\times10^{-4}$: ratios $3.921$, $3.981$.  With $\rho_\infty = 0.8$
+the energy never exceeds its initial value and ends below it ($0.99964$
+after a cycle and a half at the input's step).  With the trapezoidal rule
+the energy is not conserved exactly, the problem being nonlinear, but its
+error falls by $4.005$ and $4.001$ per halving.
+
+\subsection{Radial oscillation of an incompressible tube (mixed $u$--$p$)}
+\label{sec:knowles}
+\paragraph{Problem} (\file{knowles\_tube\_oscillation.yaml}).  Plane strain,
+the quarter annulus $A = 1 \le R \le B = 2$ of the Lam\'e and Rivlin cases
+with rollers on the symmetry lines and both surfaces free of traction,
+incompressible \code{iso\_neo\_hookean}, $\mu = 1$, $\rho_R = 1$,
+\code{formulation: mixed}, $\rho_\infty = 0.8$.  The tube starts undeformed
+with the isochoric radial velocity $\bm v_0 = k\bX/|\bX|^2$, $k = 0.4$; with
+free surfaces no follower load is needed.
+
+\paragraph{Reference} (Knowles~\cite{knowles}).  Incompressibility leaves
+the motion one degree of freedom, $r^2 = R^2 + c(t)$, so that
+$\dot r = \dot c/2r$ and $\ddot r = \ddot c/2r - \dot c^2/4r^3$.  The
+spatial radial balance is
+$\rho_R\ddot r = \partial_r\sigma_{rr} + (\sigma_{rr} - \sigma_{\theta\theta})/r$,
+and for the neo-Hookean solid $\bsig = -q\bI + \mu\bB$ with
+$\lambda_\theta = r/R = \lambda$, $\lambda_r = 1/\lambda$ gives
+$\sigma_{\theta\theta} - \sigma_{rr} = \mu(\lambda^2 - \lambda^{-2})$.
+Integrating from the inner radius $a$, where $\sigma_{rr} = 0$, with
+$\int\mu(\lambda^2 - \lambda^{-2})\ud r/r = \tfrac{\mu}{2}[\ln((s - c)/s) -
+c/s]$, $s = r^2$:
+\begin{equation}
+\begin{aligned}
+  \sigma_{rr}(r) ={}& \rho_R\Bigl[\frac{\ddot c}{2}\ln\frac ra
+  + \frac{\dot c^2}{8}\Bigl(\frac1{r^2} - \frac1{a^2}\Bigr)\Bigr] \\
+  &+ \frac\mu2\Bigl[\ln\frac{(r^2 - c)\,a^2}{r^2A^2} - \frac c{r^2} + \frac c{a^2}\Bigr],
+  \qquad a^2 = A^2 + c .
+\end{aligned}
+\label{eq:knowlesstress}
+\end{equation}
+The outer surface is free as well, $\sigma_{rr}(b) = 0$ with
+$b^2 = B^2 + c$, which is Knowles' equation for $c(t)$,
+\begin{equation}
+  \rho_R\Bigl[\frac{\ddot c}{2}\ln\frac ba
+  - \frac{\dot c^2}{8}\Bigl(\frac1{a^2} - \frac1{b^2}\Bigr)\Bigr]
+  = -\frac\mu2\Bigl[\ln\frac{B^2a^2}{A^2b^2} + c\Bigl(\frac1{a^2} - \frac1{b^2}\Bigr)\Bigr],
+  \qquad c(0) = 0,\ \dot c(0) = 2k .
+\end{equation}
+Small oscillations have $\omega^2 = 2\mu(A^{-2} - B^{-2})/(\rho_R\ln(B/A))$,
+a period of $4.27$; at this amplitude the inner radius swings between $0.91$
+and $1.28$ with the period $4.2428$.  The pressure unknown of the mixed
+formulation is $p = \sigma_{rr} - \mu\dev(\bB)_{rr}$ with
+$\dev(\bB)_{rr} = (2R^2/r^2 - r^2/R^2 - 1)/3$ (the plane-strain $\bB$ has
+$B_{zz} = 1$), so \eqref{eq:knowlesstress} gives it at every material
+radius.  The test integrates the equation with a Runge--Kutta scheme of its
+own (40 substeps per time step), the script with \code{scipy}.
+
+\paragraph{Check.}  Inner displacement: first peak $0.280754$ against
+$0.280749$, largest difference over two periods $2.3\times10^{-3}$ of it
+(gate $5\times10^{-3}$; the outer wall $6\times10^{-4}$), period $4.2431$
+against $4.2428$.  Pressure at mid-wall, $R = 1.5$, where it is carried by
+the inertia of the material inside it (at the wall the free surface ties it
+to the kinematics): within $2.0\times10^{-3}$ of its largest value $0.3385$
+after the start-up (gate 2 percent; $t > 0.5$).  The start-up is visible in
+the pressure of the first steps: the initial pressure of an incompressible
+material is taken as zero and the error returns with the factor
+$-\rho_\infty$ (Section~\ref{sec:testdynamics}).
+
+\paragraph{The linear solver.}  This case is also the measurement behind the
+inertial part of the Schur complement approximation (theory manual, saddle-point
+solver).  Outer FGMRES iterations of the first Newton solve; the
+quasi-static inflation on the same mesh needs 18:
+\begin{center}
+\small
+\begin{tabular}{@{}l r r r r@{}}
+\toprule
+$\Delta t$ & $0.125$ & $0.02$ & $0.0125$ & $0.002$ \\
+\midrule
+refine 1, pressure mass alone & 28 & 33 & 38 & 43 \\
+refine 2, pressure mass alone & 33 & 47 & 59 & 81 \\
+refine 1, with the inertial part & 14 & 8 & 8 & 6 \\
+refine 2, with the inertial part & 16 & 9 & 7 & 6 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+%============================================================================
 \section{Cross-check with an independent code: the elastic bar (\texttt{apps/input/elastic\_bar/})}
 \label{sec:elasticbar}
 %============================================================================
@@ -1097,6 +1365,14 @@ two materials & Reuss and Voigt bounds & bounds; reaction vs energy & \file{test
 Cook's membrane (small strain) & literature 23.96, frozen values & $1\%$; $10^{-8}$ & \file{test\_linear\_verification} \\
 elastic bar (linear, Gent) & the drivers of \file{myapps/elastic\_bar} & force curves to $10^{-8}$ (measured $10^{-11}$, $10^{-12}$) & \file{elastic\_bar\_compare.py} \\
 plate with hole, exact boundary data & Kirsch over the whole field & $u$ to $10^{-4}$ ($k = 1$), $3\times10^{-5}$ ($k = 2$); stresses $1\%$ & \file{test\_linear\_verification}, \file{plate\_with\_hole\_compare.py} \\
+\midrule
+inertia, time integration & free fall, exact-in-space field, energy identity, parameter map & $10^{-11}$; order $2.00$; $10^{-10}$; decay $\rho_\infty^{2n}$ & \file{test\_dynamics} \\
+bar, first mode & $A\cos(\omega_1 t)$; dispersion of the trapezoidal rule & tip to $10^{-3}A$; elongation to $2\%$ & \file{test\_dynamic\_verification}, \file{dynamics\_compare.py} \\
+bar, step load & d'Alembert & peak $2.00$, mean $1.00$ to $2\%$; front to $0.01$; ringing & same \\
+cantilever frequency & Euler--Bernoulli & $\omega_1$ to $2\%$ (measured $-0.17\%$) & same \\
+manufactured, space and time & exact field & $L^2$ rate $\ge 2.8$ in $h$; ratio $4.0 \pm 0.2$ in $\Delta t$ & \file{test\_dynamic\_verification} \\
+neo-Hookean block & self-convergence; energy & ratio $4.0 \pm 0.2$; $E \le E_0$; error $\propto \Delta t^2$ & same \\
+incompressible tube (mixed) & Knowles' equation & radius $0.5\%$, period $0.5\%$, mid-wall pressure $2\%$ & \file{test\_dynamic\_verification}, \file{dynamics\_compare.py} \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -1409,6 +1685,7 @@ $(\det\bF_{2D})^{-2}$.
 \bibitem{timoshenko} S.\,P. Timoshenko, J.\,N. Goodier, \emph{Theory of Elasticity}, 3rd ed., McGraw-Hill, 1970.
 \bibitem{herrmann} L.\,R. Herrmann, Elasticity equations for incompressible and nearly incompressible materials by a variational theorem, \emph{AIAA J.} 3 (1965) 1896--1900.
 \bibitem{hill} R. Hill, Elastic properties of reinforced solids: some theoretical principles, \emph{J. Mech. Phys. Solids} 11 (1963) 357--372.
+\bibitem{knowles} J.\,K. Knowles, Large amplitude oscillations of a tube of incompressible elastic material, \emph{Quart. Appl. Math.} 18 (1960) 71--77.
 \bibitem{cook} R.\,D. Cook, Improved two-dimensional finite element, \emph{J. Struct. Div. ASCE} 100 (1974) 1851--1863.
 \bibitem{anand} L. Anand, \emph{Introduction to Coupled Theories in Solid Mechanics}, Oxford University Press, 2025; companion codes by E. Stewart and L. Anand, \url{solidmechanicscoupledtheories.github.io}.
 \bibitem{ab} E.\,M. Arruda, M.\,C. Boyce, A three-dimensional constitutive model for the large stretch behavior of rubber elastic materials, \emph{J. Mech. Phys. Solids} 41 (1993) 389--412.

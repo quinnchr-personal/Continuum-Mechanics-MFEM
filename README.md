@@ -11,7 +11,9 @@ quasi-static nonlinear solid mechanics (compressible hyperelasticity, total
 Lagrangian, CG, weak form in `doc/theory_manual.tex`), with
 small-strain linear elasticity as a material of the same kernels
 (`model: linear_elastic`, plan and measured results in
-`doc/linear_elasticity_plan.md`). The models and
+`doc/linear_elasticity_plan.md`), and with inertia when the input carries a
+`dynamics:` block (implicit elastodynamics of either formulation, plan and
+measured results in `doc/solid_dynamics_plan.md`). The models and
 methods of `src/` are described in `doc/theory_manual.tex`; every input and
 test under `apps/` and `tests/`, with its reference solution and tolerance, in
 `doc/verification_manual.tex`. The `myapps/` tree is legacy and separate.
@@ -48,11 +50,16 @@ src/physics/    solid_problem.{hpp,cpp} (common interface, factory by formulatio
                 element / point-cloud presentations (shared by both formulations);
                 solid_mechanics_tl.{hpp,cpp}: displacement formulation (residual, assembled
                 Jacobian, output fields);
-                mixed_solid_mechanics_tl.{hpp,cpp}: u-p formulation on a Taylor-Hood pair
+                mixed_solid_mechanics_tl.{hpp,cpp}: u-p formulation on a Taylor-Hood pair;
+                dynamic_solid_problem.{hpp,cpp}: inertia as a decorator over either of them
+                (constant mass matrix, the step equation S(u) + c_M M (u - u*) + h_n = 0 of the
+                time integrator, initial state, energies, reactions with inertia)
 src/solvers/    newton (damped Newton, Armijo backtracking; a linear problem is accepted at the round-off
                 floor of its residual), linear_solver (GMRES/CG + BoomerAMG),
-                saddle_point_solver (augmented Lagrangian FGMRES for the u-p Jacobian),
-                quasi_static (load stepping over the pseudo-time t in (0, 1] with bisection)
+                saddle_point_solver (augmented Lagrangian FGMRES for the u-p Jacobian; in a dynamic
+                analysis with the inertial part of the Schur complement approximation),
+                quasi_static (load stepping over the pseudo-time t in (0, 1] with bisection, and the
+                same loop in physical time), time_integration (newmark | hht | generalized_alpha)
 apps/           solid_mechanics.cpp (YAML parsing and wiring only), apps/mesh/*.geo (Gmsh sources of the
                 example meshes, named physical groups) and the generated apps/mesh/*.msh (make meshes);
                 apps/input/finite_elasticity/:
@@ -74,11 +81,15 @@ apps/           solid_mechanics.cpp (YAML parsing and wiring only), apps/mesh/*.
                   apps/elastic_bar_compare.py (force against displacement, compared);
                 apps/input/plate_with_hole/ (the exercise of myapps/plate_with_hole: Kirsch's displacement
                   on the outer edges as expressions) and apps/plate_with_hole_compare.py (the computed
-                  fields against the closed form)
+                  fields against the closed form);
+                apps/input/dynamics/ (inputs with a dynamics block: bar vibration and d'Alembert's wave,
+                  cantilever frequency, manufactured solutions in space and time, a neo-Hookean block,
+                  Knowles' incompressible tube) and apps/dynamics_compare.py (time histories from the
+                  per-step lines of the app, over the closed forms)
 tests/          test_base, test_materials, test_solid_mms, test_mixed, test_homogeneous, test_loading,
-                test_linear_elasticity (make check); test_mixed --full, test_benchmarks, test_parallel,
-                homogeneous compare, test_loading np=4, test_verification, test_linear_verification
-                (make test)
+                test_linear_elasticity, test_dynamics (make check); test_mixed --full, test_benchmarks,
+                test_parallel, homogeneous compare, test_loading np=4, test_verification,
+                test_linear_verification, test_dynamic_verification serial and np = 2, 4 (make test)
 makefile        out-of-tree build under build/ (BUILD_DIR): build/libcmf.a (LIBNAME) from src/,
                 then build/apps/* and build/tests/* linked against it
 ```
@@ -92,12 +103,14 @@ yaml-cpp via `pkg-config`, and an `mpirun`.
 ```
 make            # build/libcmf.a, build/apps/solid_mechanics, build/tests/*
 make meshes     # regenerate apps/mesh/*.msh from apps/mesh/*.geo with Gmsh (the .msh files are kept in the tree)
-make check      # serial, ~40 s: tensor/dual/YAML units, materials, patch tests + MMS (both
+make check      # serial, ~45 s: tensor/dual/YAML units, materials, patch tests + MMS (both
                 # formulations), homogeneous deformations vs closed forms (all incompressible models),
-                # small-strain linear elasticity (operator vs MFEM's ElasticityIntegrator, outputs)
+                # small-strain linear elasticity (operator vs MFEM's ElasticityIntegrator, outputs),
+                # inertia and time integration (free fall, orders, energy, mixed u-p)
 make homogeneous # the app on apps/input/finite_elasticity/verification/homogeneous_deformations/*.yaml, compared with the closed forms (python3 + yaml)
 make elastic_bar # the elastic bar exercise: linear against Gent, force-displacement table and plot (python3 + yaml + matplotlib)
 make plate_with_hole # the plate-with-a-hole exercise: errors against Kirsch's closed form and plot (python3 + yaml + pyvista + matplotlib)
+make dynamics   # the dynamic cases: time histories over their closed forms, measures and plots in out/dynamics (python3 + yaml + matplotlib + scipy; ~2.5 min)
 make test       # everything: app runs serial and np=4, np={2,4} consistency, benchmarks, homogeneous
 make clean      # removes build/
 ```
@@ -154,6 +167,7 @@ mesh:
   parallel_refine: 0
   order: 2                        # H1 polynomial degree (independent of the geometry order of the file)
 material: { model: neo_hookean, E: 250.0, nu: 0.3, rho0: 1.0 }
+  # rho0: reference density (body force per unit mass times rho0; the mass matrix of a dynamic analysis).
   # neo_hookean, st_venant_kirchhoff: coupled compressible models, keys E, nu (nu < 0.5); displacement only
   # gent_compressible_summit: SUMMIT's compressible Gent model, keys mu, kappa, Jm; coupled, displacement only:
   #   W = -mu/2 (Jm ln(1 - (I1 - 3)/Jm) + 2 ln J) + kappa/2 ((J^2 - 1)/2 - ln J)^4. kappa scales a quartic
@@ -182,7 +196,8 @@ material: { model: neo_hookean, E: 250.0, nu: 0.3, rho0: 1.0 }
   #   Other parameters of the same model by element attribute (physical-volume names and/or
   #   numbers); keys not given are inherited from the base, a region giving any of kappa | nu |
   #   incompressible replaces the base's bulk specification, every region must be incompressible
-  #   or none, and no attribute may be covered twice. The base applies everywhere else.
+  #   or none, and no attribute may be covered twice. The base applies everywhere else. A region's
+  #   rho0 is its density (body force and mass).
 bcs:
   dirichlet: [ { attr: [left], expression: ["0", "0"] } ]      # attr: physical-group names and/or numbers;
   traction:  [ { attr: [right], expression: ["0", "3.75"] } ]  # expression: one string f(x, y, z, t) per
@@ -196,6 +211,16 @@ bcs:
   # mentions t (then constant). See "Boundary conditions and loading" below.
 body_force: { expression: ["0", "0"], schedule: { type: ramp } }   # per unit mass; rho0 * b enters the
                                                                    # weak form; omit for none
+dynamics:                         # optional. Absent: quasi-static, t is a pseudo-time in [0, 1]. Present: the
+  t_final: 2.0e-2                 # inertial term joins the weak form and t is the physical time ("Dynamics" below)
+  dt: 1.0e-5                      # or steps: [ { to: 5.0e-3, n: 1000 }, { to: 2.0e-2, n: 300 } ]; a dt that does
+                                  # not divide t_final is shortened to t_final / n
+  scheme: newmark                 # newmark (beta: 0.25, gamma: 0.5, the trapezoidal rule) | hht (alpha in
+                                  # [0, 1/3]) | generalized_alpha (rho_inf in [0, 1]: 1 no dissipation, 0 annihilation)
+  initial: { displacement: ["0", "0"], velocity: ["0", "1.5*x"] }   # expressions f(x, y, z); default zero
+  # With this block: schedules live on [0, t_final], an entry without a schedule is constant (its data
+  # is the expression; a step load if that does not mention t, on from t = 0), and solver.load_steps,
+  # solver.steps and solver.predictor are errors (substep stays; min_dt is then a time).
 solver:
   load_steps: 1                   # equal increments of t; or steps: [ { to: 0.5, n: 2 }, { to: 1.0, n: 4 } ]
   predictor: none                 # none | tangent: start each increment from a linear solve about the last
@@ -208,7 +233,8 @@ solver:
                                   # inner_*, augmentation: mixed formulation only (see below)
 output:
   paraview: out/cook              # empty or absent -> no files
-  fields: [displacement, vonmises, jacobian]   # nodal unknowns: displacement, pressure (mixed); quadrature
+  fields: [displacement, vonmises, jacobian]   # nodal unknowns: displacement, pressure (mixed), and in a dynamic
+                                  # analysis velocity, acceleration; quadrature
                                   # quantities: cauchy_stress (6: xx yy zz xy yz xz), pk1_stress (9, row-major),
                                   # deformation_gradient (9), strain (6: Green-Lagrange; the infinitesimal
                                   # strain for linear_elastic), jacobian, vonmises, energy_density,
@@ -219,7 +245,10 @@ output:
   high_order: true
   probes: [ { name: top_right_corner, point: [48.0, 60.0] } ]   # every registered field printed at these points
   probe_every_step: false         # also after every load step, on lines prefixed "step k t = ..."
-  reactions: false                # force and moment of every Dirichlet entry (bcs.*.name labels them)
+  reactions: false                # force and moment of every Dirichlet entry (bcs.*.name labels them); in a
+                                  # dynamic analysis with the inertia the support carries
+  every: 1                        # ParaView stride: every n-th step (and always the last); per-step lines stay
+  energy: false                   # dynamic analysis: per step, kinetic and internal energy, external work, balance
 ```
 
 Unknown keys, missing required keys, and wrong types raise an error naming
@@ -336,8 +365,9 @@ closed form, the follower tangent matches finite differences, the cylinder
 inflates as Rivlin says).
 
 Not supported: point loads and nodal constraints (use a small physical
-group), multi-point or periodic constraints, contact, true dynamics (`t` is
-a pseudo-time), automatic step growth after a bisection.
+group), multi-point or periodic constraints, contact, automatic step growth
+after a bisection. In a quasi-static analysis `t` is a pseudo-time; with a
+`dynamics:` block it is the physical time (see "Dynamics" below).
 
 ### Verification cases (`apps/input/finite_elasticity/verification/`)
 
@@ -435,10 +465,86 @@ Cases, all checked by `tests/test_linear_verification` (`make test`, about 30 s)
 | `cooks_membrane/cook_linear_incompressible.yaml` | the incompressible plane-strain membrane, mixed Q2-Q1 | corner 19.4176 frozen; the displacement formulation at nu = 0.4999, p = 2 within 2% |
 
 Not supported: anisotropic linear elasticity, thermal or shrinkage eigenstrains (materials cannot
-read a field yet), linear dynamics and modal analysis, linear buckling (needs a geometric
+read a field yet), modal analysis, linear buckling (needs a geometric
 stiffness), small-strain plasticity or viscoelasticity (internal variables), and a factorisation
 or an initial guess carried over the load steps of a linear problem (every step is a fresh Krylov
 solve with the one hierarchy).
+
+### Dynamics (`dynamics:` block, `apps/input/dynamics/`, `apps/dynamics_compare.py`)
+
+A `dynamics:` block adds the inertial term to either weak form,
+
+    int rho_R u_tt . w dV + R(u; w) = 0,     u(0) = u_0,  u_t(0) = v_0,
+
+for every material, both formulations, 2D and 3D, with every load, region and output of the
+quasi-static analysis. Without the block nothing changes, to the last digit. In total Lagrangian
+form the term is integrated over the fixed reference mesh with the reference density, so the mass
+matrix is constant: it is assembled once (consistent mass, `rho0` by region), and with the
+displacement of the new time level as the unknown a time step solves
+
+    S(u, t_{n+1}) + c_M M (u - u*) + h_n = 0,     Jacobian K(u) + c_M M,
+
+where `S` and `K` are the residual and the Jacobian of the quasi-static problem: inertia is a
+linear spring `c_M M` plus a known history load. It is therefore a decorator over the problem
+(`physics/dynamic_solid_problem.hpp`), not a second set of kernels, and Newton, the line search,
+the linear solvers, prescribed displacements, bisection, reactions and outputs are the ones
+described above. A linear problem forms `K + c_M M` and builds its AMG hierarchy once per run.
+
+| `scheme` | keys | what it is |
+|---|---|---|
+| `newmark` (default) | `beta: 0.25`, `gamma: 0.5` | the trapezoidal rule: second order, no numerical dissipation; conserves the energy of a linear problem exactly and lengthens a period by `(w dt)^2 / 12`. Not unconditionally stable for nonlinear problems, and what the mesh cannot resolve behind a wave front rings for ever |
+| `hht` | `alpha` in [0, 1/3] | Hilber-Hughes-Taylor, `rho_inf = (1 - alpha) / (1 + alpha)` |
+| `generalized_alpha` | `rho_inf` in [0, 1] | Chung-Hulbert: second order, with the spectral radius `rho_inf` at infinite frequency. 0.8 to 0.9 removes what the step does not resolve at little cost to what it does; the choice for finite strain and **required in practice for `formulation: mixed`** |
+
+Choosing `dt`: about 20 steps per period of interest keep the period error near one percent
+(`(w dt)^2 / 12`); for a wave, the time it needs from one node to the next. Units are the
+user's: with `E` in Pa and `rho0` in kg/m^3, lengths are metres and `dt` seconds.
+
+What differs from a quasi-static input:
+
+- `t` is the physical time. Ramps and tables are given on `[0, t_final]`, and **an entry without
+  a `schedule` is constant**: its data is the expression as it stands, a step load when the
+  expression does not mention `t`, on from `t = 0` (it enters the initial acceleration). The
+  quasi-static default, a ramp over the pseudo-time, has no meaning here; because this default
+  depends on the analysis, the run header lists the time dependence of every entry:
+
+      dynamics: generalized-alpha (rho_inf 0.8), t_final 8, 1600 time steps of 0.005
+        dirichlet wall: constant in time (on from t = 0)
+        traction end_load (vector): constant in time (on from t = 0)
+
+- The initial state is `dynamics.initial` (zero by default); the initial acceleration is the
+  consistent one, `M a_0 = -S(u_0, 0)`. Dirichlet data at `t = 0` overwrite `u_0` on their dofs.
+- Reactions are those of the balance with inertia: a support force includes the inertia it carries.
+- `output.energy: true` prints after every step `kinetic`, `internal`, `external_work` (dead loads
+  and supports, trapezoidal rule) and their `balance`. For a linear problem and the trapezoidal
+  rule the balance is zero to round-off; it is an identity of the scheme and a sharp test of an
+  implementation. `velocity` and `acceleration` are nodal fields; `output.every: n` thins the
+  ParaView output while the probe, reaction and energy lines stay per step (time histories are read
+  from the log: `apps/dynamics_compare.py`).
+- Mixed u-p: the pressure carries no inertia, a differential-algebraic system. An error in the
+  pressure returns at every step with the factor `-rho_inf` (measured: 0.6000 for `rho_inf: 0.6`),
+  so a scheme without dissipation keeps it for ever and the header warns. The pressure also carries
+  the tolerance of the solves multiplied by `c_M = O(1 / dt^2)`: tighten `newton.rtol` and
+  `linear.rtol` when the pressure matters. The saddle-point solver gains the inertial part of its
+  Schur complement approximation (without it the outer iterations grow from 18 to 81 on a refined
+  annulus as `dt` falls; with it they are 6 to 16).
+
+| input | reference | checked (`tests/test_dynamic_verification`, `apps/dynamics_compare.py --check`) |
+|---|---|---|
+| `bar_free_vibration.yaml` | first axial mode `A sin(pi X / 2L) cos(w_1 t)`; dispersion of the trapezoidal rule | tip to 6e-4 A over five periods, energy to 7e-14; period elongation 8.135e-3 against 8.171e-3 |
+| `bar_step_load.yaml` | d'Alembert: triangle wave of the tip between 0 and `2 p L / E`, square wave of the wall reaction | peak 1.9895, mean 1.0001 of the static deflection; front at mid-span at 0.5001; ringing 0.18 % of `2 p A` with `rho_inf = 0.8` against 1.62 % with the trapezoidal rule |
+| `cantilever_vibration.yaml` | Euler-Bernoulli `w_1 = 1.875104^2 sqrt(E I / (rho A L^4))` | 0.17 % below it |
+| `mms_dynamic_2d.yaml`, `mms_dynamic_3d.yaml` | manufactured `sin(w t) U(X)` | rates 3.00-3.02 in h; ratios 4.03, 4.01 in dt |
+| `neo_hookean_block_vibration.yaml` | none: self-convergence, energy | ratios 3.92, 3.98; energy never above its initial value (`rho_inf = 0.8`), error falling by 4.00 per halving (trapezoidal rule) |
+| `knowles_tube_oscillation.yaml` | Knowles' equation for the radial oscillation of an incompressible neo-Hookean tube, mixed u-p | inner radius to 2.3e-3 of its amplitude over two periods, period 4.2431 against 4.2428, pressure at mid-wall to 2.0e-3 |
+
+`make dynamics` draws the histories over the closed forms into `out/dynamics/`.
+
+Not supported: explicit time integration (central differences with a lumped mass), physical
+(Rayleigh) damping, energy-momentum conserving schemes, time-step adaptivity by an error estimate
+(a step is only halved when Newton fails), a static preload followed by a dynamic release (start
+from `initial.displacement` or a pulse), eigenfrequencies and mode shapes, absorbing boundaries,
+restart.
 
 ### The elastic bar exercise (`apps/input/elastic_bar/`, `apps/elastic_bar_compare.py`)
 
@@ -884,6 +990,15 @@ For the next physics the following will have to generalize:
   interface (`QuasiStaticProblem` is the current minimal one: residual,
   Jacobian, pseudo-time, Dirichlet application) plus field exchange by name
   through `FieldRegistry`.
+- Time integration is a decorator over that interface, not a term of the
+  kernels: with the unknown of the new time level as the variable, the
+  second-order system adds `c_M M` and a history vector to the static
+  residual (`DynamicSolidProblem`). A first-order physics (heat, species)
+  would add `c C` and its history the same way, with the first-order
+  generalized-alpha parameters and the same `rho_inf`, which is what a
+  monolithic coupling needs. The mass matrix is a stock MFEM integrator
+  because it is constant here; a state-dependent capacity would have to
+  enter the nonlinear form as a source kernel.
 - Materials are stateless and, per element attribute, one model with
   region-wise parameters (`material.regions`; the integrators hold a table
   indexed by attribute). Internal variables (`QuadratureFunction` state),
