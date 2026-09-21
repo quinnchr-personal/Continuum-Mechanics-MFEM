@@ -13,12 +13,14 @@
 #include "mfem.hpp"
 #include "physics/dynamic_solid_problem.hpp"
 #include "physics/solid_problem.hpp"
+#include "solvers/direct_solver.hpp"
 #include "solvers/quasi_static.hpp"
 
 int main(int argc, char *argv[])
 {
   mfem::Mpi::Init(argc, argv);
   mfem::Hypre::Init();
+  const cmf::PetscSession petsc;   // solver.linear.type: direct
   const bool root = mfem::Mpi::Root();
 
   const char *input = "";

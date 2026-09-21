@@ -914,10 +914,10 @@ SolverConfig ParseSolverConfig(const YAML::Node &node, const std::string &path,
     {
       throw ConfigError("key '" + l.Path("augmentation") + "' must be >= 0");
     }
-    if (lc.type != "gmres_amg" && lc.type != "cg_amg")
+    if (lc.type != "gmres_amg" && lc.type != "cg_amg" && lc.type != "direct")
     {
       throw ConfigError("key '" + l.Path("type") + "': unknown type '" +
-                        lc.type + "' (expected gmres_amg or cg_amg)");
+                        lc.type + "' (expected gmres_amg, cg_amg, or direct)");
     }
     if (lc.amg != "elasticity" && lc.amg != "systems")
     {

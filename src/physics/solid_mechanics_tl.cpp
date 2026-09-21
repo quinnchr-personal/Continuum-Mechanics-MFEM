@@ -7,6 +7,7 @@
 
 #include "kernels/follower_pressure.hpp"
 #include "kernels/total_lagrangian.hpp"
+#include "solvers/direct_solver.hpp"
 #include "solvers/linear_solver.hpp"
 
 namespace cmf
@@ -204,6 +205,12 @@ SolidMechanicsTL::MakeLinearSolver(const LinearSolverConfig &cfg)
   {
     throw ConfigError("solver.linear.type: cg_amg needs a symmetric tangent, but a "
                       "follower_pressure entry makes it non-symmetric; use gmres_amg");
+  }
+  if (cfg.type == "direct")
+  {
+    auto direct = std::make_unique<DirectSolver>(fes_.GetComm(), cfg);
+    direct->SetOperatorStamp(gradient_stamp_);
+    return direct;
   }
   std::unique_ptr<LinearSolver> solver = cmf::MakeLinearSolver(cfg, fes_);
   solver->SetOperatorStamp(gradient_stamp_);

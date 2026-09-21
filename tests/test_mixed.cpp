@@ -22,6 +22,7 @@
 #include "mfem.hpp"
 #include "physics/mixed_solid_mechanics_tl.hpp"
 #include "physics/solid_mechanics_tl.hpp"
+#include "solvers/direct_solver.hpp"
 #include "solvers/quasi_static.hpp"
 #include "test_util.hpp"
 
@@ -260,10 +261,14 @@ SolveResult SolveManufactured(const cmf::AppConfig &cfg, const Manufactured &m,
 }
 
 template <typename Material>
-void PatchTest(const std::string &model, const Material &material, bool incompressible)
+void PatchTest(const std::string &model, const Material &material, bool incompressible,
+               bool direct = false)
 {
-  const std::string label = model + cmf::VolumetricLawSuffixOf(material);
+  const std::string label = model + cmf::VolumetricLawSuffixOf(material) + (direct ? ", direct solver" : "");
   cmf::AppConfig cfg = BaseConfig(4, 2, 0.15, model, 0.45, incompressible);
+  // solver.linear.type: direct, LU of the merged block matrix (solvers/direct_solver.hpp);
+  // the incompressible case has a zero (p, p) block.
+  if (direct) { cfg.solver.linear.type = "direct"; }
   cfg.solver.load_steps = 3;
   cfg.solver.newton.rtol = 1e-13;
   tensor<double, 2, 2> A;
@@ -615,6 +620,7 @@ int main(int argc, char *argv[])
 {
   mfem::Mpi::Init(argc, argv);
   mfem::Hypre::Init();
+  const cmf::PetscSession petsc;   // the direct-solver patch tests
   if (mfem::Mpi::WorldSize() != 1)
   {
     if (mfem::Mpi::Root()) { std::cout << "test_mixed is a serial test" << std::endl; }
@@ -652,6 +658,9 @@ int main(int argc, char *argv[])
   PatchTest("iso_neo_hookean", nh45_log, false);
   PatchTest("iso_neo_hookean", nh45_st, false);
   PatchTest("mooney_rivlin", mr45_jlj, false);
+  PatchTest("iso_neo_hookean", nh45, false, true);
+  PatchTest("iso_neo_hookean", nh_inc, true, true);
+  PatchTest("mooney_rivlin", mr45_jlj, false, true);
   std::printf("  [%.1f s]\n", Seconds() - t0);
   t0 = Seconds();
   std::cout << "jacobian consistency" << std::endl;

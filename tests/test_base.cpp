@@ -283,6 +283,9 @@ void TestYaml()
     "mesh: { file: square.msh }\nmaterial: { model: neo_hookean, E: 1.0, nu: 0.3 }\n"
     "solver: { linear: { type: mumps } }\n")),
     cmf::ConfigError, "solver.linear.type");
+  CHECK(cmf::ParseConfig(YAML::Load(
+    "mesh: { file: square.msh }\nmaterial: { model: neo_hookean, E: 1.0, nu: 0.3 }\n"
+    "solver: { linear: { type: direct } }\n")).solver.linear.type == "direct");
   CHECK_THROWS(cmf::ParseConfig(YAML::Load(
     "mesh: { file: square.msh }\nmaterial: { model: neo_hookean, E: 1.0, nu: 0.3 }\n"
     "output: { fields: [displacement, stress] }\n")),

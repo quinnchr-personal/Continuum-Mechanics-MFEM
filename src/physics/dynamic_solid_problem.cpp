@@ -4,6 +4,7 @@
 #include <cmath>
 
 #include "base/coefficients.hpp"
+#include "solvers/direct_solver.hpp"
 #include "solvers/linear_solver.hpp"
 #include "solvers/saddle_point_solver.hpp"
 
@@ -414,6 +415,7 @@ std::unique_ptr<mfem::Solver> DynamicSolidProblem::MakeLinearSolver(const Linear
 {
   std::unique_ptr<mfem::Solver> solver = problem_.MakeLinearSolver(cfg);
   if (auto *ours = dynamic_cast<LinearSolver *>(solver.get())) { ours->SetOperatorStamp(stamp_); }
+  else if (auto *direct = dynamic_cast<DirectSolver *>(solver.get())) { direct->SetOperatorStamp(stamp_); }
   else if (auto *saddle = dynamic_cast<SaddlePointSolver *>(solver.get()))
   {
     saddle->SetOperatorStamp(stamp_);

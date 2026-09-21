@@ -183,7 +183,9 @@ struct NewtonConfig
 
 struct LinearSolverConfig
 {
-  std::string type = "gmres_amg"; // gmres_amg | cg_amg
+  // gmres_amg | cg_amg | direct (sparse LU by MUMPS through PETSc, solvers/direct_solver.hpp;
+  // the Krylov and AMG keys below are then unused)
+  std::string type = "gmres_amg";
   std::string amg = "elasticity"; // elasticity | systems
   double rtol = 1e-12;
   double atol = 0.0;

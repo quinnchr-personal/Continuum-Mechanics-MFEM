@@ -4,6 +4,7 @@
 
 #include "kernels/follower_pressure.hpp"
 #include "kernels/mixed_total_lagrangian.hpp"
+#include "solvers/direct_solver.hpp"
 #include "solvers/saddle_point_solver.hpp"
 
 namespace cmf
@@ -290,6 +291,12 @@ std::unique_ptr<mfem::Solver>
 MixedSolidMechanicsTL::MakeLinearSolver(const LinearSolverConfig &cfg)
 {
   if (!finalized_) { Finalize(); }
+  if (cfg.type == "direct")
+  {
+    auto direct = std::make_unique<DirectSolver>(fes_u_.GetComm(), cfg);
+    direct->SetOperatorStamp(gradient_stamp_);
+    return direct;
+  }
   auto solver = std::make_unique<SaddlePointSolver>(cfg, fes_u_, offsets_, *pressure_mass_,
                                                     mu_, kappa_);
   solver->SetOperatorStamp(gradient_stamp_);
