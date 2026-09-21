@@ -13,6 +13,7 @@ material:
   model: arruda_boyce
   mu: 280.0                          # kPa, mm: matrix G0 = 280 kPa, lambda_L = 5.12, K = 1000 G0, p = K ln J / J
   N: 26.2144
+  inverse_langevin: pade             # the reference's Pade approximation of the inverse Langevin function
   kappa: 280000.0
   volumetric: logarithmic          # the reference's law, p = K ln J / J
   regions:
@@ -28,7 +29,7 @@ solver:
   load_steps: 50
   substep: { on_failure: true, max_bisections: 6, min_dt: 1e-4 }
   newton: { rtol: 1e-8, atol: 1e-10, max_it: 30 }
-  linear: { type: gmres_amg, rtol: 1e-10, max_it: 400, krylov_dim: 100, inner_rtol: 1e-4, inner_max_it: 200 }
+  linear: { type: direct }          # sparse LU (MUMPS through PETSc), as the reference; these problems are small enough to factor
 output:
   paraview: out/anand_coupled_theories/finite_elasticity/09_spherical_inclusion
   fields: [displacement, pressure, jacobian, vonmises, pk1_stress, cauchy_stress]
