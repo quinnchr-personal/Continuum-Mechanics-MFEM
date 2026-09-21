@@ -18,7 +18,10 @@ MixedMaterial MakeDecoupledBase(const MaterialConfig &cfg, const ResolvedModuli 
   if (cfg.model == "mooney_rivlin") { return MooneyRivlin(cfg.c1, cfg.c2, m.kappa); }
   if (cfg.model == "yeoh") { return Yeoh(cfg.c10, Or(cfg.c20, 0.0), Or(cfg.c30, 0.0), m.kappa); }
   if (cfg.model == "gent") { return Gent(cfg.mu, cfg.Jm, m.kappa); }
-  if (cfg.model == "arruda_boyce") { return ArrudaBoyce(cfg.mu, cfg.N, m.kappa); }
+  if (cfg.model == "arruda_boyce")
+  {
+    return ArrudaBoyce(cfg.mu, cfg.N, m.kappa, ParseInverseLangevin(cfg.inverse_langevin));
+  }
   return Ogden(cfg.mu_r, cfg.alpha_r, m.kappa);
 }
 
@@ -69,7 +72,10 @@ ResolvedModuli ResolveModuli(const MaterialConfig &cfg)
   const double inf = std::numeric_limits<double>::infinity();
   if (model == "mooney_rivlin") { r.mu = 2.0 * (cfg.c1 + cfg.c2); }
   else if (model == "yeoh") { r.mu = 2.0 * cfg.c10; }
-  else if (model == "arruda_boyce") { r.mu = ArrudaBoyce(cfg.mu, cfg.N, inf).ShearModulus(); }
+  else if (model == "arruda_boyce")
+  {
+    r.mu = ArrudaBoyce(cfg.mu, cfg.N, inf, ParseInverseLangevin(cfg.inverse_langevin)).ShearModulus();
+  }
   else if (model == "ogden") { r.mu = Ogden(cfg.mu_r, cfg.alpha_r, inf).ShearModulus(); }
   else if (Set(cfg.mu)) { r.mu = cfg.mu; }
   else { r.mu = cfg.E / (2.0 * (1.0 + cfg.nu)); }

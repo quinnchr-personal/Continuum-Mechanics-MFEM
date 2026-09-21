@@ -528,6 +528,7 @@ void TestPlaneStress(double E, double nu, double mu, double kappa)
   TestPlaneStressAdapter(cmf::Yeoh(0.5 * mu, -0.05 * mu, 0.01 * mu, inf), "yeoh", mu, 0.4);
   TestPlaneStressAdapter(cmf::Gent(mu, 20.0, inf), "gent", mu, 0.4);
   TestPlaneStressAdapter(cmf::ArrudaBoyce(mu, 5.0, inf), "arruda_boyce", mu, 0.4);
+  TestPlaneStressAdapter(cmf::ArrudaBoyce(mu, 5.0, inf, cmf::InverseLangevin::Series), "arruda_boyce series", mu, 0.4);
   TestPlaneStressAdapter(cmf::Ogden({0.63 * mu, 0.0012 * mu, -0.01 * mu}, {1.3, 5.0, -2.0}, inf), "ogden", mu, 0.4);
   TestPlaneStressAdapter(cmf::Ogden({0.63 * mu, 0.0012 * mu, -0.01 * mu}, {1.3, 5.0, -2.0}, kappa), "ogden kappa", mu + kappa, 0.4);
   TestPlaneStressSmallStrain(cmf::NeoHookean{lame.mu, lame.lambda}, "neo_hookean", E, nu);
@@ -570,6 +571,16 @@ void TestModuliResolution()
   CHECK_THROWS(cmf::MakeMaterial(c), cmf::ConfigError, "formulation: mixed");
   CHECK(cmf::MaterialName(cmf::MakeMixedMaterial(c)) == "mooney_rivlin");
   CHECK(cmf::MaterialName(cmf::MakeMaterial(c, true)) == "mooney_rivlin (plane stress)");
+  c = cmf::MaterialConfig();
+  c.model = "arruda_boyce"; c.mu = 80.0; c.N = 9.0; c.kappa = 1000.0;   // inverse_langevin: pade by default
+  CHECK_CLOSE(cmf::ResolveModuli(c).mu, 80.0 * 26.0 / 24.0, 1e-12);
+  CHECK(std::get<cmf::ArrudaBoyce>(cmf::MakeMixedMaterial(c)).inverse_langevin == cmf::InverseLangevin::Pade);
+  c.inverse_langevin = "series";
+  CHECK_CLOSE(cmf::ResolveModuli(c).mu, cmf::ArrudaBoyce(80.0, 9.0, 1000.0, cmf::InverseLangevin::Series).ShearModulus(), 1e-12);
+  CHECK(std::get<cmf::ArrudaBoyce>(cmf::MakeMixedMaterial(c)).inverse_langevin == cmf::InverseLangevin::Series);
+  c.inverse_langevin = "pade";
+  c.N = 1.0;
+  CHECK_THROWS(cmf::ResolveModuli(c), cmf::ConfigError, "must be > 1 with inverse_langevin: pade");
   c = cmf::MaterialConfig();
   c.model = "iso_neo_hookean"; c.mu = 80.0;
   CHECK_THROWS(cmf::ResolveModuli(c), cmf::ConfigError, "needs exactly one of");
@@ -881,8 +892,29 @@ int main()
   TestDecoupled(cmf::Yeoh(0.5 * mu, -0.05 * mu, 0.01 * mu, kappa), "yeoh", mu, kappa);
   TestDecoupled(cmf::Gent(mu, 20.0, kappa), "gent", mu, kappa);
   {
-    const cmf::ArrudaBoyce ab(mu, 5.0, kappa);
-    TestDecoupled(ab, "arruda_boyce", ab.ShearModulus(), kappa);
+    const cmf::ArrudaBoyce ab(mu, 5.0, kappa, cmf::InverseLangevin::Series);
+    TestDecoupled(ab, "arruda_boyce series", ab.ShearModulus(), kappa);
+    // Pade inverse Langevin (the default): dPsi/dI1bar = mu L^-1(z) / (6 z) with Cohen's
+    // L^-1, z^2 = I1bar / (3N); the modulus; agreement with the series well
+    // below locking.
+    const cmf::ArrudaBoyce pade(mu, 5.0, kappa);
+    CHECK(pade.inverse_langevin == cmf::InverseLangevin::Pade);
+    TestDecoupled(pade, "arruda_boyce", pade.ShearModulus(), kappa);
+    CHECK_CLOSE(pade.ShearModulus(), mu * 14.0 / 12.0, 1e-12 * mu);
+    for (double I1 : {3.0, 6.0, 12.0, 14.9})
+    {
+      const double z = std::sqrt(I1 / 15.0);
+      const double cohen = z * (3.0 - z * z) / (1.0 - z * z);
+      CHECK_CLOSE(pade.DPsiDI1(I1), mu * cohen / (6.0 * z), 1e-12 * pade.DPsiDI1(I1));
+    }
+    {
+      // Beyond locking (I1bar = 18.5 > 3N = 15) the energy is NaN.
+      Mat3 F = cmf::I<3>();
+      F(0, 0) = 4.0; F(1, 1) = 1.5; F(2, 2) = 1.0 / 6.0;
+      CHECK(std::isnan(pade.EnergyIso(F)));
+    }
+    const cmf::ArrudaBoyce series_far(mu, 400.0, kappa, cmf::InverseLangevin::Series), pade_far(mu, 400.0, kappa);
+    CHECK_CLOSE(pade_far.DPsiDI1(4.0), series_far.DPsiDI1(4.0), 1e-3 * series_far.DPsiDI1(4.0));
     const cmf::Ogden og({0.63 * mu, 0.0012 * mu, -0.01 * mu}, {1.3, 5.0, -2.0}, kappa);
     TestDecoupled(og, "ogden", og.ShearModulus(), kappa);
   }

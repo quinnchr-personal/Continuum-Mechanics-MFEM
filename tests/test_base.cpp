@@ -758,6 +758,27 @@ void TestMaterialRegions()
       "material: { model: neo_hookean, E: 1.0, nu: 0.3, volumetric: logarithmic }\n")),
       cmf::ConfigError, "'material.volumetric' is not used by model 'neo_hookean'");
   }
+  // The inverse Langevin approximation is a key of arruda_boyce and is inherited by regions.
+  {
+    const cmf::AppConfig c = cmf::ParseConfig(YAML::Load(head +
+      "material: { model: arruda_boyce, mu: 1.0, N: 9.0, kappa: 100.0, inverse_langevin: series, "
+      "regions: [ { attr: [2], N: 4.0 } ] }\n"));
+    CHECK(c.material.inverse_langevin == "series" && c.material.regions[0].inverse_langevin == "series");
+    CHECK(cmf::ParseConfig(YAML::Load(head + "material: { model: arruda_boyce, mu: 1.0, N: 9.0, nu: 0.3 }\n"))
+            .material.inverse_langevin == "pade");
+    CHECK_THROWS(cmf::ParseConfig(YAML::Load(head +
+      "material: { model: arruda_boyce, mu: 1.0, N: 9.0, nu: 0.3, inverse_langevin: exact }\n")),
+      cmf::ConfigError, "'material.inverse_langevin': unknown approximation 'exact'");
+    CHECK_THROWS(cmf::ParseConfig(YAML::Load(head +
+      "material: { model: arruda_boyce, mu: 1.0, N: 1.0, nu: 0.3 }\n")),
+      cmf::ConfigError, "must be > 1 with inverse_langevin: pade");
+    CHECK(cmf::ParseConfig(YAML::Load(head +
+      "material: { model: arruda_boyce, mu: 1.0, N: 1.0, nu: 0.3, inverse_langevin: series }\n"))
+            .material.N == 1.0);
+    CHECK_THROWS(cmf::ParseConfig(YAML::Load(head +
+      "material: { model: gent, mu: 1.0, Jm: 9.0, nu: 0.3, inverse_langevin: series }\n")),
+      cmf::ConfigError, "'material.inverse_langevin' is not used by model 'gent'");
+  }
   // A region may switch the bulk specification (nu instead of kappa).
   {
     const cmf::AppConfig c = cmf::ParseConfig(YAML::Load(head +

@@ -468,7 +468,8 @@ void ValidateMaterialConfig(const MaterialConfig &cfg, const std::string &path)
     {"c1", set(cfg.c1)}, {"c2", set(cfg.c2)}, {"c10", set(cfg.c10)}, {"c20", set(cfg.c20)},
     {"c30", set(cfg.c30)}, {"Jm", set(cfg.Jm)}, {"N", set(cfg.N)},
     {"mu_r", !cfg.mu_r.empty()}, {"alpha_r", !cfg.alpha_r.empty()},
-    {"incompressible", cfg.incompressible}, {"volumetric", cfg.volumetric != "quadratic"}};
+    {"incompressible", cfg.incompressible}, {"volumetric", cfg.volumetric != "quadratic"},
+    {"inverse_langevin", cfg.inverse_langevin != "pade"}};
   auto is_set = [&](const std::string &k)
   {
     for (const Key &e : keys) { if (k == e.name) { return e.set; } }
@@ -512,7 +513,7 @@ void ValidateMaterialConfig(const MaterialConfig &cfg, const std::string &path)
   }
   else if (model == "arruda_boyce")
   {
-    allowed = {"mu", "N", "nu", "kappa", "incompressible", "volumetric"};
+    allowed = {"mu", "N", "inverse_langevin", "nu", "kappa", "incompressible", "volumetric"};
     required = {"mu", "N"};
     needs = "mu and N";
   }
@@ -541,6 +542,11 @@ void ValidateMaterialConfig(const MaterialConfig &cfg, const std::string &path)
       throw ConfigError("key " + key("volumetric") + ": unknown volumetric law '" + cfg.volumetric +
                         "' (expected quadratic, simo_taylor, logarithmic, or j_log_j)");
     }
+  }
+  if (cfg.inverse_langevin != "series" && cfg.inverse_langevin != "pade")
+  {
+    throw ConfigError("key " + key("inverse_langevin") + ": unknown approximation '" +
+                      cfg.inverse_langevin + "' (expected series or pade)");
   }
   for (const std::string &k : required)
   {
@@ -593,6 +599,11 @@ void ValidateMaterialConfig(const MaterialConfig &cfg, const std::string &path)
   if (model == "arruda_boyce" && !(cfg.N > 0.0))
   {
     throw ConfigError("key " + key("N") + " must be positive (links per chain)");
+  }
+  if (model == "arruda_boyce" && cfg.inverse_langevin == "pade" && !(cfg.N > 1.0))
+  {
+    throw ConfigError("key " + key("N") + " must be > 1 with inverse_langevin: pade (the default) "
+                      "(the reference state I1bar = 3 must lie below the locking value 3 N)");
   }
   if (model == "ogden")
   {
@@ -664,6 +675,7 @@ MaterialConfig ReadMaterialKeys(NodeReader &r, const std::string &path, const Ma
   cfg.alpha_r = r.Optional<std::vector<double>>("alpha_r", cfg.alpha_r);
   cfg.incompressible = r.Optional<bool>("incompressible", cfg.incompressible);
   cfg.volumetric = r.Optional<std::string>("volumetric", cfg.volumetric);
+  cfg.inverse_langevin = r.Optional<std::string>("inverse_langevin", cfg.inverse_langevin);
   cfg.rho0 = r.Optional<double>("rho0", cfg.rho0);
   static const char *models[] = {"neo_hookean", "st_venant_kirchhoff", "gent_compressible_summit",
                                  "iso_neo_hookean", "mooney_rivlin", "yeoh", "gent", "arruda_boyce",

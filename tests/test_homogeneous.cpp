@@ -55,7 +55,7 @@ struct Case
   cmf::MixedMaterial material;
 };
 
-// The six models with rubber-like parameters (shear modulus of order 1).
+// The models with rubber-like parameters (shear modulus of order 1).
 std::vector<Case> Models()
 {
   return {
@@ -63,7 +63,8 @@ std::vector<Case> Models()
     {"mooney_rivlin", cmf::MooneyRivlin(0.4, 0.1, kInf)},
     {"yeoh", cmf::Yeoh(0.5, -0.05, 0.01, kInf)},
     {"gent", cmf::Gent(1.0, 10.0, kInf)},
-    {"arruda_boyce", cmf::ArrudaBoyce(1.0, 5.0, kInf)},
+    {"arruda_boyce", cmf::ArrudaBoyce(1.0, 5.0, kInf)},   // Pade inverse Langevin (the default)
+    {"arruda_boyce_series", cmf::ArrudaBoyce(1.0, 5.0, kInf, cmf::InverseLangevin::Series)},
     {"ogden", cmf::Ogden({0.63, 0.0012, -0.01}, {1.3, 5.0, -2.0}, kInf)},
   };
 }

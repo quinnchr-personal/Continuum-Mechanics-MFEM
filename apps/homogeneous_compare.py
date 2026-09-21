@@ -58,7 +58,10 @@ def beta(material, lam):
         psi1 = 0.5 * material["mu"] * material["Jm"] / (material["Jm"] - (I1 - 3.0))
     elif model == "arruda_boyce":
         N = material["N"]
-        psi1 = material["mu"] * sum((i + 1) * AB_C[i] * I1 ** i / N ** i for i in range(5))
+        if material.get("inverse_langevin", "pade") == "pade":
+            psi1 = material["mu"] / 6.0 * (9.0 * N - I1) / (3.0 * N - I1)
+        else:
+            psi1 = material["mu"] * sum((i + 1) * AB_C[i] * I1 ** i / N ** i for i in range(5))
     else:
         raise SystemExit(f"model '{model}' has no closed form here")
     return [2.0 * psi1 * l * l - 2.0 * psi2 / (l * l) for l in lam]

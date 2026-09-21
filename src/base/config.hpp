@@ -55,7 +55,8 @@ struct MeshConfig
 //   mooney_rivlin: c1, c2                (mu = 2 (c1 + c2))
 //   yeoh: c10, [c20, c30]                (mu = 2 c10)
 //   gent: mu, Jm
-//   arruda_boyce: mu, N                  (small-strain modulus mu (1 + 3/(5N) + ...))
+//   arruda_boyce: mu, N, [inverse_langevin]  (pade: N > 1, small-strain modulus mu (3N - 1) / (3N - 3);
+//                                          series: modulus mu (1 + 3/(5N) + ...))
 //   ogden: mu_r, alpha_r lists           (mu = 1/2 sum mu_r alpha_r)
 //   linear_elastic: mu or (E, nu)        (small strain, sigma = 2 mu dev(eps) + kappa tr(eps) I;
 //                                          no volumetric law, no follower loads, no tangent predictor)
@@ -87,6 +88,10 @@ struct MaterialConfig
   // (default, (J - 1)^2 / 2) | simo_taylor | logarithmic | j_log_j
   // (kernels/materials/volumetric.hpp). Not a key of the coupled models.
   std::string volumetric = "quadratic";
+  // Inverse Langevin approximation of arruda_boyce: pade (default, Cohen;
+  // locks at I1bar = 3N) | series (five terms in I1bar / N)
+  // (kernels/materials/arruda_boyce.hpp).
+  std::string inverse_langevin = "pade";
   double rho0 = 1.0;
   std::vector<int> attr;                 // regions only
   std::vector<std::string> attr_names;   // regions only
