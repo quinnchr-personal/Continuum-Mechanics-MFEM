@@ -129,7 +129,8 @@ Layer & Content \\
   fields), the load set shared by both formulations, and the
   quadrature-point post-processing \\
 \file{src/solvers/} & the quasi-static load stepper, damped Newton, the
-  Krylov--AMG linear solver and the augmented-Lagrangian saddle-point solver \\
+  Krylov--AMG linear solver, the augmented-Lagrangian saddle-point solver
+  and the sparse direct solver \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -617,7 +618,8 @@ Model & $\Psi_{\mathrm{iso}}$ & $f'(\Ib) = \partial\Psi_{\mathrm{iso}}/\partial\
 Isochoric neo-Hookean & $\frac{\mu}{2}(\Ib - 3)$ & $\frac{\mu}{2}$ & $\mu$ \\
 Yeoh & $\sum_{i=1}^3 c_{i0}(\Ib - 3)^i$ & $c_{10} + 2c_{20}(\Ib-3) + 3c_{30}(\Ib-3)^2$ & $2c_{10}$ \\
 Gent & $-\frac{\mu J_m}{2}\ln\bigl(1 - \frac{\Ib - 3}{J_m}\bigr)$ & $\frac{\mu}{2}\frac{J_m}{J_m - (\Ib - 3)}$ & $\mu$ \\
-Arruda--Boyce & $\mu\sum_{i=1}^5\frac{C_i}{N^{i-1}}(\Ib^{\,i} - 3^i)$ & $\mu\sum_{i=1}^5\frac{i\,C_i}{N^{i-1}}\Ib^{\,i-1}$ & $\mu_0$, eq.~\eqref{eq:abmu0} \\
+Arruda--Boyce (Pad\'e) & $\frac{\mu}{6}(\Ib - 3) - \mu N\ln\frac{3N - \Ib}{3N - 3}$ & $\frac{\mu}{6}\,\frac{9N - \Ib}{3N - \Ib}$ & $\mu\,\frac{3N - 1}{3N - 3}$ \\
+Arruda--Boyce (series) & eq.~\eqref{eq:abseries} & eq.~\eqref{eq:abseries} & $\mu_0$, eq.~\eqref{eq:abmu0} \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -630,19 +632,46 @@ rubbers.  \emph{Gent} (\code{gent}): limited chain extensibility; the
 energy is defined only for $\Ib - 3 < J_m$, beyond the locking stretch it
 evaluates to NaN, which the Newton line search rejects like any non-finite
 residual, and $J_m \to \infty$ recovers the neo-Hookean model.
-\emph{Arruda--Boyce} (\code{arruda\_boyce}): the eight-chain model in its
-five-term series in $\Ib/N$ with
-$C = \{\tfrac12, \tfrac1{20}, \tfrac{11}{1050}, \tfrac{19}{7000}, \tfrac{519}{673750}\}$;
-$\mu$ is the chain-density parameter $nkT$, $N$ the number of rigid links
-per chain (locking stretch $\lambda_L = \sqrt N$), and the small-strain
-shear modulus is
+\emph{Arruda--Boyce} (\code{arruda\_boyce}): the eight-chain model,
 \begin{equation}
-  \mu_0 = 2f'(3)
-  = \mu\Bigl(1 + \frac{3}{5N} + \frac{99}{175N^2} + \frac{513}{875N^3} + \frac{42039}{67375N^4}\Bigr).
+  f'(\Ib) = \mu\,\frac{\mathcal{L}^{-1}(z)}{6z}, \qquad z = \sqrt{\frac{\Ib}{3N}},
+  \label{eq:abexact}
+\end{equation}
+with the inverse Langevin function $\mathcal{L}^{-1}$ of the relative
+chain stretch $z$; $\mu$ is the chain-density parameter $nkT$ and $N$ the
+number of rigid links per chain (locking stretch $\lambda_L = \sqrt N$).
+$\mathcal{L}^{-1}$ has no closed form, and the key
+\code{inverse\_langevin} selects its approximation.  The default,
+\code{pade}, is Cohen's Pad\'e approximation~\cite{cohen}
+$\mathcal{L}^{-1}(z) \approx z(3 - z^2)/(1 - z^2)$, which keeps the
+singularity at $z = 1$:
+\begin{equation}
+  f'(\Ib) = \frac{\mu}{6}\,\frac{9N - \Ib}{3N - \Ib}, \qquad
+  \Psi_{\mathrm{iso}} = \frac{\mu}{6}(\Ib - 3) - \mu N\ln\frac{3N - \Ib}{3N - 3}, \qquad
+  \mu_0 = 2f'(3) = \mu\,\frac{3N - 1}{3N - 3}.
+  \label{eq:abpade}
+\end{equation}
+The energy is the integral of $f'$, so stress, tangent and the energy of
+the line search are consistent; it needs $N > 1$ and is defined for
+$\Ib < 3N$, beyond which it evaluates to NaN and the line search rejects
+the step, as for the Gent model.  The Pad\'e form is within $5\%$ of the
+exact $\mathcal{L}^{-1}$ for all $z$ and exact at $z \to 1$.  With
+\code{inverse\_langevin: series} the model is the five-term expansion of
+\eqref{eq:abexact} about $z = 0$,
+\begin{equation}
+  \Psi_{\mathrm{iso}} = \mu\sum_{i=1}^5\frac{C_i}{N^{i-1}}(\Ib^{\,i} - 3^i), \qquad
+  f'(\Ib) = \mu\sum_{i=1}^5\frac{i\,C_i}{N^{i-1}}\Ib^{\,i-1}, \qquad
+  C = \{\tfrac12, \tfrac1{20}, \tfrac{11}{1050}, \tfrac{19}{7000}, \tfrac{519}{673750}\},
+  \label{eq:abseries}
+\end{equation}
+with the small-strain shear modulus
+\begin{equation}
+  \mu_0 = \mu\Bigl(1 + \frac{3}{5N} + \frac{99}{175N^2} + \frac{513}{875N^3} + \frac{42039}{67375N^4}\Bigr).
   \label{eq:abmu0}
 \end{equation}
-The exact inverse-Langevin form of the model is not implemented; the
-series is softer near the locking stretch.
+The series has lost the singularity and is softer near the locking
+stretch.  The two differ in $\mu_0$ at order $1/N$, because the Pad\'e form
+gives $3z + 2z^3$ at small $z$ against the exact $3z + \tfrac95 z^3$.
 
 \subsubsection{Mooney--Rivlin}
 
@@ -1764,6 +1793,29 @@ pressure Laplacian being assembled.  The count becomes $6$ to $16$ over
 three decades of $\Delta t$, independent of the mesh.  The term exists only
 when the dynamic problem hands the solver $c_M$.
 
+\subsection{Sparse direct solver}
+\label{sec:directsolver}
+
+With \code{solver.linear.type: direct} every Newton system is solved by a
+sparse LU factorization instead (MUMPS through PETSc,
+\file{src/solvers/direct\_solver.hpp}), in either formulation and in
+parallel.  The Jacobian of the mixed formulation is merged into one matrix,
+and the zero $(p,p)$ block of an incompressible material is left to the
+pivoting of the factorization.  The matrix is refactored at every Newton
+iteration, except for a linear problem
+(Section~\ref{sec:linearsolve}); the Krylov and AMG keys are unused.  The
+nested Krylov solvers above are built for problems too large to factor; on
+small ones they are the wrong tool.  The uniaxial cube of the verification
+manual's coupled-theories set ($2312$ unknowns, $100$ load steps) spends
+$84\%$ of its instructions in the saddle-point solve, about $250$ AMG cycles
+per load step, and runs in $433$\,s; with the direct solver it runs in
+$23$\,s with the same reaction to $13$ digits, and the twisted column
+($59\,028$ unknowns) goes from about five minutes to eight seconds per load
+step.  Memory and factorization time grow faster than linearly with the
+size, in 3D roughly as $n^{4/3}$ and $n^{2}$, so beyond some $10^5$ to
+$10^6$ unknowns the iterative solvers take over.  The factorization uses one
+thread per MPI rank.
+
 %============================================================================
 \section{Post-processing}
 \label{sec:post}
@@ -1946,6 +1998,7 @@ $c_1, c_2$ & Mooney--Rivlin constants & \code{material.c1}, \code{material.c2} \
 $c_{10}, c_{20}, c_{30}$ & Yeoh constants & \code{material.c10}, \code{c20}, \code{c30} \\
 $J_m$ & Gent limit of $\Ib - 3$ & \code{material.Jm} \\
 $N$ & Arruda--Boyce links per chain & \code{material.N} \\
+$\mathcal{L}^{-1}$ & inverse Langevin approximation, \code{pade} (default) or \code{series} & \code{material.inverse\_langevin} \\
 $\mu_r, \alpha_r$ & Ogden terms & \code{material.mu\_r}, \code{material.alpha\_r} \\
 $\rho_R$ & reference density, also by region & \code{material.rho0} \\
 $t_{\text{final}}, \Delta t$ & end time, time step & \code{dynamics.t\_final}, \code{dt} | \code{steps} \\
@@ -2011,6 +2064,7 @@ File & Content \\
 \bibitem{yeoh} O.\,H. Yeoh, Some forms of the strain energy function for rubber, \emph{Rubber Chem. Technol.} 66 (1993) 754--771.
 \bibitem{herrmann} L.\,R. Herrmann, Elasticity equations for incompressible and nearly incompressible materials by a variational theorem, \emph{AIAA J.} 3 (1965) 1896--1900.
 \bibitem{benzi} M. Benzi, M.\,A. Olshanskii, An augmented Lagrangian-based approach to the Oseen problem, \emph{SIAM J. Sci. Comput.} 28 (2006) 2095--2113.
+\bibitem{cohen} A. Cohen, A Pad\'e approximant to the inverse Langevin function, \emph{Rheol. Acta} 30 (1991) 270--273.
 \bibitem{newmark} N.\,M. Newmark, A method of computation for structural dynamics, \emph{J. Eng. Mech. Div. ASCE} 85 (1959) 67--94.
 \bibitem{hht} H.\,M. Hilber, T.\,J.\,R. Hughes, R.\,L. Taylor, Improved numerical dissipation for time integration algorithms in structural dynamics, \emph{Earthquake Eng. Struct. Dyn.} 5 (1977) 283--292.
 \bibitem{chunghulbert} J. Chung, G.\,M. Hulbert, A time integration algorithm for structural dynamics with improved numerical dissipation: the generalized-$\alpha$ method, \emph{J. Appl. Mech.} 60 (1993) 371--375.

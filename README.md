@@ -177,7 +177,10 @@ material: { model: neo_hookean, E: 250.0, nu: 0.3, rho0: 1.0 }
   #   mooney_rivlin:   c1, c2                   (mu = 2 (c1 + c2))
   #   yeoh:            c10, [c20, c30]          (mu = 2 c10)
   #   gent:            mu, Jm                   (I1bar - 3 < Jm)
-  #   arruda_boyce:    mu, N                    (mu = n k T; small-strain modulus mu (1 + 3/(5N) + ...))
+  #   arruda_boyce:    mu, N, [inverse_langevin] (mu = n k T; inverse_langevin: pade (default, Cohen's
+  #                    L^-1(z) = z (3 - z^2)/(1 - z^2), z^2 = I1bar/(3N); N > 1, locks at I1bar = 3N,
+  #                    small-strain modulus mu (3N - 1)/(3N - 3)) | series (five terms in I1bar/N,
+  #                    small-strain modulus mu (1 + 3/(5N) + ...)))
   #   ogden:           mu_r: [..], alpha_r: [..] (up to 6 terms, mu_r alpha_r > 0; mu = 1/2 sum mu_r alpha_r)
   #   All take the bulk modulus from exactly one of kappa | nu (nu = 0.5 -> incompressible) |
   #   incompressible: true; finite kappa works in either formulation (penalty U(J) in the
@@ -229,7 +232,12 @@ solver:
   newton:  { rtol: 1e-10, atol: 1e-12, max_it: 25, armijo_c: 1e-4, max_halvings: 8, print_level: 1 }
   linear:  { type: gmres_amg, amg: elasticity, rtol: 1e-12, atol: 0.0, max_it: 500, krylov_dim: 50, print_level: 0,
              inner_rtol: 1e-3, inner_max_it: 50, augmentation: 1.0 }
-                                  # type: gmres_amg | cg_amg; amg: elasticity | systems
+                                  # type: gmres_amg | cg_amg | direct; amg: elasticity | systems
+                                  # direct: sparse LU (MUMPS through PETSc) of every Newton system, either
+                                  # formulation, serial or parallel; the other keys of `linear` are then
+                                  # unused. Much the fastest choice up to some 1e5 unknowns (the iterative
+                                  # solvers are meant for problems too large to factor); needs an MFEM
+                                  # built with MFEM_USE_PETSC and a PETSc with MUMPS
                                   # inner_*, augmentation: mixed formulation only (see below)
 output:
   paraview: out/cook              # empty or absent -> no files
