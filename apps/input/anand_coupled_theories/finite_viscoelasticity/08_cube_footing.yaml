@@ -1,0 +1,46 @@
+# Viscoelastic cube footing of NBR (solidmechanicscoupledtheories.github.io, 2. Finite
+# Viscoelasticity, FV08): the 50 mm cube of the finite elasticity case 07 with the rubber's five
+# Maxwell branches; the follower pressure on the quarter patch of the top face rises to 1500 kPa
+# in 30 s, falls back to zero at 60 s (24 steps of 2.5 s) and the cube recovers for 400 s (10 steps
+# of 40 s). Rollers on x = 0, y = 0, z = 0, the patch held in x and y. Material: Arruda-Boyce with
+# G0 = 400 kPa, lambda_L = 10, K = 1000 G0, the reference's Pade inverse Langevin and quadratic
+# volumetric law, and its NBR branches (kPa, s). Tetrahedra of apps/mesh/footing.geo (P2-P1).
+formulation: mixed
+mesh: { file: apps/mesh/footing.msh, order: 2 }   # left x=0, front y=0, bottom z=0, patch, top_rest, right, back
+material:
+  model: arruda_boyce
+  mu: 400.0                        # G0 (kPa)
+  N: 100.0                         # lambda_L^2, lambda_L = 10
+  kappa: 400000.0                  # K = 1000 G0
+  inverse_langevin: pade
+  rho0: 1.3e-6                     # kg/mm^3
+  branches:                        # NBR: G_i (kPa), tau_i (s)
+    - { G: 535.7, tau: 1.0 }
+    - { G: 76.20, tau: 10.0 }
+    - { G: 120.5, tau: 100.0 }
+    - { G: 21.3,  tau: 1000.0 }
+    - { G: 22.9,  tau: 10000.0 }
+time:
+  t_final: 460.0
+  steps: [ { to: 60.0, n: 24 }, { to: 460.0, n: 10 } ]
+bcs:
+  dirichlet:
+    - { attr: [left],   expression: ["0", "0", "0"], components: [x] }
+    - { attr: [front],  expression: ["0", "0", "0"], components: [y] }
+    - { attr: [bottom], expression: ["0", "0", "0"], components: [z] }
+    - { attr: [patch], name: patch, expression: ["0", "0", "0"], components: [x, y] }
+  traction:
+    - { attr: [patch], type: follower_pressure, expression: "1500",
+        schedule: { type: table, t: [0.0, 30.0, 60.0, 460.0], s: [0.0, 1.0, 0.0, 0.0] } }   # kPa
+solver:
+  substep: { on_failure: true, max_bisections: 6, min_dt: 1e-3 }
+  newton: { rtol: 1e-8, atol: 1e-10, max_it: 30 }
+  linear: { type: direct }
+output:
+  paraview: out/anand_coupled_theories/finite_viscoelasticity/08_cube_footing
+  fields: [displacement, pressure, jacobian, vonmises, pk1_stress, cauchy_stress]
+  probe_every_step: true
+  reactions: true
+  probes:
+    - { name: footing_corner, point: [0.0, 0.0, 50.0] }
+    - { name: footing_center, point: [12.5, 12.5, 50.0] }

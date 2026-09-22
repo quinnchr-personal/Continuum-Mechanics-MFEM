@@ -1,0 +1,42 @@
+# Shear of a rubber bushing of NBR (solidmechanicscoupledtheories.github.io, 2. Finite
+# Viscoelasticity, FV09): a solid of revolution of radius 22.5 mm and height 19.3 mm with a
+# concave waist (apps/mesh/bushing.geo, after the reference's), its bottom face clamped and its
+# top face moved rigidly in x by 10 mm, back to -10, to 10 and to -10 in 30 s ramps and returned
+# to 0 (120 s, 200 steps of 0.6 s): a shear strain of 0.52 at 0.017 /s. The shear force against
+# the shear strain u/L is a hysteresis loop. Second-order tetrahedra of size 3 mm (7087) where
+# the reference's coarse mesh has 2000 first-order ones of size 4. Material as 08_cube_footing.yaml.
+formulation: mixed
+mesh: { file: apps/mesh/bushing.msh, order: 2 }   # top (y = 19.3), bottom (y = 0), lateral
+material:
+  model: arruda_boyce
+  mu: 400.0
+  N: 100.0
+  kappa: 400000.0
+  inverse_langevin: pade
+  rho0: 1.3e-6
+  branches:
+    - { G: 535.7, tau: 1.0 }
+    - { G: 76.20, tau: 10.0 }
+    - { G: 120.5, tau: 100.0 }
+    - { G: 21.3,  tau: 1000.0 }
+    - { G: 22.9,  tau: 10000.0 }
+time:
+  t_final: 120.0
+  dt: 0.6
+bcs:
+  dirichlet:
+    - { attr: [bottom], name: bottom, expression: ["0", "0", "0"] }
+    - { attr: [top], name: top, expression: ["10", "0", "0"],
+        schedule: { type: table, t: [0, 15, 45, 75, 105, 120], s: [0, 1, -1, 1, -1, 0] } }   # mm
+solver:
+  substep: { on_failure: true, max_bisections: 6, min_dt: 1e-3 }
+  newton: { rtol: 1e-8, atol: 1e-10, max_it: 30 }
+  linear: { type: direct }
+output:
+  paraview: out/anand_coupled_theories/finite_viscoelasticity/09_bushing_shear
+  fields: [displacement, pressure, jacobian, vonmises, pk1_stress, cauchy_stress]
+  every: 5
+  probe_every_step: true
+  reactions: true
+  probes:
+    - { name: top_center, point: [0.0, 19.3, 0.0] }

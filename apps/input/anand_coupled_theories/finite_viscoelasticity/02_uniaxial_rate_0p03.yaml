@@ -1,0 +1,39 @@
+# Rate-dependent uniaxial tension of VHB 4910 (solidmechanicscoupledtheories.github.io, 2. Finite
+# Viscoelasticity, FV02): the cube of 01 loaded to the stretch 2.5 and back at the constant
+# stretch rate 0.03 /s (a triangle wave over 100.0 s, 100 steps), one of the three rates of the
+# reference's figure (0.01, 0.03, 0.05 /s), compared there with the experiments of Hossain et
+# al. (2012). Everything else as 01_uniaxial_equilibrium.yaml.
+formulation: mixed
+mesh: { file: apps/mesh/cube.msh, order: 2 }
+material:
+  model: arruda_boyce
+  mu: 15.36
+  N: 34.2225
+  kappa: 15360.0
+  inverse_langevin: pade
+  rho0: 1.0e-6
+  branches:
+    - { G: 26.06, tau: 0.6074 }
+    - { G: 26.53, tau: 6.56 }
+    - { G: 10.83, tau: 61.25 }
+time:
+  t_final: 100.0
+  dt: 1.0
+bcs:
+  dirichlet:
+    - { attr: [left],   expression: ["0", "0", "0"], components: [x] }
+    - { attr: [front],  expression: ["0", "0", "0"], components: [y] }
+    - { attr: [bottom], expression: ["0", "0", "0"], components: [z] }
+    - { attr: [back], name: loaded, expression: ["0", "1.5", "0"], components: [y],
+        schedule: { type: table, t: [0.0, 50.0, 100.0], s: [0.0, 1.0, 0.0] } }   # stretch 2.5 at mid-time, 1 at the end
+solver:
+  substep: { on_failure: true, max_bisections: 6, min_dt: 1e-4 }
+  newton: { rtol: 1e-8, atol: 1e-10, max_it: 30 }
+  linear: { type: direct }
+output:
+  paraview: out/anand_coupled_theories/finite_viscoelasticity/02_uniaxial_rate_0p03
+  fields: [displacement, pressure, jacobian, vonmises, pk1_stress, cauchy_stress]
+  probe_every_step: true
+  reactions: true
+  probes:
+    - { name: corner, point: [1.0, 1.0, 1.0] }

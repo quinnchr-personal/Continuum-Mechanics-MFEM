@@ -1,0 +1,40 @@
+# Creep of VHB 4910 (solidmechanicscoupledtheories.github.io, 2. Finite Viscoelasticity, FV04):
+# the cube of 01 under a nominal traction of 50 kPa on the face y = 1, applied in 0.1 s and held
+# for 10 s (200 steps of 0.05 s); the stretch creeps from the instantaneous elastic value towards
+# the equilibrium one. The traction is a dead load per unit reference area, as the reference's.
+# Everything else as 01_uniaxial_equilibrium.yaml.
+formulation: mixed
+mesh: { file: apps/mesh/cube.msh, order: 2 }
+material:
+  model: arruda_boyce
+  mu: 15.36
+  N: 34.2225
+  kappa: 15360.0
+  inverse_langevin: pade
+  rho0: 1.0e-6
+  branches:
+    - { G: 26.06, tau: 0.6074 }
+    - { G: 26.53, tau: 6.56 }
+    - { G: 10.83, tau: 61.25 }
+time:
+  t_final: 10.0
+  dt: 0.05
+bcs:
+  dirichlet:
+    - { attr: [left],   expression: ["0", "0", "0"], components: [x] }
+    - { attr: [front],  expression: ["0", "0", "0"], components: [y] }
+    - { attr: [bottom], expression: ["0", "0", "0"], components: [z] }
+  traction:
+    - { attr: [back], name: loaded, expression: ["0", "50", "0"],
+        schedule: { type: ramp, from: 0.0, to: 0.1 } }   # kPa, reached after 0.1 s, then held
+solver:
+  substep: { on_failure: true, max_bisections: 6, min_dt: 1e-4 }
+  newton: { rtol: 1e-8, atol: 1e-10, max_it: 30 }
+  linear: { type: direct }
+output:
+  paraview: out/anand_coupled_theories/finite_viscoelasticity/04_creep
+  fields: [displacement, pressure, jacobian, vonmises, pk1_stress, cauchy_stress]
+  probe_every_step: true
+  reactions: true
+  probes:
+    - { name: face_center, point: [0.5, 1.0, 0.5] }

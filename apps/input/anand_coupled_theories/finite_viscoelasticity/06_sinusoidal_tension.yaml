@@ -1,0 +1,38 @@
+# Hysteresis in tension of VHB 4910 (solidmechanicscoupledtheories.github.io, 2. Finite
+# Viscoelasticity, FV06): a 5 mm cube whose face y = 5 moves by 2.5 sin(2 pi t) mm (a stretch
+# between 0.5 and 1.5 at 1 Hz), two cycles in 100 steps of 0.02 s; the nominal stress against the
+# stretch traces a hysteresis loop. Rollers on x = 0, y = 0, z = 0. Everything else as
+# 01_uniaxial_equilibrium.yaml.
+formulation: mixed
+mesh: { file: apps/mesh/cube5.msh, order: 2 }   # box.geo, 5 mm, 2^3 hexahedra
+material:
+  model: arruda_boyce
+  mu: 15.36
+  N: 34.2225
+  kappa: 15360.0
+  inverse_langevin: pade
+  rho0: 1.0e-6
+  branches:
+    - { G: 26.06, tau: 0.6074 }
+    - { G: 26.53, tau: 6.56 }
+    - { G: 10.83, tau: 61.25 }
+time:
+  t_final: 2.0
+  dt: 0.02
+bcs:
+  dirichlet:
+    - { attr: [left],   expression: ["0", "0", "0"], components: [x] }
+    - { attr: [front],  expression: ["0", "0", "0"], components: [y] }
+    - { attr: [bottom], expression: ["0", "0", "0"], components: [z] }
+    - { attr: [back], name: loaded, expression: ["0", "2.5*sin(2*pi*t)", "0"], components: [y] }
+solver:
+  substep: { on_failure: true, max_bisections: 6, min_dt: 1e-4 }
+  newton: { rtol: 1e-8, atol: 1e-10, max_it: 30 }
+  linear: { type: direct }
+output:
+  paraview: out/anand_coupled_theories/finite_viscoelasticity/06_sinusoidal_tension
+  fields: [displacement, pressure, jacobian, vonmises, pk1_stress, cauchy_stress]
+  probe_every_step: true
+  reactions: true
+  probes:
+    - { name: corner, point: [5.0, 5.0, 5.0] }

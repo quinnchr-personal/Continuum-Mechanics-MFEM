@@ -1,0 +1,46 @@
+# Impulse response of a viscoelastic cantilever of NBR (solidmechanicscoupledtheories.github.io,
+# 2. Finite Viscoelasticity, FV10): a 20 x 2 x 2 mm beam clamped at x = 0, a shear traction on the
+# free end in y that rises to 2 kPa at t = 4 ms and is gone at 8 ms (a triangle pulse over the first
+# four steps), then free vibration damped by the Maxwell branches, the fastest of which has
+# tau = 1 ms here (the reference changes tau_1 from 1 s to 1 ms for the dynamic cases); 0.4 s in 200
+# steps of 2 ms with the trapezoidal rule (the reference's Newmark parameters, generalized-alpha
+# with alpha = 0). 20 x 4 x 2 Q2-Q1 hexahedra where the reference has 12 x 6 x 2 cells of
+# tetrahedra. The dead traction and the density are the reference's. Material as
+# 08_cube_footing.yaml but for tau_1.
+formulation: mixed
+mesh: { file: apps/mesh/beam20.msh, order: 2 }   # box.geo: left x=0 (clamped), right x=20 (loaded)
+material:
+  model: arruda_boyce
+  mu: 400.0
+  N: 100.0
+  kappa: 400000.0
+  inverse_langevin: pade
+  rho0: 1.3e-6                     # kg/mm^3
+  branches:
+    - { G: 535.7, tau: 1.0e-3 }
+    - { G: 76.20, tau: 10.0 }
+    - { G: 120.5, tau: 100.0 }
+    - { G: 21.3,  tau: 1000.0 }
+    - { G: 22.9,  tau: 10000.0 }
+dynamics:
+  t_final: 0.4
+  dt: 0.002
+  scheme: newmark                  # beta 1/4, gamma 1/2, as the reference (alpha = 0)
+bcs:
+  dirichlet:
+    - { attr: [left], name: clamp, expression: ["0", "0", "0"] }
+  traction:
+    - { attr: [right], name: pulse, expression: ["0", "2", "0"],
+        schedule: { type: table, t: [0.0, 0.004, 0.008, 0.4], s: [0.0, 1.0, 0.0, 0.0] } }   # kPa
+solver:
+  substep: { on_failure: true, max_bisections: 6, min_dt: 1e-6 }
+  newton: { rtol: 1e-8, atol: 1e-12, max_it: 30 }
+  linear: { type: direct }
+output:
+  paraview: out/anand_coupled_theories/finite_viscoelasticity/10_beam_impulse
+  fields: [displacement, velocity, pressure, vonmises, pk1_stress, cauchy_stress]
+  every: 5
+  probe_every_step: true
+  reactions: true
+  probes:
+    - { name: tip, point: [20.0, 1.0, 1.0] }

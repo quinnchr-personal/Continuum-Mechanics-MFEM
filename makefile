@@ -100,7 +100,9 @@ MESHES := $(MESH_DIR)/square.msh $(MESH_DIR)/cook.msh $(MESH_DIR)/cube.msh $(MES
 	$(MESH_DIR)/cube10.msh $(MESH_DIR)/shear_cube.msh $(MESH_DIR)/column_buckling.msh $(MESH_DIR)/column_twist.msh \
 	$(MESH_DIR)/cylinder_torsion.msh $(MESH_DIR)/plate_hole.msh $(MESH_DIR)/tube_quarter.msh \
 	$(MESH_DIR)/sphere_octant.msh $(MESH_DIR)/footing.msh $(MESH_DIR)/inclusion.msh \
-	$(MESH_DIR)/cube_tet.msh $(MESH_DIR)/plate_hole_2d.msh $(MESH_DIR)/column_euler.msh $(MESH_DIR)/bar.msh
+	$(MESH_DIR)/cube_tet.msh $(MESH_DIR)/plate_hole_2d.msh $(MESH_DIR)/column_euler.msh $(MESH_DIR)/bar.msh \
+	$(MESH_DIR)/cube5.msh $(MESH_DIR)/beam20.msh $(MESH_DIR)/column_buckling50.msh $(MESH_DIR)/bushing.msh \
+	$(MESH_DIR)/indent_cube.msh
 meshes: $(MESHES)
 $(MESH_DIR)/square.msh: $(MESH_DIR)/square.geo
 	$(GMSH) -2 -format msh22 -setnumber n 4 -o $@ $< > /dev/null
@@ -137,6 +139,20 @@ $(MESH_DIR)/sphere_octant.msh: $(MESH_DIR)/sphere_octant.geo
 $(MESH_DIR)/footing.msh: $(MESH_DIR)/footing.geo
 	$(GMSH) -3 -format msh22 -o $@ $< > /dev/null
 $(MESH_DIR)/inclusion.msh: $(MESH_DIR)/inclusion.geo
+	$(GMSH) -3 -format msh22 -o $@ $< > /dev/null
+# Meshes of apps/input/anand_coupled_theories/finite_viscoelasticity (section 2 of the site). The
+# *_ref.msh meshes of its reference/same_mesh inputs are dolfinx's own boxes, written by
+# finite_elasticity/reference/scripts/export_box.py, not by Gmsh.
+$(MESH_DIR)/cube5.msh: $(MESH_DIR)/box.geo
+	$(GMSH) -3 -format msh22 -setnumber Lx 5 -setnumber Ly 5 -setnumber Lz 5 -setnumber nx 2 -setnumber ny 2 -setnumber nz 2 -o $@ $< > /dev/null
+$(MESH_DIR)/beam20.msh: $(MESH_DIR)/box.geo
+	$(GMSH) -3 -format msh22 -setnumber Lx 20 -setnumber Ly 2 -setnumber Lz 2 -setnumber nx 20 -setnumber ny 4 -setnumber nz 2 -o $@ $< > /dev/null
+$(MESH_DIR)/column_buckling50.msh: $(MESH_DIR)/box.geo $(MESH_DIR)/perturb_column.py
+	$(GMSH) -3 -format msh22 -setnumber Lz 20 -setnumber nx 4 -setnumber ny 4 -setnumber nz 50 -o $@.straight $< > /dev/null
+	python3 $(MESH_DIR)/perturb_column.py $@.straight $@ 20 0.005 && rm -f $@.straight
+$(MESH_DIR)/bushing.msh: $(MESH_DIR)/bushing.geo
+	$(GMSH) -3 -order 2 -format msh22 -o $@ $< > /dev/null
+$(MESH_DIR)/indent_cube.msh: $(MESH_DIR)/indent_cube.geo
 	$(GMSH) -3 -format msh22 -o $@ $< > /dev/null
 # Meshes of apps/input/finite_elasticity/verification.
 $(MESH_DIR)/cube_tet.msh: $(MESH_DIR)/cube_tet.geo

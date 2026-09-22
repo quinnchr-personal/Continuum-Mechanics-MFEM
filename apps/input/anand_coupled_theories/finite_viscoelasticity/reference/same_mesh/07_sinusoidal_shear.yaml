@@ -1,0 +1,41 @@
+# Same-mesh check: 07_sinusoidal_shear.yaml on the reference's own mesh, dolfinx's create_box
+# 6 x 6 x 4 cut into tetrahedra (apps/mesh/shear_box_ref.msh, written by
+# ../../finite_elasticity/reference/scripts/export_box.py 6 6 4 shear_box_ref.msh 1 1 1), so that
+# the two codes differ only in their discretisation of the same element mesh (P2-P1 both).
+# Hysteresis in shear of VHB 4910 (solidmechanicscoupledtheories.github.io, 2. Finite
+# Viscoelasticity, FV07): 1 mm cube, the face y = 0 clamped, the face y = 1 moved by sin(2 pi t)
+# mm in x with u_y = u_z = 0 (a nominal shear strain between -1 and 1 at 1 Hz), two cycles in 100
+# steps of 0.02 s; the shear force per unit area against the shear strain is a hysteresis loop.
+# 8 x 8 x 4 Q2-Q1 hexahedra where the reference has 6 x 6 x 4 cells of tetrahedra. Everything
+# else as 01_uniaxial_equilibrium.yaml.
+formulation: mixed
+mesh: { file: apps/mesh/shear_box_ref.msh, order: 2 }
+material:
+  model: arruda_boyce
+  mu: 15.36
+  N: 34.2225
+  kappa: 15360.0
+  inverse_langevin: pade
+  rho0: 1.0e-6
+  branches:
+    - { G: 26.06, tau: 0.6074 }
+    - { G: 26.53, tau: 6.56 }
+    - { G: 10.83, tau: 61.25 }
+time:
+  t_final: 2.0
+  dt: 0.02
+bcs:
+  dirichlet:
+    - { attr: [front], name: base, expression: ["0", "0", "0"] }
+    - { attr: [back], name: top, expression: ["sin(2*pi*t)", "0", "0"] }
+solver:
+  substep: { on_failure: true, max_bisections: 6, min_dt: 1e-4 }
+  newton: { rtol: 1e-8, atol: 1e-10, max_it: 30 }
+  linear: { type: direct }
+output:
+  paraview: out/anand_coupled_theories/finite_viscoelasticity/same_mesh/07_sinusoidal_shear
+  fields: [displacement, pressure, jacobian, vonmises, pk1_stress, cauchy_stress]
+  probe_every_step: true
+  reactions: true
+  probes:
+    - { name: top_corner, point: [1.0, 1.0, 1.0] }

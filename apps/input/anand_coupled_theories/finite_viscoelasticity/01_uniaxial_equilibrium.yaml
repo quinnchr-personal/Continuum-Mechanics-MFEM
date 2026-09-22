@@ -1,0 +1,43 @@
+# Equilibrium uniaxial tension of VHB 4910 (solidmechanicscoupledtheories.github.io, 2. Finite
+# Viscoelasticity, FV01): 1 mm cube stretched to 9 at the rate 1e-4 /s (80 000 s, 50 steps of
+# 1600 s), so slowly that the three Maxwell branches (relaxation times 0.6 to 61 s) stay relaxed
+# and the response is the equilibrium Arruda-Boyce branch; compared with the experiment of
+# Wang et al. (2016) on the reference page. Rollers on x = 0, y = 0, z = 0; the face y = 1
+# (back) moves in y, free in x and z. Q2-Q1 hexahedra (2^3) instead of the reference's six
+# tetrahedra; the state is homogeneous on either. Material: Arruda-Boyce with G0 = 15.36 kPa,
+# lambda_L = 5.85 (N = lambda_L^2), K = 1000 G0, the reference's Pade inverse Langevin and its
+# quadratic volumetric law p = K (J - 1), and the branches of the reference (kPa, s).
+formulation: mixed
+mesh: { file: apps/mesh/cube.msh, order: 2 }   # box.geo: bottom z=0, front y=0, right x=1, back y=1, left x=0, top z=1
+material: &vhb
+  model: arruda_boyce
+  mu: 15.36                        # G0 (kPa): small-strain equilibrium modulus G0 (3N - 1)/(3N - 3)
+  N: 34.2225                       # lambda_L^2, lambda_L = 5.85
+  kappa: 15360.0                   # K = 1000 G0
+  inverse_langevin: pade
+  rho0: 1.0e-6                     # kg/mm^3 (unused: quasi-static)
+  branches:                        # non-equilibrium branches of Wang, Chester and Anand (2016): G_i (kPa), tau_i (s)
+    - { G: 26.06, tau: 0.6074 }
+    - { G: 26.53, tau: 6.56 }
+    - { G: 10.83, tau: 61.25 }
+time:
+  t_final: 80000.0                 # (stretch - 1) / rate = 8 / 1e-4 s
+  dt: 1600.0                       # 50 steps, as the reference
+bcs:
+  dirichlet:
+    - { attr: [left],   expression: ["0", "0", "0"], components: [x] }
+    - { attr: [front],  expression: ["0", "0", "0"], components: [y] }
+    - { attr: [bottom], expression: ["0", "0", "0"], components: [z] }
+    - { attr: [back], name: loaded, expression: ["0", "8", "0"], components: [y],
+        schedule: { type: ramp, from: 0.0, to: 80000.0 } }   # stretch 9 at t_final
+solver:
+  substep: { on_failure: true, max_bisections: 6, min_dt: 1.0 }
+  newton: { rtol: 1e-8, atol: 1e-10, max_it: 30 }
+  linear: { type: direct }
+output:
+  paraview: out/anand_coupled_theories/finite_viscoelasticity/01_uniaxial_equilibrium
+  fields: [displacement, pressure, jacobian, vonmises, pk1_stress, cauchy_stress]
+  probe_every_step: true
+  reactions: true
+  probes:
+    - { name: corner, point: [1.0, 1.0, 1.0] }
