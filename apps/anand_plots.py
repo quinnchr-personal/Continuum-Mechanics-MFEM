@@ -607,6 +607,36 @@ PLOTS = {"01_uniaxial_tension": plot_01, "02_simple_shear": plot_02, "03_cylinde
          "10_column_twist": plot_10}
 
 
+def load_data(case, cfg, logs=None):
+    """The data of read_log for one case: from the ParaView output of its input cfg, with the
+    app's own reactions from <collection>/reactions.csv (output.reactions) or else from its log
+    beside the output (logs/<case>.log, as run_set.sh writes them) in place of the ones recovered
+    from the nodal stress (that recovery is off by up to 10 percent where the loaded face meets
+    free faces or clamped corners; see "ParaView output" above); or, with logs, from
+    logs/<case>.log alone. Returns the data and the directory the plots go beside."""
+    if logs is not None:
+        return read_log(os.path.join(logs, case + ".log")), logs
+    data = read_paraview(cfg)
+    beside = cfg["output"]["paraview"]
+    csv = os.path.join(beside.rstrip("/"), "reactions.csv")
+    log = os.path.join(os.path.dirname(beside.rstrip("/")), "logs", case + ".log")
+    if os.path.exists(csv) or os.path.exists(log):
+        logged = read_reactions_csv(csv) if os.path.exists(csv) else read_log(log)
+        for key, entry in logged.items():
+            if key[0] != "reaction" or key not in data:
+                continue
+            # the output has the initial state too (zero reaction), the log has not
+            tl = np.asarray(entry["t"])
+            rows = [np.flatnonzero(np.abs(tl - t) < 1e-9) for t in data[key]["t"]]
+            if all(len(r) == 1 or abs(t) < 1e-12 for r, t in zip(rows, data[key]["t"])):
+                for field in ("force", "moment"):
+                    src = np.asarray(entry[field])
+                    data[key][field] = np.array([src[r[0]] if len(r) == 1 else np.zeros(src.shape[1])
+                                                 for r in rows])
+                data["reactions_from"] = "reactions.csv" if os.path.exists(csv) else "log"
+    return data, beside
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("cases", nargs="*", help="case names (default: every case with output, or with a log)")
@@ -644,35 +674,9 @@ def main():
     status = 0
     for case in cases:
         try:
-            if args.logs is None:
-                if case not in configs:
-                    raise FileNotFoundError(os.path.join(args.inputs, case + ".yaml"))
-                data = read_paraview(configs[case])
-                beside = configs[case]["output"]["paraview"]
-                # The app's own reactions, from <collection>/reactions.csv (output.reactions) or
-                # else from its log beside the output (logs/<case>.log, as run_set.sh writes them),
-                # replace the ones recovered from the nodal stress: that recovery is off by up to
-                # 10 percent where the loaded face meets free faces or clamped corners (04, 08,
-                # 02); see "ParaView output" above.
-                csv = os.path.join(beside.rstrip("/"), "reactions.csv")
-                log = os.path.join(os.path.dirname(beside.rstrip("/")), "logs", case + ".log")
-                if os.path.exists(csv) or os.path.exists(log):
-                    logged = read_reactions_csv(csv) if os.path.exists(csv) else read_log(log)
-                    for key, entry in logged.items():
-                        if key[0] != "reaction" or key not in data:
-                            continue
-                        # the output has the initial state too (zero reaction), the log has not
-                        tl = np.asarray(entry["t"])
-                        rows = [np.flatnonzero(np.abs(tl - t) < 1e-9) for t in data[key]["t"]]
-                        if all(len(r) == 1 or abs(t) < 1e-12 for r, t in zip(rows, data[key]["t"])):
-                            for field in ("force", "moment"):
-                                src = np.asarray(entry[field])
-                                data[key][field] = np.array([src[r[0]] if len(r) == 1 else np.zeros(src.shape[1])
-                                                             for r in rows])
-                            data["reactions_from"] = "reactions.csv" if os.path.exists(csv) else "log"
-            else:
-                data = read_log(os.path.join(args.logs, case + ".log"))
-                beside = args.logs
+            if args.logs is None and case not in configs:
+                raise FileNotFoundError(os.path.join(args.inputs, case + ".yaml"))
+            data, beside = load_data(case, configs.get(case), args.logs)
             out = args.out or os.path.join(os.path.dirname(beside.rstrip("/")), "plots")
             os.makedirs(out, exist_ok=True)
             fig, ax = plt.subplots(figsize=(6.0, 4.2))
