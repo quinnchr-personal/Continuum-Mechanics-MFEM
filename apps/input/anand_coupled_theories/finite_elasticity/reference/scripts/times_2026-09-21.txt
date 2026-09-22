@@ -1,0 +1,13 @@
+3D09_spherical_inclusion exit 0 wall 76 s | Elapsed real time:  0:01:15.099041
+3D01_uniaxial_tension exit 0 wall 5 s | Elapsed real time:  0:00:03.048135
+3D02_simple_shear exit 0 wall 123 s | Elapsed real time:  0:02:01.848446
+3D03_fixed_end_torsion exit 0 wall 92 s | Elapsed real time:  0:01:30.461979
+3D04_hole_in_plate exit 0 wall 188 s | Elapsed real time:  0:03:06.056604
+3D06_sphere_inflation exit 1 wall 1 s | 
+3D05_cylinder_inflation exit 1 wall 1 s | 
+3D07_cube_footing exit 1 wall 0 s | 
+3D08_beam_buckling exit 0 wall 348 s | Elapsed real time:  0:05:45.278188
+3D10_column_twist exit 0 wall 3646 s | Elapsed real time:  1:00:37.642549
+3D06_sphere_inflation exit 0 wall 122 s | Elapsed real time:  0:01:58.048617
+3D05_cylinder_inflation exit 0 wall 24 s | Elapsed real time:  0:00:20.417846
+3D07_cube_footing exit 0 wall 243 s | Elapsed real time:  0:03:59.218001
