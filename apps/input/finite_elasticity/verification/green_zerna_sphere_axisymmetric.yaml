@@ -1,0 +1,31 @@
+# The thick-walled incompressible neo-Hookean sphere of green_zerna_sphere_inflation.yaml
+# (there an octant with A = 10, B = 11) as an axisymmetric analysis of a shell with A = 1,
+# B = 2, mu = 1: the quarter annulus of apps/mesh/annulus.geo in the (r, z) plane (x = r,
+# y = z), curved second-order quadrilaterals, is the meridian section of the upper half of the
+# shell; u_z = 0 on the equator (bottom), u_r = 0 on the axis (left), follower pressure on the
+# inner surface. Closed form (Green and Zerna): with lambda_a = a/A, lambda_b = b/B and
+# b^3 = B^3 - A^3 + a^3, P = mu/2 [(4/lambda_b + 1/lambda_b^4) - (4/lambda_a + 1/lambda_a^4)];
+# P = 0.5 gives a = 1.21289, b = 2.06333 (this shell is thick: its pressure maximum, 0.816, lies at
+# a = 1.83). tests/test_axisymmetric.cpp checks the probed radii.
+formulation: mixed
+plane: axisymmetric
+mesh: { file: apps/mesh/annulus.msh, serial_refine: 1, order: 2 }   # bottom (z = 0) 1, outer 2, left (axis) 3, inner 4
+material: { model: iso_neo_hookean, mu: 1.0, incompressible: true }
+bcs:
+  dirichlet:
+    - { attr: [bottom], name: equator, expression: ["0", "0"], components: [y] }
+    - { attr: [left], name: axis, expression: ["0", "0"], components: [x] }
+  traction:
+    - { attr: [inner], type: follower_pressure, expression: "0.5" }
+solver:
+  load_steps: 5
+  newton: { rtol: 1e-10, atol: 1e-12, max_it: 30 }
+  linear: { type: direct }
+output:
+  paraview: out/green_zerna_sphere_axisymmetric
+  fields: [displacement, pressure, vonmises, cauchy_stress]
+  reactions: true
+  probes:
+    - { name: inner, point: [1.0, 0.0] }
+    - { name: outer, point: [2.0, 0.0] }
+    - { name: pole, point: [0.0, 1.0] }

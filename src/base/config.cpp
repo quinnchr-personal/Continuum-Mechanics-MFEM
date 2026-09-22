@@ -1312,10 +1312,10 @@ AppConfig ParseConfig(const YAML::Node &root)
                       "' (expected displacement or mixed)");
   }
   cfg.plane = r.Optional<std::string>("plane", "strain");
-  if (cfg.plane != "strain" && cfg.plane != "stress")
+  if (cfg.plane != "strain" && cfg.plane != "stress" && cfg.plane != "axisymmetric")
   {
     throw ConfigError("key 'plane': unknown value '" + cfg.plane +
-                      "' (expected strain or stress)");
+                      "' (expected strain, stress, or axisymmetric)");
   }
   if (cfg.plane == "stress" && cfg.formulation == "mixed")
   {

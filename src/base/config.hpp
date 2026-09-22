@@ -361,7 +361,9 @@ struct AppConfig
   std::string formulation = "displacement"; // displacement | mixed (u-p)
   // 2D kinematics: strain (F33 = 1) | stress (F33 = thickness stretch with
   // sigma33 = 0, displacement formulation only; incompressible models need no
-  // pressure unknown there).
+  // pressure unknown there) | axisymmetric (x = r, y = z, F33 = 1 + u_r / r,
+  // every integral weighted by 2 pi r: forces and masses are those of the
+  // solid of revolution; either formulation).
   std::string plane = "strain";
   MeshConfig mesh;
   MaterialConfig material;

@@ -14,6 +14,8 @@
 // LoadSet of the physics; k = scale * penalty.
 #pragma once
 
+#include <cmath>
+
 #include "mfem.hpp"
 
 namespace cmf
@@ -22,10 +24,13 @@ namespace cmf
 namespace contact_detail
 {
 
+// axisymmetric (dim = 2, x = r): the sphere's centre lies on the axis (its
+// r component is 0) and the weight is 2 pi r.
 template <int dim>
 void FaceContribution(const mfem::FiniteElement &el, mfem::FaceElementTransformations &Tr,
                       const mfem::Vector &elfun, mfem::VectorCoefficient &center, double radius,
-                      double k, mfem::Vector *elvect, mfem::DenseMatrix *elmat)
+                      double k, mfem::Vector *elvect, mfem::DenseMatrix *elmat,
+                      bool axisymmetric = false)
 {
   const int dof = el.GetDof();
   mfem::DenseMatrix PMatI(const_cast<double *>(elfun.GetData()), dof, dim);
@@ -54,7 +59,7 @@ void FaceContribution(const mfem::FiniteElement &el, mfem::FaceElementTransforma
       g -= d[i] * d[i];
     }
     if (g <= 0.0) { continue; }
-    const double w = ip.weight * nor.Norml2();
+    const double w = ip.weight * nor.Norml2() * (axisymmetric ? 2.0 * M_PI * X(0) : 1.0);
     if (elvect)
     {
       for (int a = 0; a < dof; a++)
@@ -84,8 +89,8 @@ class RigidSphereContactIntegrator : public mfem::NonlinearFormIntegrator
 {
 public:
   RigidSphereContactIntegrator(mfem::VectorCoefficient &center, double radius, double penalty,
-                               const double *scale)
-    : center_(center), radius_(radius), penalty_(penalty), scale_(scale) {}
+                               const double *scale, bool axisymmetric = false)
+    : center_(center), radius_(radius), penalty_(penalty), scale_(scale), axisymmetric_(axisymmetric) {}
 
   void AssembleFaceVector(const mfem::FiniteElement &el1, const mfem::FiniteElement &,
                           mfem::FaceElementTransformations &Tr, const mfem::Vector &elfun,
@@ -93,7 +98,7 @@ public:
   {
     if (Tr.GetSpaceDim() == 2)
     {
-      contact_detail::FaceContribution<2>(el1, Tr, elfun, center_, radius_, *scale_ * penalty_, &elvect, nullptr);
+      contact_detail::FaceContribution<2>(el1, Tr, elfun, center_, radius_, *scale_ * penalty_, &elvect, nullptr, axisymmetric_);
     }
     else
     {
@@ -107,7 +112,7 @@ public:
   {
     if (Tr.GetSpaceDim() == 2)
     {
-      contact_detail::FaceContribution<2>(el1, Tr, elfun, center_, radius_, *scale_ * penalty_, nullptr, &elmat);
+      contact_detail::FaceContribution<2>(el1, Tr, elfun, center_, radius_, *scale_ * penalty_, nullptr, &elmat, axisymmetric_);
     }
     else
     {
@@ -119,6 +124,7 @@ private:
   mfem::VectorCoefficient &center_;
   double radius_, penalty_;
   const double *scale_;
+  bool axisymmetric_;
 };
 
 // Mixed u-p formulation: the same term on the displacement block.
@@ -126,8 +132,8 @@ class BlockRigidSphereContactIntegrator : public mfem::BlockNonlinearFormIntegra
 {
 public:
   BlockRigidSphereContactIntegrator(mfem::VectorCoefficient &center, double radius, double penalty,
-                                    const double *scale)
-    : center_(center), radius_(radius), penalty_(penalty), scale_(scale) {}
+                                    const double *scale, bool axisymmetric = false)
+    : center_(center), radius_(radius), penalty_(penalty), scale_(scale), axisymmetric_(axisymmetric) {}
 
   void AssembleFaceVector(const mfem::Array<const mfem::FiniteElement *> &el1,
                           const mfem::Array<const mfem::FiniteElement *> &,
@@ -137,7 +143,7 @@ public:
   {
     if (Tr.GetSpaceDim() == 2)
     {
-      contact_detail::FaceContribution<2>(*el1[0], Tr, *elfun[0], center_, radius_, *scale_ * penalty_, elvect[0], nullptr);
+      contact_detail::FaceContribution<2>(*el1[0], Tr, *elfun[0], center_, radius_, *scale_ * penalty_, elvect[0], nullptr, axisymmetric_);
     }
     else
     {
@@ -154,7 +160,7 @@ public:
   {
     if (Tr.GetSpaceDim() == 2)
     {
-      contact_detail::FaceContribution<2>(*el1[0], Tr, *elfun[0], center_, radius_, *scale_ * penalty_, nullptr, elmats(0, 0));
+      contact_detail::FaceContribution<2>(*el1[0], Tr, *elfun[0], center_, radius_, *scale_ * penalty_, nullptr, elmats(0, 0), axisymmetric_);
     }
     else
     {
@@ -169,6 +175,7 @@ private:
   mfem::VectorCoefficient &center_;
   double radius_, penalty_;
   const double *scale_;
+  bool axisymmetric_;
 };
 
 } // namespace cmf

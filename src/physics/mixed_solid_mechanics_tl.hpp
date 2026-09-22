@@ -52,7 +52,12 @@ public:
   void FullResidual(const mfem::Vector &x, mfem::Vector &r) const override;
   std::vector<Reaction> ReactionsFrom(const mfem::Vector &r, const mfem::Vector &x) const override;
   void SetPhysicalTime(bool on) override { loads_.SetPhysicalTime(on); }
-  mfem::Coefficient &ReferenceDensity() override { return density_; }
+  mfem::Coefficient &ReferenceDensity() override
+  {
+    if (axisymmetric_) { return *density_axi_; }
+    return density_;
+  }
+  bool Axisymmetric() const { return axisymmetric_; }
   OperatorStamp GradientStamp() const override { return gradient_stamp_; }
   // History of a material with Maxwell branches (SolidProblem, as in SolidMechanicsTL).
   bool HasHistory() const override { return history_ != nullptr; }
@@ -157,8 +162,13 @@ private:
 
   std::unique_ptr<mfem::ParGridFunction> displacement_;
   std::unique_ptr<mfem::ParGridFunction> pressure_;
+  bool axisymmetric_ = false;
+  mfem::FunctionCoefficient r2pi_;
+  std::unique_ptr<mfem::ProductCoefficient> density_axi_;
   OutputConfig output_cfg_;
   std::unique_ptr<QuadratureFields> qfields_;
+  tensor<double, 3, 3> GradientToF(mfem::ElementTransformation &T, const mfem::IntegrationPoint &ip,
+                                   const mfem::DenseMatrix &grad) const;
 };
 
 } // namespace cmf

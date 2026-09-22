@@ -130,6 +130,10 @@ public:
 
   void SetHistory(const HistoryField *history) { history_ = history; }
   const HistoryField *History() const { return history_; }
+  // Axisymmetric kinematics (2D mesh, x = r, y = z; AxisymmetricPoint of
+  // total_lagrangian.hpp): the volume measure includes the hoop stretch.
+  void SetAxisymmetric(bool on) { axisymmetric_ = on; }
+  bool Axisymmetric() const { return axisymmetric_; }
 
   // Mixed functional int Psi_iso(F) + p (J - 1) - kappa u*(p / kappa) dV with
   // u* the Legendre transform of the volumetric law (p^2 / (2 kappa) for the
@@ -187,6 +191,36 @@ private:
     Hmat_.SetSize(dim);
     Sh_.SetSize(dof_p);
     PMatI_.UseExternalData(elfun[0]->GetData(), dof_u, dim);
+    if (axisymmetric_) { shape_.SetSize(dof_u); }
+  }
+
+  AxisymmetricPoint AxiSetup(const mfem::FiniteElement &el, mfem::ElementTransformation &Tr,
+                             const mfem::IntegrationPoint &ip, const tensor<double, 2, 2> &H)
+  {
+    el.CalcShape(ip, shape_);
+    Tr.Transform(ip, X_);
+    double u_r = 0.0;
+    for (int a = 0; a < el.GetDof(); a++) { u_r += shape_(a) * PMatI_(a, 0); }
+    return AxisymmetricAt(X_(0), u_r, H);
+  }
+
+  // The volume measure of an axisymmetric point, its gradient over the five
+  // entries (Pack5 order) and the hoop-completed F: J = det F with F_33 (or
+  // 1 + tr(eps) with the hoop strain at small strain).
+  static double AxiVolume(const tensor<double, 3, 3> &F, double *G5)
+  {
+    if constexpr (is_small_strain<Material>::value)
+    {
+      const tensor<double, 3, 3> Id = I<3>();
+      Pack5(Id, G5);
+      return 1.0 + (F(0, 0) - 1.0) + (F(1, 1) - 1.0) + (F(2, 2) - 1.0);
+    }
+    else
+    {
+      const double J = det(F);
+      Pack5(J * transpose(inv(F)), G5);
+      return J;
+    }
   }
 
   template <int dim>
@@ -221,8 +255,17 @@ private:
     {
       const mfem::IntegrationPoint &ip = ir.IntPoint(q);
       PointSetup<dim>(el, Tr, ip, *elfun[1], H, p);
-      const double w = ip.weight * Tr.Weight();
-      const tensor<double, 3, 3> F = DeformationGradient<dim>(H);
+      double w = ip.weight * Tr.Weight();
+      tensor<double, 3, 3> F = DeformationGradient<dim>(H);
+      if constexpr (dim == 2)
+      {
+        if (axisymmetric_)
+        {
+          const AxisymmetricPoint pt = AxiSetup(*el[0], Tr, ip, H);
+          F(2, 2) = pt.F33;
+          w *= pt.weight;
+        }
+      }
       const double J = VolumeRatio(material, F);
       const auto &mat = AtPoint(material, history_, Tr.ElementNo, q);
       energy += w * (mat.EnergyIso(F) + p * (J - 1.0) -
@@ -255,8 +298,33 @@ private:
     {
       const mfem::IntegrationPoint &ip = ir.IntPoint(q);
       PointSetup<dim>(el, Tr, ip, *elfun[1], H, p);
-      const double w = ip.weight * Tr.Weight();
+      double w = ip.weight * Tr.Weight();
       const auto &mat = AtPoint(material, history_, Tr.ElementNo, q);
+      double J = 1.0;
+      if constexpr (dim == 2)
+      {
+        if (axisymmetric_)
+        {
+          const AxisymmetricPoint pt = AxiSetup(*el[0], Tr, ip, H);
+          tensor<double, 3, 3> F = DeformationGradient<2>(H);
+          F(2, 2) = pt.F33;
+          w *= pt.weight;
+          const tensor<double, 3, 3> P = MixedPK1(mat, F, p);
+          for (int a = 0; a < dof_u; a++)
+            for (int i = 0; i < 2; i++)
+            {
+              double s = 0.0;
+              for (int j = 0; j < 2; j++) { s += P(i, j) * DS_(a, j); }
+              if (i == 0) { s += P(2, 2) * pt.Hoop(a, shape_, DS_); }
+              PMatO(a, i) += w * s;
+            }
+          double G5[5];
+          J = AxiVolume(F, G5);
+          const double constraint = material.NormalizedVolumetricPressure(J) - inv_kappa * p;
+          for (int b = 0; b < dof_p; b++) { (*elvec[1])(b) += w * constraint * Sh_(b); }
+          continue;
+        }
+      }
       const tensor<double, dim, dim> P = QPointMixedStress<bound_t<Material>, dim>(mat, H, p);
       for (int a = 0; a < dof_u; a++)
         for (int i = 0; i < dim; i++)
@@ -265,7 +333,6 @@ private:
           for (int j = 0; j < dim; j++) { s += P(i, j) * DS_(a, j); }
           PMatO(a, i) += w * s;
         }
-      double J = 1.0;
       QPointVolumeGradient<Material, dim>(H, J);
       const double constraint = material.NormalizedVolumetricPressure(J) - inv_kappa * p;
       for (int b = 0; b < dof_p; b++) { (*elvec[1])(b) += w * constraint * Sh_(b); }
@@ -294,6 +361,7 @@ private:
     Kpu = 0.0;
     Kpp = 0.0;
     const Material &material = MaterialOf(Tr);
+    current_ = &material;
     CheckHistory();
     const double inv_kappa = InvKappa(material);
     const mfem::IntegrationRule &ir = Rule(*el[0]);
@@ -305,6 +373,14 @@ private:
       PointSetup<dim>(el, Tr, ip, *elfun[1], H, p);
       const double w = ip.weight * Tr.Weight();
       const auto &mat = AtPoint(material, history_, Tr.ElementNo, q);
+      if constexpr (dim == 2)
+      {
+        if (axisymmetric_)
+        {
+          AxisymmetricTangent(mat, el, Tr, ip, H, p, inv_kappa, Kuu, Kup, Kpu, Kpp);
+          continue;
+        }
+      }
       const tensor<double, 3, 3, 3, 3> A =
         QPointMixedTangent<bound_t<Material>, dim>(mat, H, p);
       for (int a = 0; a < dof_u; a++)
@@ -348,6 +424,74 @@ private:
     }
   }
 
+  // The four blocks of an axisymmetric point over the five entries of
+  // AxisymmetricRow: K_uu with the tangent of P(F, p) seeded on them, K_up from
+  // the five entries of dJ/dF, K_pu = u'' K_up^T, K_pp as before.
+  template <typename Bound>
+  void AxisymmetricTangent(const Bound &mat, const mfem::Array<const mfem::FiniteElement *> &el,
+                           mfem::ElementTransformation &Tr, const mfem::IntegrationPoint &ip,
+                           const tensor<double, 2, 2> &H, double p, double inv_kappa,
+                           mfem::DenseMatrix &Kuu, mfem::DenseMatrix &Kup, mfem::DenseMatrix &Kpu,
+                           mfem::DenseMatrix &Kpp)
+  {
+    const int dof_u = el[0]->GetDof(), dof_p = el[1]->GetDof();
+    const AxisymmetricPoint pt = AxiSetup(*el[0], Tr, ip, H);
+    tensor<double, 3, 3> F = DeformationGradient<2>(H);
+    F(2, 2) = pt.F33;
+    const double w = ip.weight * Tr.Weight() * pt.weight;
+    // dP/dF at fixed p on the five entries.
+    static const int idx[5][2] = {{0, 0}, {0, 1}, {1, 0}, {1, 1}, {2, 2}};
+    double A5[5][5];
+    {
+      tensor<dual, 3, 3> Fd;
+      for (int i = 0; i < 3; i++)
+        for (int j = 0; j < 3; j++) { Fd(i, j) = dual(F(i, j), 0.0); }
+      for (int n = 0; n < 5; n++)
+      {
+        Fd(idx[n][0], idx[n][1]).d = 1.0;
+        const tensor<dual, 3, 3> P = MixedPK1(mat, Fd, p);
+        Fd(idx[n][0], idx[n][1]).d = 0.0;
+        for (int m = 0; m < 5; m++) { A5[m][n] = P(idx[m][0], idx[m][1]).d; }
+      }
+    }
+    double G5[5], Ba[5], Bb[5], t[5];
+    const double J = AxiVolume(F, G5);
+    const double upp = mat_upp(J);
+    for (int a = 0; a < dof_u; a++)
+      for (int i = 0; i < 2; i++)
+      {
+        AxisymmetricRow(a, i, shape_, DS_, pt, Ba);
+        for (int n = 0; n < 5; n++)
+        {
+          t[n] = 0.0;
+          for (int m = 0; m < 5; m++) { t[n] += Ba[m] * A5[m][n]; }
+        }
+        for (int b = 0; b < dof_u; b++)
+          for (int k = 0; k < 2; k++)
+          {
+            AxisymmetricRow(b, k, shape_, DS_, pt, Bb);
+            double s = 0.0;
+            for (int n = 0; n < 5; n++) { s += t[n] * Bb[n]; }
+            Kuu(a + i * dof_u, b + k * dof_u) += w * s;
+          }
+        double g = 0.0;
+        for (int m = 0; m < 5; m++) { g += G5[m] * Ba[m]; }
+        for (int b = 0; b < dof_p; b++)
+        {
+          const double v = w * g * Sh_(b);
+          Kup(a + i * dof_u, b) += v;
+          Kpu(b, a + i * dof_u) += upp * v;
+        }
+      }
+    if (inv_kappa > 0.0)
+    {
+      for (int a = 0; a < dof_p; a++)
+        for (int b = 0; b < dof_p; b++) { Kpp(a, b) -= w * inv_kappa * Sh_(a) * Sh_(b); }
+    }
+  }
+  // u''(J) of the material of the current element (set by the callers of AxisymmetricTangent).
+  double mat_upp(double J) const { return current_->NormalizedVolumetricModulus(J); }
+
   void CheckHistory() const
   {
     if constexpr (has_history<Material>::value)
@@ -358,8 +502,10 @@ private:
 
   std::vector<Material> materials_;
   const HistoryField *history_ = nullptr;
+  bool axisymmetric_ = false;
+  const Material *current_ = nullptr;
   mfem::DenseMatrix DSh_, DS_, Jrt_, Hmat_, PMatI_;
-  mfem::Vector Sh_;
+  mfem::Vector Sh_, shape_, X_;
 };
 
 } // namespace cmf

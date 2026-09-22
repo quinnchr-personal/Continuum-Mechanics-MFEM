@@ -1,13 +1,15 @@
 #include "physics/loads.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 
 namespace cmf
 {
 
 LoadSet::LoadSet(mfem::ParFiniteElementSpace &fes)
-  : fes_(fes), dim_(fes.GetVDim()) {}
+  : fes_(fes), dim_(fes.GetVDim()),
+    r2pi_([](const mfem::Vector &x) { return 2.0 * M_PI * x(0); }) {}
 
 mfem::Array<int> LoadSet::Marker(const std::vector<int> &attrs) const
 {
@@ -148,18 +150,39 @@ void LoadSet::Clear()
 void LoadSet::Assemble(LoadEntry &e) const
 {
   mfem::ParLinearForm load(&fes_);
+  // The axisymmetric weight 2 pi r multiplies the coefficient (the wrappers
+  // live until the form is assembled).
+  std::unique_ptr<mfem::Coefficient> weighted_scalar;
+  std::unique_ptr<mfem::VectorCoefficient> weighted_vector;
   if (e.body)
   {
-    load.AddDomainIntegrator(new mfem::VectorDomainLFIntegrator(*e.owned_vector));
+    mfem::VectorCoefficient *c = e.owned_vector.get();
+    if (axisymmetric_)
+    {
+      weighted_vector = std::make_unique<mfem::ScalarVectorProductCoefficient>(r2pi_, *c);
+      c = weighted_vector.get();
+    }
+    load.AddDomainIntegrator(new mfem::VectorDomainLFIntegrator(*c));
   }
   else if (e.scoef)
   {
-    load.AddBoundaryIntegrator(new mfem::VectorBoundaryFluxLFIntegrator(*e.owned_scalar),
-                               e.marker);
+    mfem::Coefficient *c = e.owned_scalar.get();
+    if (axisymmetric_)
+    {
+      weighted_scalar = std::make_unique<mfem::ProductCoefficient>(r2pi_, *c);
+      c = weighted_scalar.get();
+    }
+    load.AddBoundaryIntegrator(new mfem::VectorBoundaryFluxLFIntegrator(*c), e.marker);
   }
   else
   {
-    load.AddBoundaryIntegrator(new mfem::VectorBoundaryLFIntegrator(*e.vcoef), e.marker);
+    mfem::VectorCoefficient *c = e.vcoef;
+    if (axisymmetric_)
+    {
+      weighted_vector = std::make_unique<mfem::ScalarVectorProductCoefficient>(r2pi_, *c);
+      c = weighted_vector.get();
+    }
+    load.AddBoundaryIntegrator(new mfem::VectorBoundaryLFIntegrator(*c), e.marker);
   }
   load.Assemble();
   e.L.SetSize(fes_.GetTrueVSize());

@@ -30,16 +30,20 @@ SolidMechanicsTL::SolidMechanicsTL(mfem::ParMesh &mesh, const AppConfig &cfg,
     density_(density_table_), materials_(materials),
     fec_(cfg.mesh.order, mesh.Dimension()),
     fes_(&mesh, &fec_, mesh.Dimension(), mfem::Ordering::byVDIM),
-    loads_(fes_)
+    loads_(fes_),
+    r2pi_([](const mfem::Vector &x) { return 2.0 * M_PI * x(0); })
 {
   height = width = fes_.GetTrueVSize();
   output_cfg_ = cfg.output;
   plane_stress_ = cfg.plane == "stress";
-  if (plane_stress_ && dim_ != 2)
+  axisymmetric_ = cfg.plane == "axisymmetric";
+  if ((plane_stress_ || axisymmetric_) && dim_ != 2)
   {
-    throw ConfigError("plane: stress needs a 2D mesh (got dimension " +
+    throw ConfigError("plane: " + cfg.plane + " needs a 2D mesh (got dimension " +
                       std::to_string(dim_) + ")");
   }
+  loads_.SetAxisymmetric(axisymmetric_);
+  density_axi_ = std::make_unique<mfem::ProductCoefficient>(r2pi_, density_);
   InitializeHistory();
   ResetForm();
   Build(cfg);
@@ -57,9 +61,11 @@ void SolidMechanicsTL::ResetForm()
     const std::vector<M> table = UnpackMaterials<M>(materials_);
     auto *integ = new TotalLagrangianIntegrator<M>(table);
     integ->SetHistory(history_.get());
+    integ->SetAxisymmetric(axisymmetric_);
     nlf_->AddDomainIntegrator(integ);
     auto *energy_integ = new TotalLagrangianIntegrator<M>(table);
     energy_integ->SetHistory(history_.get());
+    energy_integ->SetAxisymmetric(axisymmetric_);
     energy_form_->AddDomainIntegrator(energy_integ);
   }, materials_[0]);
   follower_markers_.clear();
@@ -119,7 +125,7 @@ void SolidMechanicsTL::UpdateHistory(const mfem::Vector &x)
           const mfem::IntegrationPoint &ip = ir.IntPoint(q);
           T.SetIntPoint(&ip);
           displacement_->GetVectorGradient(T, grad);
-          const tensor<double, 3, 3> F = DeformationGradientAt(grad, dim_);
+          const tensor<double, 3, 3> F = GradientToF(T, ip, grad);
           mat.Update(F, history_->Old(e, q), history_->Dt(), history_->New(e, q));
         }
       }
@@ -171,7 +177,7 @@ void SolidMechanicsTL::AddPressure(const std::vector<int> &attrs, mfem::Coeffici
     }
     const double *scale = loads_.AddFollowerPressure(attrs, p, opt);
     follower_markers_.push_back(loads_.Marker(attrs));
-    nlf_->AddBdrFaceIntegrator(new FollowerPressureIntegrator(p, scale),
+    nlf_->AddBdrFaceIntegrator(new FollowerPressureIntegrator(p, scale, axisymmetric_),
                                follower_markers_.back());
   }
   finalized_ = false;
@@ -183,10 +189,10 @@ void SolidMechanicsTL::AddRigidSphereContact(const std::vector<int> &attrs,
 {
   const double *scale = loads_.AddRigidSphereContact(attrs, center, radius, penalty, opt);
   contact_markers_.push_back(loads_.Marker(attrs));
-  nlf_->AddBdrFaceIntegrator(new RigidSphereContactIntegrator(center, radius, penalty, scale),
+  nlf_->AddBdrFaceIntegrator(new RigidSphereContactIntegrator(center, radius, penalty, scale, axisymmetric_),
                              contact_markers_.back());
   auto form = std::make_unique<mfem::ParNonlinearForm>(&fes_);
-  form->AddBdrFaceIntegrator(new RigidSphereContactIntegrator(center, radius, penalty, scale),
+  form->AddBdrFaceIntegrator(new RigidSphereContactIntegrator(center, radius, penalty, scale, axisymmetric_),
                              contact_markers_.back());
   contact_forms_.push_back(std::move(form));
   finalized_ = false;
@@ -295,7 +301,23 @@ std::string SolidMechanicsTL::Description() const
 {
   return "displacement formulation, " + MaterialName(materials_[0]) +
          (IsSmallStrain(materials_[0]) ? " (small strain)" : "") +
-         VolumetricLawSuffix(materials_[0]) + (materials_.size() > 1 ? " (regions)" : "");
+         VolumetricLawSuffix(materials_[0]) + (materials_.size() > 1 ? " (regions)" : "") +
+         (axisymmetric_ ? " (axisymmetric)" : "");
+}
+
+tensor<double, 3, 3> SolidMechanicsTL::GradientToF(mfem::ElementTransformation &T,
+                                                   const mfem::IntegrationPoint &ip,
+                                                   const mfem::DenseMatrix &grad) const
+{
+  tensor<double, 3, 3> F = DeformationGradientAt(grad, dim_);
+  if (axisymmetric_)
+  {
+    mfem::Vector X, u;
+    T.Transform(ip, X);
+    displacement_->GetVectorValue(T, ip, u);
+    F(2, 2) = X(0) > 0.0 ? 1.0 + u(0) / X(0) : 1.0 + grad(0, 0);
+  }
+  return F;
 }
 
 std::unique_ptr<mfem::Solver>
@@ -347,7 +369,7 @@ void SolidMechanicsTL::UpdateFields(const mfem::Vector &x)
       const auto &bound = AtPoint(mat, history_.get(), T.ElementNo, q);
       T.SetIntPoint(&ip);
       displacement_->GetVectorGradient(T, grad);
-      s.F = CompleteF(mat, DeformationGradientAt(grad, T.GetDimension()));
+      s.F = CompleteF(mat, GradientToF(T, ip, grad));
       s.P = bound.PK1(s.F);
       if constexpr (has_energy<bound_t<M>>::value) { s.energy = bound.Energy(s.F); }
       else { s.energy = 0.0; }

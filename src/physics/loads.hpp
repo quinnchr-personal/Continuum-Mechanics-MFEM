@@ -73,6 +73,10 @@ public:
                     const BCOptions &opt = BCOptions());
   void Clear();
   bool HasFollowerPressure() const { return !follower_.empty(); }
+  // Axisymmetric problems (2D, x = r): the dead loads, pressures and the body
+  // force are integrated with the weight 2 pi r (kernels/total_lagrangian.hpp).
+  void SetAxisymmetric(bool on) { axisymmetric_ = on; }
+  bool Axisymmetric() const { return axisymmetric_; }
   std::size_t NumContacts() const { return contact_.size(); }
   const std::string &ContactName(std::size_t i) const { return contact_[i].opt.name; }
 
@@ -159,6 +163,8 @@ private:
   std::vector<ContactEntry> contact_;
   bool finalized_ = false;
   bool physical_time_ = false;
+  bool axisymmetric_ = false;
+  mutable mfem::FunctionCoefficient r2pi_; // 2 pi r, the axisymmetric weight
   double time_ = 1.0;
   mfem::Array<int> ess_marker_;
   mfem::Array<int> ess_tdof_list_;

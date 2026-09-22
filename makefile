@@ -102,7 +102,7 @@ MESHES := $(MESH_DIR)/square.msh $(MESH_DIR)/cook.msh $(MESH_DIR)/cube.msh $(MES
 	$(MESH_DIR)/sphere_octant.msh $(MESH_DIR)/footing.msh $(MESH_DIR)/inclusion.msh \
 	$(MESH_DIR)/cube_tet.msh $(MESH_DIR)/plate_hole_2d.msh $(MESH_DIR)/column_euler.msh $(MESH_DIR)/bar.msh \
 	$(MESH_DIR)/cube5.msh $(MESH_DIR)/beam20.msh $(MESH_DIR)/column_buckling50.msh $(MESH_DIR)/bushing.msh \
-	$(MESH_DIR)/indent_cube.msh
+	$(MESH_DIR)/indent_cube.msh $(MESH_DIR)/strip.msh
 meshes: $(MESHES)
 $(MESH_DIR)/square.msh: $(MESH_DIR)/square.geo
 	$(GMSH) -2 -format msh22 -setnumber n 4 -o $@ $< > /dev/null
@@ -117,6 +117,9 @@ $(MESH_DIR)/bar.msh: $(MESH_DIR)/box.geo
 	$(GMSH) -3 -format msh22 -setnumber Lx 10 -setnumber nx 100 -setnumber ny 1 -setnumber nz 1 -o $@ $< > /dev/null
 $(MESH_DIR)/annulus.msh: $(MESH_DIR)/annulus.geo
 	$(GMSH) -2 -order 2 -format msh22 -o $@ $< > /dev/null
+# The meridian strip of the axisymmetric tube (finite_elasticity/verification).
+$(MESH_DIR)/strip.msh: $(MESH_DIR)/strip.geo
+	$(GMSH) -2 -format msh22 -o $@ $< > /dev/null
 # Meshes of apps/input/anand_coupled_theories/finite_elasticity (the examples of Anand's book,
 # FEniCSx codes at solidmechanicscoupledtheories.github.io, section 1).
 $(MESH_DIR)/cube10.msh: $(MESH_DIR)/box.geo
@@ -164,7 +167,7 @@ $(MESH_DIR)/column_euler.msh: $(MESH_DIR)/box.geo $(MESH_DIR)/perturb_column.py
 	python3 $(MESH_DIR)/perturb_column.py $@.straight $@ 20 0.005 && rm -f $@.straight
 
 # Fast gates (S1-S3 + mixed + homogeneous deformations + loading + small strain + dynamics): serial unit and MMS tests.
-CHECK_TESTS := $(addprefix $(BUILD_DIR)/tests/,test_base test_materials test_solid_mms test_mixed test_homogeneous test_loading test_linear_elasticity test_dynamics test_viscoelastic)
+CHECK_TESTS := $(addprefix $(BUILD_DIR)/tests/,test_base test_materials test_solid_mms test_mixed test_homogeneous test_loading test_linear_elasticity test_dynamics test_viscoelastic test_axisymmetric)
 check: $(CHECK_TESTS)
 	@for t in $(CHECK_TESTS); do echo "== $$t"; ./$$t || exit 1; done
 
@@ -222,6 +225,7 @@ test: check $(APP) $(BUILD_DIR)/tests/test_benchmarks $(BUILD_DIR)/tests/test_pa
 	$(BUILD_DIR)/tests/test_benchmarks
 	$(MFEM_MPIEXEC) -np 4 $(BUILD_DIR)/tests/test_benchmarks
 	$(MFEM_MPIEXEC) -np 4 $(BUILD_DIR)/tests/test_loading
+	$(MFEM_MPIEXEC) -np 2 $(BUILD_DIR)/tests/test_axisymmetric
 	$(BUILD_DIR)/tests/test_verification
 	$(BUILD_DIR)/tests/test_benchmarks --cook-ratio-gate
 
