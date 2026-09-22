@@ -2,19 +2,30 @@
 # of 4 x 4 x 50 hexahedra whose nodes carry the reference's imperfection
 # x, y -= 0.0025 (1 - cos(2 pi z / 20)) (apps/mesh/perturb_column.py, `make meshes`),
 # Arruda-Boyce. The base is clamped; the top is held in x, y and pushed down by
-# u_z = -2.5 t over 100 steps. The imperfection selects the first mode; the force
-# peaks near 1.5 mm of shortening and the column deflects laterally afterwards
-# (probe the mid-height point). A failed increment is bisected.
+# u_z = -2.5 t over 100 steps. The imperfection selects the first mode: the force
+# reaches the Euler load near 0.2 mm of shortening and then rises slowly along the
+# post-buckling path while the column deflects laterally (probe the mid-height
+# point). Volumetric law: the quadratic one, as in 02 and for the same reason.
+# With the reference's logarithmic law the run stops at 0.8 mm of shortening on
+# either post-buckling branch: at the held faces the bent column has corner
+# singularities that this mesh and quadrature resolve sharply, the Q1 pressure
+# cannot follow them, J runs away there (0.7 to 1.5 with the pressure at 25 kPa,
+# p / K = 1e-4) and the constraint ln J / J of that law loses its definiteness;
+# Newton then stalls at |R| = 1e-2. With p = K (J - 1) the run converges in 3
+# iterations per step throughout. The reference's 100 steps are needed: with 50,
+# the tangent predictor carries the nearly straight column across the critical
+# load onto the unstable straight branch (a mid-height deflection of 0.005 mm at
+# four times the Euler load), which Newton loses at 0.8 mm of shortening.
 formulation: mixed
 mesh: { file: apps/mesh/column_buckling.msh, order: 2 }
-material: { model: arruda_boyce, mu: 280.0, N: 26.2144, kappa: 280000.0, volumetric: logarithmic, inverse_langevin: pade }   # kPa, mm: G0 = 280 kPa, lambda_L = 5.12 (N = lambda_L^2), K = 1000 G0, p = K ln J / J
+material: { model: arruda_boyce, mu: 280.0, N: 26.2144, kappa: 280000.0, inverse_langevin: pade }   # kPa, mm: G0 = 280 kPa, lambda_L = 5.12 (N = lambda_L^2), K = 1000 G0, p = K (J - 1)
 bcs:
   dirichlet:
     - { attr: [bottom], expression: ["0", "0", "0"] }
     - { attr: [top], name: top,    expression: ["0", "0", "-2.5*t"] }
 solver:
   predictor: tangent               # impose each Dirichlet increment on a linear solve about the converged state
-  load_steps: 50                   # the reference uses 100; 50 with bisection resolves the limit point
+  load_steps: 100                  # the reference's; see the header
   substep: { on_failure: true, max_bisections: 6, min_dt: 1e-4 }
   newton: { rtol: 1e-8, atol: 1e-10, max_it: 30 }
   linear: { type: direct }          # sparse LU (MUMPS through PETSc), as the reference; these problems are small enough to factor
