@@ -1332,12 +1332,14 @@ $\int (\bX + \bu) \times \bP\bN\,dA_R$ over the
 faces of its physical groups, with the nodal \code{pk1\_stress}, the
 prescribed components only, by Gauss quadrature of the Lagrange interpolants
 of the output cells. Since that stress is recovered from the quadrature
-points, the force equals the reaction of the code (the residual summed over
-the prescribed dofs) up to the error of the recovery: to round-off in the
-homogeneous cube ($10^{-13}$ of the logged reaction at the last step), within
-the discretization error in the other cases. With \code{--logs} the script
-reads the code's own probes and reactions instead, from the saved stdout of
-the runs (\file{<dir>/<case>.log}). It overlays an analytical curve where one exists:
+points, the force differs from the reaction of the code (the residual summed
+over the prescribed dofs) where the loaded face meets free faces or clamped
+corners: $+9.7\%$ for case 04 and $-8\%$ for case 08 at the end of the run,
+$+3.5\%$ for 02, $0.6\%$ for 03, $0.1\%$ for 09 and 10, round-off for the
+homogeneous cube.  So when the code's log sits beside the output
+(\file{logs/<case>.log}, as \file{logs/run\_set.sh} writes it) the script
+takes the reactions from the log; with \code{--logs} it reads probes and
+reactions from the logs alone (\file{<dir>/<case>.log}). It overlays an analytical curve where one exists:
 the homogeneous incompressible and nearly incompressible Arruda--Boyce
 response for the uniaxial and shear blocks, Rivlin's universal torsion for torque and
 axial force by quadrature in $r$, the incompressible thick-walled cylinder
@@ -1355,10 +1357,7 @@ in \file{reference/scripts/}; 3D10 records none), so the comparison is
 quantitative and compares reactions with reactions: the notebooks' own
 forces are boundary integrals of their finite element stress, which the
 clamped corners of cases 02 and 08 spoil by 2 to 9\% on their tetrahedral
-meshes.  For case 08 the
-plot also shows the reaction of the log when it sits beside the ParaView
-directories: the held faces of the bent column carry corner singularities,
-where the nodal stress is 5 to 7\% low.
+meshes.
 
 \paragraph{What the plots show.}
 With the reference's values in parentheses.  The uniaxial cube lies on the

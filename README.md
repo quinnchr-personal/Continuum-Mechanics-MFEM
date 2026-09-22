@@ -690,11 +690,13 @@ are not in the output; the script integrates the traction `P N` of the nodal
 groups in the `.msh`, Gauss quadrature of the Lagrange interpolants, the
 prescribed components only, the moment about the origin with the current
 position, as the app's). That stress is recovered from the quadrature points,
-so the force is the app's reaction up to the error of the recovery: to
-round-off in the homogeneous cube (1e-13 of the logged reaction), within the
-discretization error elsewhere. `--logs DIR` reads the app's own probes and
-reactions instead, from the saved stdout of the runs (`DIR/<case>.log`; the
-inputs print both after every step). The reference
+and where the loaded face meets free faces or clamped corners the recovered force
+is off: +9.7 percent for 04 and -8 percent for 08 at the end of the run, +3.5 for
+02, 0.6 for 03, 0.1 for 09 and 10, round-off for the homogeneous cube. So when the
+app's log sits beside the output (`logs/<case>.log`, as `logs/run_set.sh` writes
+it) the script takes the reactions from the log; `--logs DIR` reads probes and
+reactions from the logs alone (`DIR/<case>.log`; the inputs print both after every
+step). The reference
 overlays no analytical curves; the script adds one where a reference
 exists: the homogeneous incompressible Arruda-Boyce response for the
 uniaxial and shear blocks, Rivlin's universal torsion for torque
@@ -713,9 +715,6 @@ reference is quantitative and compares reactions with reactions: the notebooks' 
 forces are boundary integrals of their finite element stress, which the clamped
 corners of 02 and 08 spoil by 2 to 9 percent on their tetrahedral meshes.
 `--reference DIR` points elsewhere.
-For 08 the plot also shows the reaction of the log when `logs/08_column_buckling.log`
-sits beside the ParaView directories: the held faces of the bent column carry corner
-singularities, where the nodal stress is 5 to 7 percent low.
 What the plots show, with the reference's values in parentheses: the uniaxial
 cube lies on the nearly incompressible homogeneous solution at K = 1000 G and its
 reaction equals the reference's to 13 digits at every step (6.030 MPa at the

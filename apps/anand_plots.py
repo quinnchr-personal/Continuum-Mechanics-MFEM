@@ -105,7 +105,11 @@ def reaction(data, name):
 # force and the moment of a Dirichlet entry are those of the traction P N of the nodal pk1_stress
 # on the faces of its boundary groups,
 #     F = int P N dA,   M = int (X + u) x (P N) dA   (about the origin, as the app's),
-# restricted to the prescribed components as the app's are. The faces are those of the groups in
+# restricted to the prescribed components as the app's are. Since that stress is recovered from the
+# quadrature points, the force differs from the app's reaction where the loaded face meets free
+# faces or clamped corners: +9.7 percent for 04 and -8 percent for 08 at the end, +3.5 for 02, 0.6
+# for 03, 0.1 for 09 and 10, round-off for 01 (measured 2026-09-22). main() therefore takes the
+# reactions from the log when it is beside the output. The faces are those of the groups in
 # the Gmsh file, found in the output by their corner nodes, and the integrals are Gauss quadrature
 # of the Lagrange interpolants with VTK's own shape functions, so that the quadrature adds no error
 # to the nodal stress. That stress is recovered from the quadrature points (output.nodal_projection),
@@ -531,13 +535,6 @@ def plot_08(data, ax):
     L, w = 20.0, 1.0
     shortening = 2.5 * t
     ax.plot(shortening, -f[:, 2], "o-", ms=3, label="this code (reaction)")
-    # The held faces of the bent column carry corner singularities, where the nodal
-    # pk1_stress is off by several percent; the app's own reaction from the log, when
-    # the log is beside the ParaView output (logs/<case>.log), is the better force.
-    log = data.get("log_path")
-    if log and os.path.exists(log):
-        tl, fl, _ = reaction(read_log(log), "top")
-        ax.plot(2.5 * tl, -fl[:, 2], "-", color="C2", label="this code (reaction of the log)")
     ref = reference("08_column_buckling")
     if ref is not None:
         f, label = ref_force(ref, 2, 3, -1.0)
@@ -632,7 +629,25 @@ def main():
                     raise FileNotFoundError(os.path.join(args.inputs, case + ".yaml"))
                 data = read_paraview(configs[case])
                 beside = configs[case]["output"]["paraview"]
-                data["log_path"] = os.path.join(os.path.dirname(beside.rstrip("/")), "logs", case + ".log")
+                # The reactions of the app's log, when it is beside the output (logs/<case>.log,
+                # as run_set.sh writes them), replace the ones recovered from the nodal stress:
+                # that recovery is off by up to 10 percent where the loaded face meets free faces
+                # or clamped corners (04, 08, 02); see "ParaView output" above.
+                log = os.path.join(os.path.dirname(beside.rstrip("/")), "logs", case + ".log")
+                if os.path.exists(log):
+                    logged = read_log(log)
+                    for key, entry in logged.items():
+                        if key[0] != "reaction" or key not in data:
+                            continue
+                        # the output has the initial state too (zero reaction), the log has not
+                        tl = np.asarray(entry["t"])
+                        rows = [np.flatnonzero(np.abs(tl - t) < 1e-9) for t in data[key]["t"]]
+                        if all(len(r) == 1 or abs(t) < 1e-12 for r, t in zip(rows, data[key]["t"])):
+                            for field in ("force", "moment"):
+                                src = np.asarray(entry[field])
+                                data[key][field] = np.array([src[r[0]] if len(r) == 1 else np.zeros(src.shape[1])
+                                                             for r in rows])
+                            data["reactions_from"] = "log"
             else:
                 data = read_log(os.path.join(args.logs, case + ".log"))
                 beside = args.logs
