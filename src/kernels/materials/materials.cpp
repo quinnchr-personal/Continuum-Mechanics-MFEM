@@ -141,6 +141,27 @@ Material MakeMaterial(const MaterialConfig &cfg, bool plane_stress)
   }, base);
 }
 
+ThermoMaterial MakeThermoMaterial(const MaterialConfig &cfg)
+{
+  if (!cfg.thermal.set) { throw ConfigError("material: the thermoelastic material needs material.thermal"); }
+  const MixedMaterial base = MakeMixedMaterial(cfg);
+  ThermalParameters t;
+  t.theta0 = cfg.thermal.theta0;
+  t.alpha = cfg.thermal.alpha;
+  t.c_v = cfg.thermal.c_v;
+  t.k = cfg.thermal.k;
+  t.entropic = cfg.thermal.entropic;
+  return std::visit([&](const auto &mat) -> ThermoMaterial
+  {
+    using M = std::decay_t<decltype(mat)>;
+    if constexpr (is_viscoelastic<M>::value || is_small_strain<M>::value)
+    {
+      throw ConfigError("material.thermal: model '" + cfg.model + "' cannot be thermoelastic");
+    }
+    else { return Thermoelastic<M>(mat, t); }
+  }, base);
+}
+
 MixedMaterial MakeMixedMaterial(const MaterialConfig &cfg)
 {
   if (!IsDecoupledModel(cfg.model))

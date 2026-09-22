@@ -4,6 +4,7 @@
 #include "base/mesh_input.hpp"
 #include "physics/mixed_solid_mechanics_tl.hpp"
 #include "physics/solid_mechanics_tl.hpp"
+#include "physics/thermo_solid_mechanics_tl.hpp"
 
 namespace cmf
 {
@@ -54,6 +55,12 @@ std::vector<MixedMaterial> MakeMixedMaterialTable(const MaterialConfig &cfg, mfe
   { return MakeMixedMaterial(c); });
 }
 
+std::vector<ThermoMaterial> MakeThermoMaterialTable(const MaterialConfig &cfg, mfem::Mesh &mesh)
+{
+  return TableByAttribute<ThermoMaterial>(cfg, mesh, [](const MaterialConfig &c)
+  { return MakeThermoMaterial(c); });
+}
+
 mfem::Vector MakeDensityTable(const MaterialConfig &cfg, mfem::Mesh &mesh)
 {
   const int max_attr = mesh.attributes.Size() ? mesh.attributes.Max() : 1;
@@ -73,6 +80,14 @@ mfem::Vector MakeDensityTable(const MaterialConfig &cfg, mfem::Mesh &mesh)
 
 std::unique_ptr<SolidProblem> MakeSolidProblem(mfem::ParMesh &mesh, const AppConfig &cfg)
 {
+  if (cfg.material.thermal.set)
+  {
+    if (cfg.formulation != "mixed")
+    {
+      throw ConfigError("material.thermal needs formulation: mixed (the constraint carries the thermal expansion)");
+    }
+    return std::make_unique<ThermoSolidMechanicsTL>(mesh, cfg, MakeThermoMaterialTable(cfg.material, mesh));
+  }
   const bool mixed = cfg.formulation == "mixed";
   std::vector<MixedMaterial> mixed_materials;
   std::vector<Material> materials;
@@ -98,8 +113,23 @@ BCOptions OptionsOf(const BoundaryCondition &bc)
   opt.schedule = bc.schedule;
   opt.time_dependent = ExpressionsUseTime(bc.expression);
   opt.name = bc.name;
+  opt.point = bc.point;
   return opt;
 }
+
+namespace
+{
+
+BCOptions OptionsOf(const ThermalCondition &c)
+{
+  BCOptions opt;
+  opt.schedule = c.schedule;
+  opt.time_dependent = ExpressionsUseTime({c.expression});
+  opt.name = c.name;
+  return opt;
+}
+
+} // namespace
 
 void InstallYamlLoads(SolidProblem &problem, mfem::Mesh &mesh, const AppConfig &cfg, int dim,
                       std::vector<std::unique_ptr<mfem::VectorCoefficient>> &owned_vectors,
@@ -110,6 +140,16 @@ void InstallYamlLoads(SolidProblem &problem, mfem::Mesh &mesh, const AppConfig &
     const BoundaryCondition &bc = cfg.bcs.dirichlet[i];
     const std::string what = "bcs.dirichlet[" + std::to_string(i) + "]";
     owned_vectors.push_back(MakeBCCoefficient(bc, dim, what));
+    if (bc.IsPoint())
+    {
+      if (int(bc.point.size()) != dim)
+      {
+        throw ConfigError(what + ".point has " + std::to_string(bc.point.size()) +
+                          " coordinates, mesh dimension is " + std::to_string(dim));
+      }
+      problem.AddDirichlet({}, *owned_vectors.back(), OptionsOf(bc));
+      continue;
+    }
     problem.AddDirichlet(ResolveBoundaryAttributes(mesh, bc, what), *owned_vectors.back(),
                          OptionsOf(bc));
   }
@@ -150,6 +190,22 @@ void InstallYamlLoads(SolidProblem &problem, mfem::Mesh &mesh, const AppConfig &
     opt.name = c.name;
     problem.AddRigidSphereContact(ResolveBoundaryAttributes(mesh, c.attr, c.attr_names, what),
                                   *owned_vectors.back(), c.radius, c.penalty, opt);
+  }
+  for (std::size_t i = 0; i < cfg.bcs.temperature.size(); i++)
+  {
+    const ThermalCondition &c = cfg.bcs.temperature[i];
+    const std::string what = "bcs.temperature[" + std::to_string(i) + "]";
+    owned_scalars.push_back(std::make_unique<ExpressionCoefficient>(c.expression));
+    problem.AddTemperature(ResolveBoundaryAttributes(mesh, c.attr, c.attr_names, what),
+                           *owned_scalars.back(), OptionsOf(c));
+  }
+  for (std::size_t i = 0; i < cfg.bcs.heat_flux.size(); i++)
+  {
+    const ThermalCondition &c = cfg.bcs.heat_flux[i];
+    const std::string what = "bcs.heat_flux[" + std::to_string(i) + "]";
+    owned_scalars.push_back(std::make_unique<ExpressionCoefficient>(c.expression));
+    problem.AddHeatFlux(ResolveBoundaryAttributes(mesh, c.attr, c.attr_names, what),
+                        *owned_scalars.back(), c.current_area, OptionsOf(c));
   }
   if (!cfg.body_force.Empty())
   {

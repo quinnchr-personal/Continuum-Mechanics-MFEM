@@ -80,6 +80,23 @@ struct MaxwellBranchConfig
   double tau = 0.0;
 };
 
+// `thermal: { theta0, alpha, c_v, k, entropic }` makes a decoupled model the
+// thermoelastic material of the coupled u-p-theta formulation
+// (kernels/materials/thermoelastic.hpp): theta0 the reference and initial
+// temperature, alpha the linear thermal expansion coefficient, c_v the heat
+// capacity per unit reference volume, k the spatial conductivity, entropic
+// (default true) a shear modulus proportional to the temperature. A region's
+// thermal map overrides the keys it gives (theta0 must be the base's).
+struct ThermalConfig
+{
+  bool set = false;
+  double theta0 = std::numeric_limits<double>::quiet_NaN();
+  double alpha = 0.0;
+  double c_v = std::numeric_limits<double>::quiet_NaN();
+  double k = std::numeric_limits<double>::quiet_NaN();
+  bool entropic = true;
+};
+
 struct MaterialConfig
 {
   std::string model = "neo_hookean";
@@ -106,6 +123,7 @@ struct MaterialConfig
   // (kernels/materials/arruda_boyce.hpp).
   std::string inverse_langevin = "pade";
   std::vector<MaxwellBranchConfig> branches; // finite viscoelasticity; empty: hyperelastic
+  ThermalConfig thermal;                     // thermoelasticity; unset: isothermal
   double rho0 = 1.0;
   std::vector<int> attr;                 // regions only
   std::vector<std::string> attr_names;   // regions only
@@ -145,16 +163,37 @@ struct Schedule
 // function only). Traction types: vector (nominal traction per reference
 // area), pressure (dead, T = -p N), follower_pressure (T = -p J F^{-T} N per
 // current area).
+// A Dirichlet entry may give `point: [x, y(, z)]` instead of `attr`: it then
+// prescribes its components at the displacement node nearest to the point (a
+// pin), with the expression evaluated at that node.
 struct BoundaryCondition
 {
   std::string name;              // optional label (reactions output); default "dirichlet[i]"
   std::vector<int> attr;
   std::vector<std::string> attr_names;
+  std::vector<double> point;     // Dirichlet only: a node instead of faces
   std::vector<std::string> expression;
   std::vector<int> components;   // Dirichlet only; 0-based, empty = all
   Schedule schedule;
   std::string type = "vector";   // traction only: vector | pressure | follower_pressure
   bool IsPressure() const { return type != "vector"; }
+  bool IsPoint() const { return !point.empty(); }
+};
+
+// Thermal boundary conditions of the coupled formulation: `temperature`
+// entries prescribe theta on faces (one expression f(x, y, z, t), a schedule
+// as for the others: the data is schedule(t) * f, constant by default under
+// a time block); `heat_flux` entries apply an inward heat flux per unit
+// current area (per_unit: current_area, the default, through |cof F N|) or
+// per unit reference area (reference_area).
+struct ThermalCondition
+{
+  std::string name;
+  std::vector<int> attr;
+  std::vector<std::string> attr_names;
+  std::string expression;
+  Schedule schedule;
+  bool current_area = true;      // heat_flux only
 };
 
 // Penalty contact of a boundary with a rigid body (kernels/rigid_sphere_contact.hpp):
@@ -182,6 +221,8 @@ struct BCConfig
   std::vector<BoundaryCondition> dirichlet;
   std::vector<BoundaryCondition> traction;
   std::vector<ContactCondition> contact;
+  std::vector<ThermalCondition> temperature;
+  std::vector<ThermalCondition> heat_flux;
 };
 
 // In a dynamic analysis (the `dynamics` block) t is the physical time: ramps
@@ -328,8 +369,8 @@ struct ProbeConfig
 struct OutputConfig
 {
   std::string paraview;              // collection path; empty -> no output
-  // Nodal unknowns: displacement | pressure (mixed) | velocity | acceleration
-  // (dynamic analysis). Quadrature-point
+  // Nodal unknowns: displacement | pressure (mixed) | temperature (thermal) |
+  // velocity | acceleration (dynamic analysis). Quadrature-point
   // quantities: cauchy_stress | pk1_stress | deformation_gradient | strain
   // (Green-Lagrange; the infinitesimal strain for a small-strain model) |
   // jacobian | vonmises | energy_density | thickness_stretch (plane stress).

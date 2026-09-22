@@ -177,23 +177,43 @@ std::vector<BoundaryCondition> ParseBCList(const YAML::Node &node,
     BoundaryCondition bc;
     bc.name = item.Optional<std::string>("name", (dirichlet ? "dirichlet[" : "traction[") +
                                                    std::to_string(i) + "]");
-    // attr: a list of attribute numbers and/or physical-group names.
-    if (!item.Has("attr")) { throw ConfigError("missing key '" + item_path + ".attr'"); }
-    YAML::Node attr = item.Raw("attr");
-    if (!attr.IsSequence() || attr.size() == 0)
+    // attr: a list of attribute numbers and/or physical-group names; or, for a
+    // Dirichlet entry, point: the coordinates of a node.
+    if (item.Has("point"))
     {
-      throw ConfigError("key '" + item_path + ".attr' must be a non-empty list of "
-                        "boundary attribute numbers or physical-group names");
-    }
-    for (std::size_t k = 0; k < attr.size(); k++)
-    {
-      if (!attr[k].IsScalar())
+      if (!dirichlet)
       {
-        throw ConfigError("key '" + item_path + ".attr[" + std::to_string(k) +
-                          "]' must be an attribute number or a physical-group name");
+        throw ConfigError("key '" + item_path + ".point' applies to Dirichlet entries only");
       }
-      try { bc.attr.push_back(attr[k].as<int>()); }
-      catch (const YAML::Exception &) { bc.attr_names.push_back(attr[k].as<std::string>()); }
+      if (item.Has("attr"))
+      {
+        throw ConfigError("keys '" + item_path + ".attr' and '" + item_path + ".point': give one, not both");
+      }
+      bc.point = item.Require<std::vector<double>>("point");
+      if (bc.point.size() < 2 || bc.point.size() > 3)
+      {
+        throw ConfigError("key '" + item_path + ".point' must have 2 or 3 coordinates");
+      }
+    }
+    else
+    {
+      if (!item.Has("attr")) { throw ConfigError("missing key '" + item_path + ".attr'"); }
+      YAML::Node attr = item.Raw("attr");
+      if (!attr.IsSequence() || attr.size() == 0)
+      {
+        throw ConfigError("key '" + item_path + ".attr' must be a non-empty list of "
+                          "boundary attribute numbers or physical-group names");
+      }
+      for (std::size_t k = 0; k < attr.size(); k++)
+      {
+        if (!attr[k].IsScalar())
+        {
+          throw ConfigError("key '" + item_path + ".attr[" + std::to_string(k) +
+                            "]' must be an attribute number or a physical-group name");
+        }
+        try { bc.attr.push_back(attr[k].as<int>()); }
+        catch (const YAML::Exception &) { bc.attr_names.push_back(attr[k].as<std::string>()); }
+      }
     }
     if (!dirichlet)
     {
@@ -563,6 +583,11 @@ void ValidateMaterialConfig(const MaterialConfig &cfg, const std::string &path)
     }
   }
 
+  if (coupled && cfg.thermal.set)
+  {
+    throw ConfigError("section '" + path + ".thermal': model '" + model + "' has no isochoric-volumetric "
+                      "split; the thermoelastic material takes a decoupled model");
+  }
   if (coupled)
   {
     if (!(cfg.nu < 0.5))
@@ -620,6 +645,11 @@ void ValidateMaterialConfig(const MaterialConfig &cfg, const std::string &path)
                           key("alpha_r") + "[" + std::to_string(r) + "] must be positive");
       }
     }
+  }
+  if (cfg.thermal.set && (model == "linear_elastic" || !cfg.branches.empty()))
+  {
+    throw ConfigError("section '" + path + ".thermal': the thermoelastic material takes a "
+                      "hyperelastic decoupled model (not linear_elastic, not with branches)");
   }
   const int ways = int(set(cfg.kappa)) + int(set(cfg.nu)) + int(cfg.incompressible);
   if (ways != 1)
@@ -699,6 +729,34 @@ MaterialConfig ReadMaterialKeys(NodeReader &r, const std::string &path, const Ma
     }
   }
   else { r.Optional<int>("branches", 0); }
+  if (r.Has("thermal"))
+  {
+    NodeReader th(r.Raw("thermal"), r.Path("thermal"));
+    ThermalConfig &t = cfg.thermal;
+    if (region && !t.set)
+    {
+      throw ConfigError("key '" + r.Path("thermal") + "': the base material has no thermal block");
+    }
+    if (region && th.Has("theta0"))
+    {
+      throw ConfigError("key '" + th.Path("theta0") + "': the reference temperature is the base's");
+    }
+    t.set = true;
+    t.theta0 = th.Optional<double>("theta0", t.theta0);
+    t.alpha = th.Optional<double>("alpha", t.alpha);
+    t.c_v = th.Optional<double>("c_v", t.c_v);
+    t.k = th.Optional<double>("k", t.k);
+    t.entropic = th.Optional<bool>("entropic", t.entropic);
+    for (const char *key : {"theta0", "c_v", "k"})
+    {
+      const double v = key == std::string("theta0") ? t.theta0 : key == std::string("c_v") ? t.c_v : t.k;
+      if (std::isnan(v)) { throw ConfigError("missing key '" + th.Path(key) + "'"); }
+      CheckPositive(v, th.Path(key));
+    }
+    if (t.alpha < 0.0) { throw ConfigError("key '" + th.Path("alpha") + "' must be non-negative"); }
+    th.Finish();
+  }
+  else { r.Optional<int>("thermal", 0); }
   cfg.rho0 = r.Optional<double>("rho0", cfg.rho0);
   static const char *models[] = {"neo_hookean", "st_venant_kirchhoff", "gent_compressible_summit",
                                  "iso_neo_hookean", "mooney_rivlin", "yeoh", "gent", "arruda_boyce",
@@ -851,6 +909,66 @@ std::vector<ContactCondition> ParseContactList(const YAML::Node &node, const std
   return list;
 }
 
+std::vector<ThermalCondition> ParseThermalList(const YAML::Node &node, const std::string &path,
+                                               bool flux, double t_final)
+{
+  std::vector<ThermalCondition> list;
+  if (!node.IsDefined() || node.IsNull()) { return list; }
+  if (!node.IsSequence())
+  {
+    throw ConfigError("'" + path + "' must be a list of {attr, expression} maps");
+  }
+  for (std::size_t i = 0; i < node.size(); i++)
+  {
+    const std::string item_path = path + "[" + std::to_string(i) + "]";
+    NodeReader item(node[i], item_path);
+    ThermalCondition c;
+    c.name = item.Optional<std::string>("name", (flux ? "heat_flux[" : "temperature[") + std::to_string(i) + "]");
+    if (!item.Has("attr")) { throw ConfigError("missing key '" + item_path + ".attr'"); }
+    YAML::Node attr = item.Raw("attr");
+    if (!attr.IsSequence() || attr.size() == 0)
+    {
+      throw ConfigError("key '" + item_path + ".attr' must be a non-empty list of "
+                        "boundary attribute numbers or physical-group names");
+    }
+    for (std::size_t k = 0; k < attr.size(); k++)
+    {
+      if (!attr[k].IsScalar())
+      {
+        throw ConfigError("key '" + item_path + ".attr[" + std::to_string(k) +
+                          "]' must be an attribute number or a physical-group name");
+      }
+      try { c.attr.push_back(attr[k].as<int>()); }
+      catch (const YAML::Exception &) { c.attr_names.push_back(attr[k].as<std::string>()); }
+    }
+    c.expression = item.Require<std::string>("expression");
+    try { Expression::Parse(c.expression); }
+    catch (const ConfigError &e) { throw ConfigError("key '" + item_path + ".expression': " + e.what()); }
+    if (flux)
+    {
+      const std::string per = item.Optional<std::string>("per_unit", "current_area");
+      if (per != "current_area" && per != "reference_area")
+      {
+        throw ConfigError("key '" + item_path + ".per_unit': expected current_area or reference_area, got '" + per + "'");
+      }
+      c.current_area = per == "current_area";
+    }
+    else { item.Optional<int>("per_unit", 0); }
+    if (item.Has("schedule"))
+    {
+      c.schedule = ParseSchedule(item.Raw("schedule"), item_path + ".schedule", t_final);
+    }
+    else
+    {
+      item.Optional<int>("schedule", 0);
+      c.schedule = DefaultSchedule({c.expression}, t_final);
+    }
+    item.Finish();
+    list.push_back(c);
+  }
+  return list;
+}
+
 } // namespace
 
 BCConfig ParseBCConfig(const YAML::Node &node, const std::string &path, double t_final)
@@ -861,6 +979,8 @@ BCConfig ParseBCConfig(const YAML::Node &node, const std::string &path, double t
   cfg.dirichlet = ParseBCList(r.Raw("dirichlet"), r.Path("dirichlet"), true, t_final);
   cfg.traction = ParseBCList(r.Raw("traction"), r.Path("traction"), false, t_final);
   cfg.contact = ParseContactList(r.Raw("contact"), r.Path("contact"), t_final);
+  cfg.temperature = ParseThermalList(r.Raw("temperature"), r.Path("temperature"), false, t_final);
+  cfg.heat_flux = ParseThermalList(r.Raw("heat_flux"), r.Path("heat_flux"), true, t_final);
   r.Finish();
   return cfg;
 }
@@ -1069,12 +1189,12 @@ OutputConfig ParseOutputConfig(const YAML::Node &node, const std::string &path, 
       throw ConfigError("key '" + r.Path("fields") + "': field '" + f +
                         "' needs a dynamic analysis (the dynamics block)");
     }
-    if (f != "displacement" && f != "pressure" && f != "cauchy_stress" && f != "pk1_stress" &&
-        f != "deformation_gradient" && f != "strain" && f != "jacobian" && f != "vonmises" &&
-        f != "energy_density" && f != "thickness_stretch")
+    if (f != "displacement" && f != "pressure" && f != "temperature" && f != "cauchy_stress" &&
+        f != "pk1_stress" && f != "deformation_gradient" && f != "strain" && f != "jacobian" &&
+        f != "vonmises" && f != "energy_density" && f != "thickness_stretch")
     {
       throw ConfigError("key '" + r.Path("fields") + "': unknown field '" + f +
-                        "' (expected displacement, pressure, cauchy_stress, pk1_stress, "
+                        "' (expected displacement, pressure, temperature, cauchy_stress, pk1_stress, "
                         "deformation_gradient, strain, jacobian, vonmises, energy_density, or "
                         "thickness_stretch)");
     }
@@ -1339,9 +1459,35 @@ AppConfig ParseConfig(const YAML::Node &root)
     throw ConfigError("material.branches: a viscoelastic material advances its history by the "
                       "physical time step; add a time block (t_final, dt or steps) or a dynamics block");
   }
+  if (cfg.material.thermal.set)
+  {
+    if (!cfg.time.enabled)
+    {
+      throw ConfigError("material.thermal: the coupled thermo-mechanical analysis runs in physical "
+                        "time; add a time block (t_final, dt or steps)" +
+                        std::string(cfg.dynamics.enabled ? " (inertia with a temperature is not supported)" : ""));
+    }
+    if (cfg.formulation != "mixed")
+    {
+      throw ConfigError("material.thermal needs formulation: mixed (the constraint carries the thermal expansion)");
+    }
+    if (cfg.plane == "stress")
+    {
+      throw ConfigError("material.thermal: plane stress is not available with a temperature field");
+    }
+  }
   cfg.bcs = ParseBCConfig(r.Raw("bcs"), "bcs", t_final);
+  if (!cfg.material.thermal.set && (!cfg.bcs.temperature.empty() || !cfg.bcs.heat_flux.empty()))
+  {
+    throw ConfigError("bcs.temperature / bcs.heat_flux need a thermoelastic material (material.thermal)");
+  }
   cfg.body_force = ParseBodyForceConfig(r.Raw("body_force"), "body_force", t_final);
   cfg.solver = ParseSolverConfig(r.Raw("solver"), "solver", cfg.dynamics, cfg.time);
+  if (cfg.material.thermal.set && cfg.solver.linear.type != "direct")
+  {
+    throw ConfigError("key 'solver.linear.type': the coupled u-p-theta formulation has no iterative "
+                      "solver; use direct (got '" + cfg.solver.linear.type + "')");
+  }
   cfg.output = ParseOutputConfig(r.Raw("output"), "output", cfg.dynamics.enabled);
   r.Finish();
   return cfg;

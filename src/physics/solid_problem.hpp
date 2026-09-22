@@ -39,6 +39,20 @@ public:
                                      double radius, double penalty,
                                      const BCOptions &opt = BCOptions()) = 0;
   virtual void SetBodyForce(mfem::VectorCoefficient &b, const BCOptions &opt = BCOptions()) = 0;
+  // Thermal boundary conditions of the coupled u-p-theta formulation
+  // (physics/thermo_solid_mechanics_tl.hpp): a prescribed temperature
+  // (schedule(t) * theta_bar on the faces) and an inward heat flux per unit
+  // current (or reference) area. The isothermal formulations reject them.
+  virtual void AddTemperature(const std::vector<int> &, mfem::Coefficient &,
+                              const BCOptions & = BCOptions())
+  {
+    throw ConfigError("bcs.temperature needs a thermoelastic material (material.thermal)");
+  }
+  virtual void AddHeatFlux(const std::vector<int> &, mfem::Coefficient &, bool /*current_area*/,
+                           const BCOptions & = BCOptions())
+  {
+    throw ConfigError("bcs.heat_flux needs a thermoelastic material (material.thermal)");
+  }
   virtual void ClearBoundaryConditions() = 0;
   virtual void Finalize() = 0;
   virtual const LoadSet &Loads() const = 0;
@@ -76,6 +90,11 @@ public:
   // The stamp of the operator GetGradient returns (solvers/linear_solver.hpp).
   virtual OperatorStamp GradientStamp() const = 0;
 
+  // The initial unknown of an analysis starting from rest: zero
+  // displacement (and pressure); the coupled formulation sets its
+  // temperature block to theta0. The app calls it on the zero vector.
+  virtual void InitialState(mfem::Vector &x) const { x = 0.0; }
+
   virtual mfem::ParFiniteElementSpace &DisplacementSpace() = 0;
   virtual const mfem::Array<int> &EssentialTrueDofs() const = 0;
   virtual HYPRE_BigInt GlobalTrueVSize() const = 0; // collective
@@ -101,6 +120,7 @@ std::unique_ptr<SolidProblem> MakeSolidProblem(mfem::ParMesh &mesh, const AppCon
 std::vector<Material> MakeMaterialTable(const MaterialConfig &cfg, mfem::Mesh &mesh,
                                         bool plane_stress);
 std::vector<MixedMaterial> MakeMixedMaterialTable(const MaterialConfig &cfg, mfem::Mesh &mesh);
+std::vector<ThermoMaterial> MakeThermoMaterialTable(const MaterialConfig &cfg, mfem::Mesh &mesh);
 // Reference density by element attribute (entry a - 1 for attribute a, the
 // layout of mfem::PWConstCoefficient): cfg.rho0, and a region's rho0 on its
 // attributes.

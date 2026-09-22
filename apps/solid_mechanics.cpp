@@ -76,7 +76,7 @@ int main(int argc, char *argv[])
     std::unique_ptr<mfem::Solver> linear = dynamic ? dynamic->MakeLinearSolver(cfg.solver.linear)
                                                    : physics.MakeLinearSolver(cfg.solver.linear);
     mfem::Vector u(physics.Height());
-    u = 0.0;
+    physics.InitialState(u); // zero, but for the temperature block (theta0) of the coupled formulation
 
     cmf::FieldRegistry fields;
     if (dynamic) { dynamic->RegisterFields(fields); }

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <limits>
 
 namespace cmf
 {
@@ -56,8 +57,13 @@ void LoadSet::AddDirichlet(const std::vector<int> &attrs, mfem::VectorCoefficien
 {
   CheckVector(u_bar, "AddDirichlet");
   CheckComponents(opt.components, "AddDirichlet");
+  if (!opt.point.empty() && int(opt.point.size()) != dim_)
+  {
+    throw ConfigError("AddDirichlet: point has " + std::to_string(opt.point.size()) +
+                      " coordinates, expected " + std::to_string(dim_));
+  }
   DirichletEntry e;
-  e.marker = Marker(attrs);
+  e.marker = opt.point.empty() ? Marker(attrs) : Marker({});
   e.coef = &u_bar;
   e.opt = opt;
   if (e.opt.name.empty()) { e.opt.name = "dirichlet[" + std::to_string(dirichlet_.size()) + "]"; }
@@ -228,7 +234,8 @@ void LoadSet::Finalize()
   {
     for (int i = 0; i < max_attr; i++) { ess_marker_[i] |= e.marker[i]; }
     e.tdofs.SetSize(0);
-    if (e.opt.components.empty())
+    if (e.IsPoint()) { ResolvePoint(e); }
+    else if (e.opt.components.empty())
     {
       fes_.GetEssentialTrueDofs(e.marker, e.tdofs);
     }
@@ -255,6 +262,59 @@ void LoadSet::Finalize()
   external_ = 0.0;
   finalized_ = true;
   SetTime(time_);
+}
+
+// The node of the displacement space nearest to the point, by its true-dof
+// coordinates: the owning rank (MPI_MINLOC over the distance) lists the
+// entry's components there. The point must be a node of the mesh (within
+// 1e-8 of the mesh diameter; the nodes of an order-p space include the
+// vertices).
+void LoadSet::ResolvePoint(DirichletEntry &e) const
+{
+  EnsureCoords();
+  const int n_nodes = coords_true_.Size() / dim_;
+  int rank = 0;
+  MPI_Comm_rank(fes_.GetComm(), &rank);
+  struct { double d; int rank; } local = {std::numeric_limits<double>::infinity(), rank}, global;
+  int best = -1;
+  double lo[3] = {std::numeric_limits<double>::infinity(), std::numeric_limits<double>::infinity(),
+                  std::numeric_limits<double>::infinity()};
+  double hi[3] = {-lo[0], -lo[1], -lo[2]};
+  for (int n = 0; n < n_nodes; n++)
+  {
+    double d2 = 0.0;
+    for (int c = 0; c < dim_; c++)
+    {
+      const double x = coords_true_(n * dim_ + c);
+      d2 += (x - e.opt.point[std::size_t(c)]) * (x - e.opt.point[std::size_t(c)]);
+      lo[c] = std::min(lo[c], x);
+      hi[c] = std::max(hi[c], x);
+    }
+    if (d2 < local.d) { local.d = d2; best = n; }
+  }
+  local.d = std::sqrt(local.d);
+  MPI_Allreduce(&local, &global, 1, MPI_DOUBLE_INT, MPI_MINLOC, fes_.GetComm());
+  double glo[3], ghi[3];
+  MPI_Allreduce(lo, glo, 3, MPI_DOUBLE, MPI_MIN, fes_.GetComm());
+  MPI_Allreduce(hi, ghi, 3, MPI_DOUBLE, MPI_MAX, fes_.GetComm());
+  double diam2 = 0.0;
+  for (int c = 0; c < dim_; c++) { diam2 += (ghi[c] - glo[c]) * (ghi[c] - glo[c]); }
+  if (global.d > 1e-8 * std::sqrt(diam2))
+  {
+    std::string pt;
+    for (int c = 0; c < dim_; c++) { pt += (c ? ", " : "") + std::to_string(e.opt.point[std::size_t(c)]); }
+    throw ConfigError(e.opt.name + ": the point (" + pt + ") is not a node of the mesh (nearest node at distance " +
+                      std::to_string(global.d) + ")");
+  }
+  if (global.rank != rank || best < 0) { return; }
+  if (e.opt.components.empty())
+  {
+    for (int c = 0; c < dim_; c++) { e.tdofs.Append(best * dim_ + c); }
+  }
+  else
+  {
+    for (int c : e.opt.components) { e.tdofs.Append(best * dim_ + c); }
+  }
 }
 
 void LoadSet::SetTime(double t)
@@ -294,8 +354,12 @@ void LoadSet::ApplyDirichlet(mfem::Vector &x) const
   {
     const double s = e.opt.schedule.Eval(time_, physical_time_);
     g = 0.0;
-    mfem::Array<int> marker(e.marker); // MFEM takes a non-const marker
-    g.ProjectBdrCoefficient(*e.coef, marker);
+    if (e.IsPoint()) { g.ProjectCoefficient(*e.coef); } // the value at the node
+    else
+    {
+      mfem::Array<int> marker(e.marker); // MFEM takes a non-const marker
+      g.ProjectBdrCoefficient(*e.coef, marker);
+    }
     g.GetTrueDofs(g_true);
     for (int i = 0; i < e.tdofs.Size(); i++) { x(e.tdofs[i]) = s * g_true(e.tdofs[i]); }
   }

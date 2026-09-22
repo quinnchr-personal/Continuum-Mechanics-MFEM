@@ -26,6 +26,7 @@
 #include "materials/ogden.hpp"
 #include "materials/plane_stress.hpp"
 #include "materials/st_venant_kirchhoff.hpp"
+#include "materials/thermoelastic.hpp"
 #include "materials/viscoelastic.hpp"
 #include "materials/volumetric.hpp"
 #include "materials/yeoh.hpp"
@@ -68,6 +69,12 @@ using MixedMaterial = std::variant<IsoNeoHookean, MooneyRivlin, Yeoh, Gent, Arru
                                    Viscoelastic<MooneyRivlin>, Viscoelastic<Yeoh>,
                                    Viscoelastic<Gent>, Viscoelastic<ArrudaBoyce>,
                                    Viscoelastic<Ogden>>;
+
+// The thermoelastic materials of the coupled u-p-theta formulation
+// (materials/thermoelastic.hpp): a decoupled model with a temperature.
+using ThermoMaterial = std::variant<Thermoelastic<IsoNeoHookean>, Thermoelastic<MooneyRivlin>,
+                                    Thermoelastic<Yeoh>, Thermoelastic<Gent>,
+                                    Thermoelastic<ArrudaBoyce>, Thermoelastic<Ogden>>;
 
 // Whether the held model carries a history (Maxwell branches).
 template <typename... Ms>
@@ -121,6 +128,8 @@ ResolvedModuli ResolveModuli(const MaterialConfig &cfg);
 // formulation), which also admits incompressible models.
 Material MakeMaterial(const MaterialConfig &cfg, bool plane_stress = false);
 MixedMaterial MakeMixedMaterial(const MaterialConfig &cfg);
+// The thermoelastic material of cfg (which must carry a thermal block).
+ThermoMaterial MakeThermoMaterial(const MaterialConfig &cfg);
 bool IsDecoupledModel(const std::string &model);
 
 // Materials by element attribute: a table of size 1 is one material for
@@ -156,6 +165,7 @@ constexpr const char *ModelName()
 {
   if constexpr (is_plane_stress<M>::value) { return ModelName<typename M::Base>(); }
   else if constexpr (is_viscoelastic<M>::value) { return ModelName<typename M::Equilibrium>(); }
+  else if constexpr (is_thermoelastic<M>::value) { return ModelName<typename M::Equilibrium>(); }
   else if constexpr (std::is_same_v<M, NeoHookean>) { return "neo_hookean"; }
   else if constexpr (std::is_same_v<M, StVenantKirchhoff>) { return "st_venant_kirchhoff"; }
   else if constexpr (std::is_same_v<M, GentCompressibleSummit>) { return "gent_compressible_summit"; }
@@ -203,6 +213,15 @@ inline std::string MaterialName(const MixedMaterial &m)
 {
   return std::visit([](const auto &mat) -> std::string
   { return ModelName<std::decay_t<decltype(mat)>>() + BranchesSuffixOf(mat); }, m);
+}
+
+inline std::string MaterialName(const ThermoMaterial &m)
+{
+  return std::visit([](const auto &mat) -> std::string
+  {
+    return std::string(ModelName<std::decay_t<decltype(mat)>>()) +
+           (mat.thermal.entropic ? " (entropic, thermoelastic)" : " (thermoelastic)");
+  }, m);
 }
 
 // ", <law> volumetric law" for a decoupled material with a finite bulk modulus

@@ -27,6 +27,11 @@ struct BCOptions
   // (coefficients that depend on t). Dirichlet data is always re-projected.
   bool time_dependent = false;
   std::string name;             // label of the entry (reactions output)
+  // Dirichlet: the entry pins the node nearest to this point (dim
+  // coordinates) instead of the faces of the attributes (which are then
+  // ignored): its components take the coefficient's value at the node. The
+  // reaction of the entry is the nodal force there.
+  std::vector<double> point;
 };
 
 // Resultant of the nodal forces a Dirichlet entry exerts on the body through
@@ -120,6 +125,7 @@ private:
     mfem::VectorCoefficient *coef;
     BCOptions opt;
     mfem::Array<int> tdofs; // essential true dofs of this entry's components
+    bool IsPoint() const { return !opt.point.empty(); }
   };
   struct LoadEntry
   {
@@ -149,6 +155,9 @@ private:
   };
 
   void CheckVector(mfem::VectorCoefficient &c, const std::string &what) const;
+  // The true dofs of the node nearest to e.opt.point (on the owning rank;
+  // empty elsewhere); collective.
+  void ResolvePoint(DirichletEntry &e) const;
   void CheckComponents(const std::vector<int> &components, const std::string &what) const;
   void Assemble(LoadEntry &e) const;
   void WarnOverlaps() const;

@@ -509,6 +509,15 @@ void DescribeEntries(const AppConfig &cfg, std::vector<std::string> &lines)
                     DescribeTimeDependence(Schedule::Constant(), c.center) + ", penalty " +
                     DescribeTimeDependence(c.schedule, {}));
   }
+  for (const ThermalCondition &c : cfg.bcs.temperature)
+  {
+    lines.push_back("  temperature " + c.name + ": " + DescribeTimeDependence(c.schedule, {c.expression}));
+  }
+  for (const ThermalCondition &c : cfg.bcs.heat_flux)
+  {
+    lines.push_back("  heat flux " + c.name + " (per " + (c.current_area ? "current" : "reference") +
+                    " area): " + DescribeTimeDependence(c.schedule, {c.expression}));
+  }
   if (!cfg.body_force.Empty())
   {
     lines.push_back("  body force: " +

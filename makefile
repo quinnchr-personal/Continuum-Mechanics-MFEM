@@ -167,7 +167,7 @@ $(MESH_DIR)/column_euler.msh: $(MESH_DIR)/box.geo $(MESH_DIR)/perturb_column.py
 	python3 $(MESH_DIR)/perturb_column.py $@.straight $@ 20 0.005 && rm -f $@.straight
 
 # Fast gates (S1-S3 + mixed + homogeneous deformations + loading + small strain + dynamics): serial unit and MMS tests.
-CHECK_TESTS := $(addprefix $(BUILD_DIR)/tests/,test_base test_materials test_solid_mms test_mixed test_homogeneous test_loading test_linear_elasticity test_dynamics test_viscoelastic test_axisymmetric)
+CHECK_TESTS := $(addprefix $(BUILD_DIR)/tests/,test_base test_materials test_solid_mms test_mixed test_homogeneous test_loading test_linear_elasticity test_dynamics test_viscoelastic test_axisymmetric test_thermoelastic)
 check: $(CHECK_TESTS)
 	@for t in $(CHECK_TESTS); do echo "== $$t"; ./$$t || exit 1; done
 
@@ -226,6 +226,7 @@ test: check $(APP) $(BUILD_DIR)/tests/test_benchmarks $(BUILD_DIR)/tests/test_pa
 	$(MFEM_MPIEXEC) -np 4 $(BUILD_DIR)/tests/test_benchmarks
 	$(MFEM_MPIEXEC) -np 4 $(BUILD_DIR)/tests/test_loading
 	$(MFEM_MPIEXEC) -np 2 $(BUILD_DIR)/tests/test_axisymmetric
+	$(MFEM_MPIEXEC) -np 2 $(BUILD_DIR)/tests/test_thermoelastic
 	$(BUILD_DIR)/tests/test_verification
 	$(BUILD_DIR)/tests/test_benchmarks --cook-ratio-gate
 
