@@ -169,6 +169,12 @@ the verification manual.
     (Section~\ref{sec:smallstrain}).  It is a material of the same kernels,
     with the kinematics as a compile-time trait; the problem is linear and
     is solved by one Newton step.
+  \item Finite viscoelasticity (Section~\ref{sec:viscoelasticity}): Maxwell
+    branches over any decoupled model, with the viscous right Cauchy--Green
+    tensor of each branch as a quadrature-point internal variable, integrated
+    by the reference's implicit update, in both formulations and with
+    inertia; the first history-dependent material of the library, with a
+    quasi-static analysis in physical time (the \code{time} block).
   \item Two formulations: a pure displacement formulation with the
     assembled tangent, and a mixed displacement--pressure formulation on
     Taylor--Hood pairs for near- and fully incompressible materials.
@@ -177,9 +183,9 @@ the verification manual.
     pointwise at the material level).
   \item Boundary conditions: prescribed displacements on all or some
     components, nominal tractions, dead normal pressures, follower
-    pressures per unit current area, and a body force per unit mass, each
-    with its own load schedule and data given as expressions of the
-    reference coordinates and the pseudo-time.
+    pressures per unit current area, a body force per unit mass, and a
+    rigid-sphere penalty contact, each with its own load schedule and data
+    given as expressions of the reference coordinates and the pseudo-time.
   \item Consistent tangents from forward-mode automatic differentiation of
     the same code that evaluates the stress (Ogden and the compressible
     plane-stress adapter use analytic or implicit derivatives where
@@ -197,11 +203,12 @@ the verification manual.
     the kinetic and internal energy with the external work.
 \end{itemize}
 
-Not implemented: explicit time integration, physical damping, modal
-analysis, internal variables and inelasticity,
-temperature dependence, contact, point loads, multi-point or periodic
-constraints, discontinuous Galerkin or hybridised discretisations, partial
-assembly, and device execution.  Section~\ref{sec:seam} lists what of the
+Not implemented: explicit time integration, physical damping other than
+the Maxwell branches, modal analysis, inelasticity other than the viscous
+flow of those branches (plasticity, damage), temperature dependence,
+contact other than the rigid-sphere penalty, point loads, multi-point or
+periodic constraints, discontinuous Galerkin or hybridised discretisations,
+partial assembly, and device execution.  Section~\ref{sec:seam} lists what of the
 present code is specific to the solid and what a second physics would
 generalise.
 
@@ -1372,6 +1379,134 @@ is extended for the mass-dominated displacement block
 (Section~\ref{sec:saddlesolver}).
 
 %============================================================================
+\section{Finite viscoelasticity}
+\label{sec:viscoelasticity}
+%============================================================================
+
+Listing Maxwell branches under a decoupled model (\code{material.branches})
+makes that model the equilibrium branch of a finite viscoelastic material:
+a spring in parallel with $n$ Maxwell elements, each a neo-Hookean spring
+of modulus $G_i$ in series with a dashpot of relaxation time $\tau_i$.  It
+is the model of the finite viscoelasticity chapter of Anand's coupled
+theories and of its FEniCSx codes \cite{anandbook} (the VHB~4910
+parameters of their examples are those of Wang et al.\ \cite{wang2016}),
+and the first history-dependent material of the library.  This section
+gives the model, its time integration, and what a history changes in the
+kernels and in the stepping.
+
+\subsection{Constitutive model}
+
+Each branch $i$ carries a multiplicative decomposition of its own,
+$\bF = \bF^{e}_i\bF^{v}_i$, with the viscous right Cauchy--Green tensor
+$\bC^v_i = \bF^{vT}_i\bF^v_i$ as its internal variable: symmetric, of unit
+determinant (the viscous flow is isochoric) and equal to $\bI$ at rest.
+With $\bC = \bF^T\bF$ and $\bar\bC = J^{-2/3}\bC$ the free energy per unit
+reference volume is
+\begin{equation}
+  \Psi = \Psi_{\mathrm{iso}}(\bar\bC) + \sum_{i=1}^n \frac{G_i}{2}\bigl[\tr(\bar\bC\,\bC^{v-1}_i) - 3\bigr] + U(J),
+  \label{eq:viscoenergy}
+\end{equation}
+where $\Psi_{\mathrm{iso}}$ and $U$ are those of the equilibrium branch,
+any model of Section~\ref{sec:classification} with a split;
+$\tr(\bar\bC\,\bC^{v-1}_i)$ is the first invariant of the elastic part
+$\bC^e_i = \bF^{v-T}_i\bar\bC\bF^{v-1}_i$ of the branch, so each branch is
+a neo-Hookean spring on its own elastic stretch.  The first
+Piola--Kirchhoff stress is the derivative at fixed $\bC^v_i$,
+\begin{equation}
+  \bP = \bP_{\mathrm{iso}}(\bF) + \sum_i G_i J^{-2/3}\Bigl[\bF\bC^{v-1}_i - \tfrac13(\bC:\bC^{v-1}_i)\,\bF^{-T}\Bigr] + U'(J)\,J\bF^{-T},
+  \qquad
+  \bsig^{\mathrm{neq}}_i = \frac{G_i}{J}\dev\bigl(\bFb\,\bC^{v-1}_i\bFb^T\bigr),
+  \label{eq:viscostress}
+\end{equation}
+deviatoric in the Kirchhoff sense like every isochoric stress of the
+library: the branches join $\bP_{\mathrm{iso}}$, while the volumetric law,
+the mixed constraint and the pressure field remain those of the equilibrium
+branch.  The viscous flow of a branch is driven by its non-equilibrium
+Mandel stress $\bM^e_i = G_i\dev\bC^e_i$: the viscous stretching is
+$\bm D^v_i = \bM^e_i/(2\eta_i)$ with the viscosity $\eta_i = G_i\tau_i$,
+which in terms of the internal variable
+($\dot\bC^v_i = 2\bF^{vT}_i\bm D^v_i\bF^v_i$) reads
+\begin{equation}
+  \dot\bC^v_i = \frac{1}{\tau_i}\Bigl[\bar\bC - \tfrac13\tr(\bar\bC\,\bC^{v-1}_i)\,\bC^v_i\Bigr] .
+  \label{eq:viscoflow}
+\end{equation}
+Its trace term is what keeps $\det\bC^v_i = 1$, since
+$\tr(\bC^{v-1}_i\dot\bC^v_i) = 0$.  In the small-strain limit, with
+$\bC^v_i = \bI + 2\beps^v_i$ and $\bar\bC = \bI + 2\dev\beps$,
+\eqref{eq:viscoflow} is the Maxwell element
+$\tau_i\dot\beps^v_i = \dev\beps - \beps^v_i$ and the branch stress is
+$2G_i(\dev\beps - \beps^v_i)$: the instantaneous shear modulus is
+$\mu + \sum_i G_i$, the relaxed one $\mu$, and a held strain relaxes with
+the times $\tau_i$.  The equilibrium branch alone is the hyperelastic
+material of the input without the key; every branch adds six internal
+variables per quadrature point.
+
+\subsection{Time integration of the internal variables}
+
+Over a step from $t_n$ to $t_{n+1} = t_n + \Delta t$ the reference's codes
+update each branch by
+\begin{equation}
+  \bC^v_{i,n+1} = \frac{\bm A_i}{(\det\bm A_i)^{1/3}}, \qquad
+  \bm A_i = \bC^v_{i,n} + \frac{\Delta t}{\tau_i}\,\bar\bC_{n+1},
+  \label{eq:viscoupdate}
+\end{equation}
+the implicit Euler step of \eqref{eq:viscoflow} in which the trace term, a
+scalar multiple of $\bC^v_i$, is replaced by the projection onto unit
+determinant that it stands for in the continuous equation.  The update is
+first-order accurate in $\Delta t$, symmetric and unimodular by
+construction, and this code uses it as it stands, so that both codes
+integrate the same discrete model.  The stress of the step is
+\eqref{eq:viscostress} at $\bF_{n+1}$ with $\bC^v_{i,n+1}$ from
+\eqref{eq:viscoupdate}: a material function of $\bF$ with the accepted
+history $\bC^v_{i,n}$ as a parameter.  The dual-number tangent of
+Section~\ref{sec:ad} differentiates through the update, so the consistent
+tangent $\partial\bP/\partial\bF$ at fixed $\bC^v_{i,n}$ includes
+$\partial\bC^v_{i,n+1}/\partial\bF$ with no further code (the energy
+\eqref{eq:viscoenergy} is not a potential for that stress once
+$\bC^v_{i,n+1}$ depends on $\bF$; the tangent is that of the residual, as
+in the reference).  With $\Delta t = 0$ the update returns the accepted
+value and the stress is that of the accepted state; as
+$\Delta t/\tau_i \to \infty$ the branch relaxes to $\bC^v_i = \bar\bC$ and
+carries no stress.  In a held small strain the branch stress decays as
+$(1 + \Delta t/\tau_i)^{-n}$ over $n$ steps, the implicit Euler image of
+$e^{-t/\tau_i}$.
+
+\subsection{Histories in the kernels and in the stepping}
+
+The material (\file{kernels/materials/viscoelastic.hpp}, the class template
+\code{Viscoelastic<Base>} over the six decoupled models) evaluates its
+stresses and energies from $\bF$, the accepted history block $h$ of the
+point (six numbers per branch, the components $xx, yy, zz, xy, yz, xz$ of
+$\bC^v_i$) and $\Delta t$, and writes the updated block with \code{Update}.
+The kernels keep their stateless contract: a per-point view
+(\file{kernels/history\_bound.hpp}) binds the material to the block and to
+$\Delta t$ and offers $\bP(\bF)$, $\Psi(\bF)$, $\bP_{\mathrm{iso}}(\bF)$
+and $\Psi_{\mathrm{iso}}(\bF)$ to the quadrature-point functions of
+Section~\ref{sec:fem}; everything that does not depend on the history
+(the volumetric law, $\kappa$, the small-strain shear modulus that scales
+the saddle-point preconditioner) is read from the material itself.  The
+blocks live in a \code{HistoryField} (\file{kernels/history\_field.hpp}) on
+the kernels' quadrature rule, order $2k + 3$ on each element's geometry,
+with an accepted and a working copy and the length of the step under way;
+a region with fewer branches uses the head of its block.  Both formulations
+follow one protocol.  \code{SetLoadFactor(t)} makes $\Delta t = t - t_n$
+the length of the step under way, $t_n$ being the time of the last accepted
+step.  The accept hook of the stepper (Section~\ref{sec:loadstepping}),
+called once per converged increment, evaluates \eqref{eq:viscoupdate} at
+every quadrature point from the converged displacement and commits it,
+after which $\Delta t = 0$ until the next step begins, so that reactions,
+energies and output fields evaluated between steps carry the stress of the
+accepted state.  A rejected increment leaves the history untouched, so
+bisection needs nothing else, and \code{ResetHistory} restores the rest
+state.  In a dynamic analysis the decorator of Section~\ref{sec:dynamics}
+advances the wrapped problem's history last in its own accept hook, after
+the static residual of the step has served the balance and the external
+work: inertia and branches are independent features of one problem.  A
+history-dependent material needs a physical time, so the input must carry a
+\code{time} block (Section~\ref{sec:loadstepping}) or a \code{dynamics}
+block; the pseudo-time of a plain quasi-static analysis has no rate.
+
+%============================================================================
 \section{Boundary conditions and loading}
 \label{sec:loads}
 %============================================================================
@@ -1465,7 +1600,40 @@ pressure coincide at $\bF = \bI$ and differ at $O(p^2)$.  The
 implementation (\file{kernels/follower\_pressure.hpp}) is described in
 Section~\ref{sec:folkernel}.
 
+\subsection{Rigid-sphere penalty contact}
+\label{sec:contact}
+
+A \code{contact} entry of the boundary conditions (\code{type:
+rigid\_sphere}) presses a rigid sphere of radius $r$ and centre $\bm c(t)$,
+an expression of the time, against a boundary $\Gamma_R^c$ through the
+penalty of the reference's codes: per unit reference area the energy
+\begin{equation}
+  E = \frac{k}{2}\,\bigl\langle r^2 - |\bx - \bm c|^2\bigr\rangle_+^2, \qquad \bx = \bX + \bu,
+\end{equation}
+whose derivative is the traction on the body
+\begin{equation}
+  \bt = -\frac{\partial E}{\partial\bu} = 2k\,g\,(\bx - \bm c), \qquad
+  g = \bigl\langle r^2 - |\bx - \bm c|^2\bigr\rangle_+ ,
+\end{equation}
+which pushes whatever lies inside the sphere out of it along the radius
+and vanishes outside.  The boundary term of the nonlinear form and its
+tangent are
+\begin{equation}
+  R_{\text{con}}(\bu; \bw) = -s(t)\int_{\Gamma_R^c}\bt\cdot\bw\ud A, \qquad
+  \frac{\partial\bt}{\partial\bu} = 2k\bigl[g\,\bI - 2(\bx - \bm c)\otimes(\bx - \bm c)\bigr] \quad (g > 0),
+\end{equation}
+symmetric, with the kink of the penalty at $g = 0$; $s(t)$ is the entry's
+schedule on the penalty (constant by default; the indenter moves through
+$\bm c(t)$).  The resultant force and moment of $\bt$ on the body are
+reported with the reactions under the entry's name: the physics keeps a
+second form holding the contact integrator alone, whose residual at the
+accepted state gives the nodal contact forces, summed like a reaction
+(Section~\ref{sec:reactions}).  The face kernel
+(\file{kernels/rigid\_sphere\_contact.hpp}, both formulations) integrates
+with the rule of the follower pressure.
+
 \subsection{Reactions}
+\label{sec:reactions}
 
 The reaction of a Dirichlet entry is the resultant of the nodal forces the
 constraint exerts on the body: the residual \eqref{eq:weak} evaluated with
@@ -1627,6 +1795,7 @@ finite differences in the tests.
 %============================================================================
 
 \subsection{Quasi-static load stepping}
+\label{sec:loadstepping}
 
 The stepper (\file{solvers/quasi\_static.hpp}) advances $t$ through a
 sequence of breakpoints $0 < t_1 < \dots < t_n = 1$ (equal increments from
@@ -1663,6 +1832,21 @@ the trap that excludes the tangent predictor for linear problems.
 \code{substep.min\_dt} is a time in a dynamic analysis ($10^{-3}$ of the
 smallest planned step by default); \code{load\_steps}, \code{steps} and
 \code{predictor} of the solver section are input errors.
+
+\paragraph{Quasi-static analysis in physical time.}
+A \code{time} block (\code{t\_final} and \code{dt} or \code{steps}, the
+keys of the dynamics block without a scheme) runs the quasi-static problem
+through the same loop in physical time (\code{SolveInTime}, of which the
+dynamic analysis is the same function under its older name): the loads
+follow the physical time exactly as under \code{dynamics} (schedules on
+$[0, t_{\text{final}}]$, an entry without one is constant), the increments
+are the time steps, and the accept hook advances a rate-dependent
+material's history by the step length (Section~\ref{sec:viscoelasticity}).
+Nothing else changes: there is no inertia, Newton and bisection are those
+of the pseudo-time, the tangent predictor stays available (the start of a
+step is not an extrapolation in time), and \code{substep.min\_dt} is a
+time.  \code{load\_steps} and \code{steps} of the solver section are input
+errors with the block, and the two blocks exclude each other.
 
 \paragraph{Initial guess of an increment.}
 By default the increment starts from the last converged state $x_n$ with
@@ -2010,6 +2194,9 @@ $N$ & Arruda--Boyce links per chain & \code{material.N} \\
 $\mathcal{L}^{-1}$ & inverse Langevin approximation, \code{pade} (default) or \code{series} & \code{material.inverse\_langevin} \\
 $\mu_r, \alpha_r$ & Ogden terms & \code{material.mu\_r}, \code{material.alpha\_r} \\
 $\rho_R$ & reference density, also by region & \code{material.rho0} \\
+$G_i, \tau_i$ & Maxwell branches: non-equilibrium shear modulus, relaxation time & \code{material.branches} \\
+$t_{\text{final}}, \Delta t$ (rate-dependent, no inertia) & end time, time step & \code{time.t\_final}, \code{dt} | \code{steps} \\
+$r, \bm c(t), k$ & rigid sphere: radius, centre, penalty & \code{bcs.contact} \\
 $t_{\text{final}}, \Delta t$ & end time, time step & \code{dynamics.t\_final}, \code{dt} | \code{steps} \\
 $\beta, \gamma$; $\alpha$; $\rho_\infty$ & time integration parameters & \code{dynamics.scheme} and its keys \\
 $\bu_0, \bm v_0$ & initial displacement, velocity & \code{dynamics.initial} \\
@@ -2041,17 +2228,19 @@ File & Content \\
 \file{kernels/total\_lagrangian.hpp} & quadrature-point functions and the displacement integrator \\
 \file{kernels/mixed\_total\_lagrangian.hpp} & $u$--$p$ quadrature-point functions and block integrator \\
 \file{kernels/follower\_pressure.hpp} & follower-pressure face integrators (both formulations) \\
-\file{kernels/materials/*.hpp} & material functors (hyperelastic, \file{linear\_elastic.hpp}), isochoric helpers, volumetric laws, spectral solver, plane-stress adapter, dual tangent \\
+\file{kernels/rigid\_sphere\_contact.hpp} & rigid-sphere penalty contact face integrators (both formulations) \\
+\file{kernels/history\_field.\{hpp,cpp\}}, \file{history\_bound.hpp} & quadrature-point history of a material; its per-point binding to the kernels' stateless contract \\
+\file{kernels/materials/*.hpp} & material functors (hyperelastic, \file{linear\_elastic.hpp}, the \file{viscoelastic.hpp} adapter with Maxwell branches), isochoric helpers, volumetric laws, spectral solver, plane-stress adapter, dual tangent \\
 \file{kernels/materials/kinematics.hpp} & finite or small strain as a trait of the material: Cauchy stress, volume ratio, strain \\
 \file{kernels/materials/materials.\{hpp,cpp\}} & material variants, factory, moduli resolution, region tables \\
-\file{physics/loads.\{hpp,cpp\}} & load set: Dirichlet entries, dead loads, follower scales, schedules, reactions \\
+\file{physics/loads.\{hpp,cpp\}} & load set: Dirichlet entries, dead loads, follower and contact scales, schedules, reactions and resultants \\
 \file{physics/solid\_mechanics\_tl.\{hpp,cpp\}} & displacement formulation module \\
 \file{physics/mixed\_solid\_mechanics\_tl.\{hpp,cpp\}} & mixed formulation module \\
 \file{physics/solid\_problem.\{hpp,cpp\}} & common interface, factory by formulation, YAML load installer \\
 \file{physics/quadrature\_fields.\{hpp,cpp\}} & quadrature quantities and their presentations \\
 \file{physics/dynamic\_solid\_problem.\{hpp,cpp\}} & inertia as a decorator over a solid problem: mass matrix, step equation, initial state, energies, reactions with inertia \\
 \file{solvers/time\_integration.\{hpp,cpp\}} & parameters of the generalized-$\alpha$ family, spectral radius at infinity \\
-\file{solvers/quasi\_static.\{hpp,cpp\}} & load stepping and time stepping with bisection \\
+\file{solvers/quasi\_static.\{hpp,cpp\}} & load stepping and time stepping (quasi-static in physical time, dynamic) with bisection \\
 \file{solvers/newton.\{hpp,cpp\}} & damped Newton with Armijo backtracking; acceptance of a linear problem at the floor of its residual \\
 \file{solvers/linear\_solver.\{hpp,cpp\}} & GMRES/CG + BoomerAMG with the systems fallback \\
 \file{solvers/saddle\_point\_solver.\{hpp,cpp\}} & augmented-Lagrangian FGMRES for the $u$--$p$ Jacobian; inertial part of the Schur complement approximation \\
@@ -2079,6 +2268,8 @@ File & Content \\
 \bibitem{chunghulbert} J. Chung, G.\,M. Hulbert, A time integration algorithm for structural dynamics with improved numerical dissipation: the generalized-$\alpha$ method, \emph{J. Appl. Mech.} 60 (1993) 371--375.
 \bibitem{cahouetchabard} J. Cahouet, J.-P. Chabard, Some fast 3D finite element solvers for the generalized Stokes problem, \emph{Int. J. Numer. Methods Fluids} 8 (1988) 869--895.
 \bibitem{mfem} R. Anderson et al., MFEM: A modular finite element methods library, \emph{Comput. Math. Appl.} 81 (2021) 42--74.
+\bibitem{anandbook} L. Anand, \emph{Introduction to Coupled Theories in Solid Mechanics}, Oxford University Press, 2025; companion codes by E.\,M. Stewart, S.\,A. Chester and L. Anand, \url{solidmechanicscoupledtheories.github.io}.
+\bibitem{wang2016} S. Wang, M. Decker, D.\,L. Henann, S.\,A. Chester, Modeling of dielectric viscoelastomers with application to electromechanical instabilities, \emph{J. Mech. Phys. Solids} 95 (2016) 213--229.
 \end{thebibliography}
 
 \end{document}

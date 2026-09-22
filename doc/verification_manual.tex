@@ -28,6 +28,7 @@
 \newcommand{\bP}{\bm{P}}
 \newcommand{\bF}{\bm{F}}
 \newcommand{\bB}{\bm{B}}
+\newcommand{\bC}{\bm{C}}
 \newcommand{\bI}{\bm{I}}
 \newcommand{\bK}{\bm{K}}
 \newcommand{\bM}{\bm{M}}
@@ -86,10 +87,13 @@ The checks form three tiers, each relying on the previous one.
     tangent, objectivity and small-strain limit.
   \item \textbf{Discretisation tests} (\file{tests/test\_solid\_mms},
     \file{test\_mixed}, \file{test\_homogeneous}, \file{test\_loading},
-    \file{test\_linear\_elasticity}):
+    \file{test\_linear\_elasticity}, \file{test\_dynamics},
+    \file{test\_viscoelastic}):
     patch tests, assembled Jacobians against finite differences, manufactured
     solutions with measured convergence rates, homogeneous states against
-    closed forms, and the boundary-condition and load-scheduling features.
+    closed forms, the boundary-condition and load-scheduling features, the
+    time integration, and the quadrature-point history of a rate-dependent
+    material with the rigid-sphere contact.
   \item \textbf{Application cases} (\file{apps/input/}, driven by
     \file{tests/test\_verification}, \file{test\_linear\_verification},
     \file{test\_benchmarks}, \file{test\_loading}, \file{test\_parallel} and
@@ -109,7 +113,7 @@ Target & Content \\
 \midrule
 \code{make} & \file{build/libcmf.a}, \file{build/apps/solid\_mechanics}, \file{build/tests/*} \\
 \code{make meshes} & regenerates \file{apps/mesh/*.msh} from the \file{.geo} sources with Gmsh (the \file{.msh} files are kept in the tree) \\
-\code{make check} & serial, about 45 s: \file{test\_base}, \file{test\_materials}, \file{test\_solid\_mms}, \file{test\_mixed}, \file{test\_homogeneous}, \file{test\_loading}, \file{test\_linear\_elasticity}, \file{test\_dynamics} \\
+\code{make check} & serial, about 60 s: \file{test\_base}, \file{test\_materials}, \file{test\_solid\_mms}, \file{test\_mixed}, \file{test\_homogeneous}, \file{test\_loading}, \file{test\_linear\_elasticity}, \file{test\_dynamics}, \file{test\_viscoelastic} \\
 \code{make homogeneous} & the executable on the homogeneous-deformation inputs, compared with the closed forms by \file{apps/homogeneous\_compare.py} \\
 \code{make elastic\_bar} & the elastic bar exercise (Section~\ref{sec:elasticbar}): table and plot of force against displacement by \file{apps/elastic\_bar\_compare.py} \\
 \code{make plate\_with\_hole} & the plate-with-a-hole exercise (Section~\ref{sec:platewithhole}): errors against Kirsch's closed form and plot by \file{apps/plate\_with\_hole\_compare.py} \\
@@ -232,6 +236,22 @@ with $\det\bF > 0.3$:
     coupled models refuse it;
   \item resolution of $(\mu, \kappa)$ from every admissible key combination
     and the refusal of the inadmissible ones;
+  \item the viscoelastic adapter (isochoric neo-Hookean with two Maxwell
+    branches, evaluated with an explicit history block and step length): at
+    rest with $\Delta t = 0$ the stress equals the isochoric neo-Hookean
+    model of modulus $\mu + \sum G_i$ ($10^{-16}$); fully relaxed
+    ($\Delta t/\tau \to \infty$) it equals the equilibrium branch
+    ($3\times10^{-12}$); the updated $\bC^v$ has unit determinant
+    ($3\times10^{-16}$); with a history the isochoric stress is deviatoric in
+    the Kirchhoff sense and objective ($4\times10^{-15}$),
+    $\partial\Psi/\partial\bF = \bP$ at fixed $\bC^v$ ($10^{-16}$), and the
+    dual tangent through the update matches finite differences
+    ($10^{-10}$); under a held small deviatoric strain the branch stresses
+    decay as $2G_i\,\dev\beps\,(1 + \Delta t/\tau_i)^{-n}$ over six steps
+    ($1.6\times10^{-6}$, the $O(\epsilon)$ finite-strain terms at
+    $\epsilon = 10^{-6}$); every decoupled base rests stress-free; the
+    factory wraps the model of \code{branches}, names it, refuses the
+    plane-stress adapter and \code{linear\_elastic};
   \item \code{linear\_elastic}: the checks above without objectivity (the
     model is not objective, by construction) and with the small-strain limit
     taken at a strain of $5\%$, where it holds to $10^{-14}$ because the
@@ -485,6 +505,58 @@ in seven seconds.
     $\rho_\infty$ times the step before ($0.6000$, seven times): the
     pressure mode.  At finite $\kappa$ the initial pressure is
     $\kappa\,\dive\bu_0$ to $6\times10^{-14}$.
+\end{itemize}
+
+\subsection{Finite viscoelasticity and contact (\texttt{test\_viscoelastic})}
+\label{sec:testvisco}
+The quadrature-point history behind the kernels (Section~``Finite
+viscoelasticity'' of the theory manual), the rigid-sphere penalty contact and
+the input schema, on the unit cube of $2^3$ Q2 hexahedra (Q2--Q1 in the
+mixed formulation), isochoric neo-Hookean with $\mu = 1$, $\kappa = 100$ and
+two Maxwell branches $(G, \tau) = (0.5, 0.2), (0.25, 2)$, the sparse direct
+solver and the tangent predictor.
+\begin{itemize}[nosep]
+  \item \textbf{Relaxation under a held stretch}, both formulations: rollers
+    on three planes and $u_y = 0.15$ on the opposite face from the first of
+    six steps of $\Delta t = 0.1$.  The state is homogeneous and the
+    lateral faces free, so the reaction per unit area is $P_{22}$; the
+    material point evaluated along the sequence of the solution's $\bF$
+    (the lateral stretch read from the corner) with the manual history
+    update predicts every reaction: agreement to $10^{-13}$ at every step
+    (the stress relaxes from 0.608 to 0.477).  After the steps a rejected
+    increment is imitated (\code{SetLoadFactor} to two other times without
+    acceptance): the reaction equals the material point with the new step
+    length and the accepted history ($10^{-9}$); \code{ResetHistory} and
+    one step reproduce the first reaction.
+  \item \textbf{Jacobian with a history}, both formulations: after two
+    accepted steps of an affine motion prescribed on all faces, a third step
+    under way at a perturbed interior state; $\bm J\bm v$ against central
+    differences of the residual, $2\times10^{-11}$ and $5\times10^{-11}$
+    (the tangent through the update).
+  \item \textbf{Rigid-sphere contact}, both formulations: the undeformed top
+    face of the cube wholly inside a sphere of radius 10 whose centre sits
+    $d = 0.1$ above it on its axis, so that the penalty integrand is a
+    polynomial: the resultant equals the closed form
+    $F_z = -2k(r - d)[A(r^2 - (r - d)^2) - \tfrac16]$ with the moments
+    $M_x = F_z/2$, $M_y = -F_z/2$ and $F_x = F_y = M_z = 0$, to $10^{-12}$;
+    the tangent of the contact term against finite differences at a
+    perturbed state ($10^{-10}$); and, after eight load steps with the
+    penalty ramped, the contact resultant balances the reaction of the
+    supported bottom face to $10^{-9}$ (the top centre sinks by 0.100).
+  \item \textbf{The dynamics decorator}: one trilinear hexahedron (every
+    node on the boundary) under the affine motion $\bu = t\bm H\bX$ on all
+    faces, three time steps with inertia against the same three steps of
+    the quasi-static problem in time: the states coincide and the static
+    residuals at the accepted state agree to round-off, while the rest
+    history gives a residual 11\% different, so the decorator does advance
+    the wrapped history.
+  \item \textbf{Schema}: the time block (\code{dt} and the segments,
+    schedules in physical time, \code{min\_dt} of the substeps), the
+    branches (of the base and of a region), the contact entry and its
+    defaults, and the refusals: branches without a time or dynamics block,
+    both blocks, \code{load\_steps} with the block, branches on a coupled
+    model, a non-positive $\tau$, a contact without \code{center} or of an
+    unknown type.
 \end{itemize}
 
 \subsection{Parallel consistency (\texttt{test\_parallel})}
@@ -1248,8 +1320,11 @@ the discretisation error.
 \label{sec:anand}
 %============================================================================
 
-The inputs of \file{apps/input/anand\_coupled\_theories/finite\_elasticity/}
-reproduce a published set of finite element examples.
+The inputs of \file{apps/input/anand\_coupled\_theories/} reproduce two
+chapters of a published set of finite element examples, one subdirectory per
+chapter.
+
+\subsection{Finite elasticity (\texttt{finite\_elasticity/})}
 
 \paragraph{Reference.}
 The ten "Finite Elasticity" examples of Lallit Anand's \emph{Introduction
@@ -1412,6 +1487,122 @@ are this code's mesh, agree with ours to $0.02\%$ at every angle
 the runs take 16\,s (01) to 12\,min (05) on 4 ranks; the reference's
 notebooks, serial, 3\,s (3D01) to an hour (3D10).
 
+\subsection{Finite viscoelasticity (\texttt{finite\_viscoelasticity/})}
+\label{sec:anandvisco}
+
+\paragraph{Reference.}
+The twelve "Finite Viscoelasticity" examples of the same site, as fourteen
+inputs (the rate-dependent tension is one input per rate).  The material is
+the finite viscoelastic model of the theory manual's section of that name:
+an Arruda--Boyce equilibrium branch, Pad\'e inverse Langevin, with Maxwell
+branches (\code{material.branches}) and the reference's quadratic
+volumetric law, for VHB~4910 ($G_0 = 15.36$\,kPa, $\lambda_L = 5.85$, the
+three branches of Wang et al.\ \cite{wang2016}: $(G_i, \tau_i) = (26.06, 0.6074)$,
+$(26.53, 6.56)$, $(10.83, 61.25)$ in kPa and s) and for NBR
+($G_0 = 400$\,kPa, $\lambda_L = 10$, five branches with $\tau_i$ from 1 to
+$10^4$\,s, $\tau_1 = 1$\,ms in the dynamic cases), $K = 1000\,G_0$, mixed
+Q2--Q1 or P2--P1, the sparse direct solver, and the reference's geometry,
+loads, time histories and step counts.  The quasi-static cases run in
+physical time (the \code{time} block), 10 and 11 are dynamic
+(\code{dynamics}, the trapezoidal rule as the reference), and 12 presses a
+rigid sphere into a block through the reference's penalty contact
+(\code{bcs.contact}).  Every input prints its reactions and the probes of
+the reference's plots after every step.
+
+\begin{center}
+\small
+\begin{tabular}{@{}l l p{6.6cm} p{4.2cm}@{}}
+\toprule
+Input & Reference & Problem & Mesh: this code / reference \\
+\midrule
+\file{01\_uniaxial\_equilibrium} & FV01 & 1\,mm cube to the stretch 9 at $10^{-4}$/s (80\,000\,s, 50 steps): the equilibrium branch alone & $2^3$ hexahedra / 6 tets \\
+\file{02\_uniaxial\_rate\_*} & FV02 & triangle wave to the stretch 2.5 and back at 0.01, 0.03, 0.05\,/s, 100 steps each & the same \\
+\file{03\_stress\_relaxation} & FV03 & stretch 1.5 in 0.1\,s, held to 10\,s, 200 steps & the same \\
+\file{04\_creep} & FV04 & dead traction 50\,kPa in 0.1\,s, held to 10\,s, 200 steps & the same \\
+\file{05\_stretch\_hold} & FV05 & four 5\,s ramps of 0.25 in stretch with 100\,s holds up to 2, then back; 840\,s, 2000 steps & the same \\
+\file{06\_sinusoidal\_tension} & FV06 & 5\,mm cube, $u_y = 2.5\sin 2\pi t$\,mm, two cycles, 100 steps & $2^3$ hexahedra / 6 tets \\
+\file{07\_sinusoidal\_shear} & FV07 & 1\,mm cube, base clamped, top $u_x = \sin 2\pi t$, two cycles, 100 steps & $8\times8\times4$ hexahedra / $6\times6\times4$ box, 864 tets \\
+\file{08\_cube\_footing} & FV08 & the footing of finite elasticity 07 in NBR: follower pressure to 1500\,kPa at 30\,s, off at 60\,s (24 steps), recovery to 460\,s (10 steps) & 4766 tets / $10\times10\times6$ box, 3600 tets \\
+\file{09\_bushing\_shear} & FV09 & bushing $R = 22.5$, $L = 19.3$ with a concave waist, bottom clamped, top sheared $\pm10$\,mm in 30\,s ramps; 120\,s, 200 steps & 7087 curved tets / 2000 straight tets \\
+\file{10\_beam\_impulse} & FV10 & $20\times2\times2$ cantilever, 2\,kPa shear pulse over 8\,ms, damped free vibration to 0.4\,s, 200 steps, dynamic & $20\times4\times2$ hexahedra / $12\times6\times2$ box, 864 tets \\
+\file{11\_column\_buckling} & FV11 & the column of finite elasticity 08 in NBR, shortened by 0.75\,mm along a smooth step over 20\,ms, held to 40\,ms; 200 steps, dynamic & $4\times4\times50$ hexahedra / the same box, 4800 tets \\
+\file{12\_sphere\_indentation} & FV12 & 50\,mm cube, a rigid sphere of radius 10 pushed 10\,mm into the corner of its top face in 60\,s (50 steps), held to 460\,s (10 steps) & 15\,225 tets, 1\,mm under the indenter / $10\times10\times6$ box, 3600 tets (the coarse notebook) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\paragraph{Differences from the reference that change the numbers.}
+Hexahedra replace the boxes of tetrahedra, the curved bushing and the
+graded indented cube are this code's own Gmsh meshes, and the reference
+integrates at degree 2 (degree 4 in the creep and indentation notebooks)
+where this code integrates at $2k + 3 = 7$.  The rate-dependent tension
+notebook carries a typo: its equilibrium Cauchy stress is written with
+$J^{-1.3}$ where the other eleven notebooks and this code have $J^{-1/3}$,
+a factor $J^{-1.933}$ on the deviatoric stress.  Both the published
+histories and those of the corrected notebook
+(\file{reference/02\_uniaxial\_rate\_*\_corrected.csv},
+\file{reference/scripts/FV02\_fixed\_run.py}) are kept and plotted.  For
+three cases the inputs of \file{reference/same\_mesh/} run this code on the
+reference's own meshes (dolfinx's \code{create\_box} written as Gmsh files
+by \file{export\_box.py}), so that the two codes are compared on the same
+elements.
+
+\paragraph{Plots.}
+\file{apps/anand\_visco\_plots.py} reproduces the reference's figures, one
+per figure (\file{02\_uniaxial\_rates} gathers the three rates), from the
+ParaView output or the logs of the runs with the readers of
+\file{anand\_plots.py}, and overlays the reference's histories
+(\file{reference/<case>.csv}: its notebooks' \code{timeHist} arrays with
+the reaction of the loaded face added by the run scripts,
+\file{reference/README.md}) and the experiments its pages show
+(\file{reference/exp\_data/}: Wang et al.\ for the equilibrium curve,
+Hossain et al.\ \cite{hossain2012} for the three rates).
+
+\paragraph{What the plots show.}
+With the reference's values in parentheses.  The VHB block tests (01 to
+06) are homogeneous states, and their reactions equal the reference's to
+$10^{-9}$ or better at every step: the equilibrium curve carries
+402.07\,kPa at the stretch 9 (402.07); the relaxation test jumps to
+78.0\,kPa at the stretch 1.5 (all branches elastic, an instantaneous shear
+modulus of 78.8\,kPa against the relaxed 15.5) and relaxes to 29.47\,kPa at
+10\,s (29.47); the creep test reaches the stretch 1.279 at 0.1\,s and 1.942
+at 10\,s (1.942); the stretch-and-hold test relaxes towards the equilibrium
+curve from above on loading and from below on unloading, ending at
+$-1.74$\,kPa ($-1.74$); the sinusoidal tension loop runs from $-276$ to
+79\,kPa.  The three rates of 02 differ from the published reference by 0.4\%
+at the stretch 2.5, the typo above; with it corrected the reference agrees
+with this code to $10^{-9}$ (42.29, 49.89 and 55.36\,kPa at the peaks).
+The sheared block carries 58.2\,kPa at the shear strain 1 (58.8; on the
+reference's own $6\times6\times4$ box this code gives 58.79 and follows the
+reference to 0.2\% along the loop, the quadrature being what remains).  The
+footing corner settles 25.48\,mm at 1500\,kPa (25.41), springs back to
+3.42\,mm when the pressure is gone (3.42) and recovers to 0.13\,mm at
+460\,s (0.13).  The cantilever tip swings to 5.25\,mm at 12\,ms and
+$-4.18$\,mm at 30\,ms and is damped out by 0.3\,s (5.21, $-4.13$; the
+hexahedra and the reference's tetrahedra differ by a phase drift of up to
+5\% of the amplitude, and on the reference's own mesh the histories agree to
+$3\times10^{-5}$ of the amplitude at every step).  The column's axial force
+rises to 47.45\,mN at 11.6\,ms (47.51), collapses as the column snaps
+sideways, oscillates and settles at 16.4\,mN at 40\,ms (16.5).  The bushing carries
+a shear force of 339\,N at the shear strain 0.52 on the first cycle and
+347\,N on the reversed one (340, 349: 0.5\%, on 7087 curved tetrahedra
+against 2000 straight ones), its four half-cycles trace one hysteresis
+loop, and 37\,N remain when the top face is back in place (37.4).  The indenter force rises to 72.2\,N at the full depth of 10\,mm (71.5 on
+the reference's coarse box, the sum of its contact term; its traction
+integral 73.0), relaxes to 65.3\,N at 100\,s (66.6) and to 55.5\,N at
+460\,s (56.6), and the corner under the indenter follows the sphere to
+9.97\,mm (9.97); on the reference's own box
+(\file{reference/same\_mesh/12\_sphere\_indentation.yaml}) the force agrees
+to 1.7\%, what remains being the quadrature of the kinked penalty integrand
+(degree 4 on the faces in the reference, 7 here).  The reference applies
+its penalty on every boundary facet, so on the symmetry planes too; that
+makes no difference, since the lateral faces move down with the indenter
+and stay outside the sphere (checked on the same mesh: identical results).  The runs take 3\,s (the blocks) to 19\,min (the bushing, 200 steps on
+24\,000 unknowns; the indentation with 61\,000 unknowns takes 17\,min for its
+60 steps) on
+4 ranks with the direct solver; the reference's notebooks, serial, 1\,s to
+6\,min (FV11).
+
 %============================================================================
 \section{Summary}
 %============================================================================
@@ -1434,6 +1625,7 @@ column buckling & Euler load, Southwell & $\varepsilon_{cr}$ to $5\%$ & \file{te
 plate with hole & Kirsch & stresses to $2\%$ & \file{test\_verification} \\
 Cook's membrane & frozen values, self-convergence & $10^{-8}$; ratio gate not met & \file{test\_benchmarks} \\
 Anand examples & FEniCSx codes, analytical curves & plots & \file{anand\_plots.py} \\
+Anand viscoelasticity examples & FEniCSx codes, experiments & block tests $10^{-9}$, structures 0.2--1\%, same-mesh checks & \file{anand\_visco\_plots.py} \\
 parallel consistency & serial run & norms to $10^{-10}$ & \file{test\_parallel} \\
 \midrule
 linear operator & MFEM \code{ElasticityIntegrator}, hyperelastic tangents at $\bu = \bm 0$ & $10^{-12}$ & \file{test\_linear\_elasticity} \\
@@ -1454,6 +1646,9 @@ cantilever frequency & Euler--Bernoulli & $\omega_1$ to $2\%$ (measured $-0.17\%
 manufactured, space and time & exact field & $L^2$ rate $\ge 2.8$ in $h$; ratio $4.0 \pm 0.2$ in $\Delta t$ & \file{test\_dynamic\_verification} \\
 neo-Hookean block & self-convergence; energy & ratio $4.0 \pm 0.2$; $E \le E_0$; error $\propto \Delta t^2$ & same \\
 incompressible tube (mixed) & Knowles' equation & radius $0.5\%$, period $0.5\%$, mid-wall pressure $2\%$ & \file{test\_dynamic\_verification}, \file{dynamics\_compare.py} \\
+\midrule
+viscoelastic material & instantaneous and relaxed limits, Maxwell decay, tangent & $10^{-12}$; $10^{-6}$; $10^{-10}$ & \file{test\_materials} \\
+viscoelastic history, contact & material point along the solution; closed-form contact resultant; support reaction & $10^{-13}$; $10^{-12}$; $10^{-9}$ & \file{test\_viscoelastic} \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -1770,6 +1965,8 @@ $(\det\bF_{2D})^{-2}$.
 \bibitem{cook} R.\,D. Cook, Improved two-dimensional finite element, \emph{J. Struct. Div. ASCE} 100 (1974) 1851--1863.
 \bibitem{anand} L. Anand, \emph{Introduction to Coupled Theories in Solid Mechanics}, Oxford University Press, 2025; companion codes by E. Stewart and L. Anand, \url{solidmechanicscoupledtheories.github.io}.
 \bibitem{ab} E.\,M. Arruda, M.\,C. Boyce, A three-dimensional constitutive model for the large stretch behavior of rubber elastic materials, \emph{J. Mech. Phys. Solids} 41 (1993) 389--412.
+\bibitem{wang2016} S. Wang, M. Decker, D.\,L. Henann, S.\,A. Chester, Modeling of dielectric viscoelastomers with application to electromechanical instabilities, \emph{J. Mech. Phys. Solids} 95 (2016) 213--229.
+\bibitem{hossain2012} M. Hossain, D.\,K. Vu, P. Steinmann, Experimental study and numerical modelling of VHB 4910 polymer, \emph{Comput. Mater. Sci.} 59 (2012) 65--74.
 \end{thebibliography}
 
 \end{document}

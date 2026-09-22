@@ -103,10 +103,12 @@ yaml-cpp via `pkg-config`, and an `mpirun`.
 ```
 make            # build/libcmf.a, build/apps/solid_mechanics, build/tests/*
 make meshes     # regenerate apps/mesh/*.msh from apps/mesh/*.geo with Gmsh (the .msh files are kept in the tree)
-make check      # serial, ~45 s: tensor/dual/YAML units, materials, patch tests + MMS (both
+make check      # serial, ~60 s: tensor/dual/YAML units, materials, patch tests + MMS (both
                 # formulations), homogeneous deformations vs closed forms (all incompressible models),
                 # small-strain linear elasticity (operator vs MFEM's ElasticityIntegrator, outputs),
-                # inertia and time integration (free fall, orders, energy, mixed u-p)
+                # inertia and time integration (free fall, orders, energy, mixed u-p), finite
+                # viscoelasticity (history against the material point, Jacobians, rigid-sphere contact,
+                # the time block and the schema)
 make homogeneous # the app on apps/input/finite_elasticity/verification/homogeneous_deformations/*.yaml, compared with the closed forms (python3 + yaml)
 make elastic_bar # the elastic bar exercise: linear against Gent, force-displacement table and plot (python3 + yaml + matplotlib)
 make plate_with_hole # the plate-with-a-hole exercise: errors against Kirsch's closed form and plot (python3 + yaml + pyvista + matplotlib)
@@ -190,6 +192,12 @@ material: { model: neo_hookean, E: 250.0, nu: 0.3, rho0: 1.0 }
   #   (J^2 - 1 - 2 ln J)/4 | (ln J)^2/2 (p = kappa ln J / J, Anand's FEniCSx codes) | J ln J - J + 1.
   #   Every law has u''(1) = 1, so kappa keeps its meaning; they differ at finite strain.
   #   Closed forms and homogeneous solutions: doc/verification_manual.tex, Appendix A.
+  #   branches: [ { G: 26.06, tau: 0.6074 }, { G: 26.53, tau: 6.56 } ] puts Maxwell branches (a neo-Hookean
+  #   spring of modulus G in series with a dashpot of relaxation time tau) in parallel with a decoupled
+  #   model, which becomes the equilibrium branch of a finite viscoelastic material (the model of
+  #   Anand's coupled theories: the viscous right Cauchy-Green tensor of each branch as an internal
+  #   variable at the quadrature points, updated implicitly per step; see "Finite viscoelasticity"
+  #   below). Either formulation; needs a physical time (the time or the dynamics block).
   # linear_elastic: small-strain (geometrically linear) isotropic elasticity, either formulation;
   #   keys mu (or E, nu) and one of kappa | nu | incompressible, as for iso_neo_hookean, no volumetric
   #   law: sigma = 2 mu dev(eps) + kappa tr(eps) I with eps = sym(grad u). nu = 0.5 needs
@@ -212,8 +220,21 @@ bcs:
   # schedule: { type: ramp, from: 0.0, to: 1.0 } | { type: constant } | { type: table, t: [..], s: [..] }:
   # its data is schedule(t) * f over the pseudo-time t in [0, 1]; the default is the ramp unless f
   # mentions t (then constant). See "Boundary conditions and loading" below.
+  contact:   [ { attr: [top], name: indenter, type: rigid_sphere, radius: 10.0, penalty: 100.0,
+                 center: ["0", "0", "60 - 10*min(t/60, 1)"] } ]
+  # Penalty contact with a rigid sphere (a circle in 2D) whose centre is an expression of t: per unit
+  # reference area the energy penalty/2 <radius^2 - |x - c|^2>_+^2 at the current position x, whose
+  # traction 2 penalty <..>_+ (x - c) pushes what lies inside the sphere out of it. The resultant force
+  # and moment on the body are reported with the reactions under the entry's name. An optional
+  # schedule scales the penalty (constant by default).
 body_force: { expression: ["0", "0"], schedule: { type: ramp } }   # per unit mass; rho0 * b enters the
                                                                    # weak form; omit for none
+time:                             # optional: a quasi-static analysis in physical time (rate-dependent materials).
+  t_final: 300.0                  # The loads follow t exactly as under dynamics (below), the increments are the
+  dt: 3.0                         # time steps (dt, or steps: [ { to: 60, n: 24 }, { to: 460, n: 10 } ]), a
+                                  # material with branches advances its history by the step; no inertia.
+                                  # solver.load_steps and solver.steps are errors with it; predictor stays.
+                                  # time and dynamics exclude each other.
 dynamics:                         # optional. Absent: quasi-static, t is a pseudo-time in [0, 1]. Present: the
   t_final: 2.0e-2                 # inertial term joins the weak form and t is the physical time ("Dynamics" below)
   dt: 1.0e-5                      # or steps: [ { to: 5.0e-3, n: 1000 }, { to: 2.0e-2, n: 300 } ]; a dt that does
@@ -785,6 +806,86 @@ with the tangent predictor); hexahedra replace tetrahedra on the boxes; and a fa
 increment is bisected instead of ending the run (05 and 06 stop early in the
 reference).
 
+#### Finite viscoelasticity (`finite_viscoelasticity/`)
+
+`finite_viscoelasticity/` holds the twelve "2. Finite Viscoelasticity" examples as fourteen
+inputs (the rate-dependent tension is one input per rate): the finite viscoelastic material of
+that chapter, an Arruda-Boyce equilibrium branch with Maxwell branches (`material.branches`,
+`doc/theory_manual.tex` section "Finite viscoelasticity"), for VHB 4910 (G0 = 15.36 kPa,
+lambda_L = 5.85, the three branches of Wang et al. 2016, kPa and s) and for NBR (G0 = 400 kPa,
+lambda_L = 10, five branches with relaxation times from 1 to 10 000 s, 1 ms for the first in
+the dynamic cases), K = 1000 G0, the reference's Pade inverse Langevin and its quadratic
+volumetric law, mixed Q2-Q1 or P2-P1, the direct solver, and the reference's geometry, loads,
+time histories and step counts. The quasi-static cases run in physical time (the `time:`
+block); 10 and 11 are dynamic (`dynamics:`, the trapezoidal rule as the reference); 12
+presses a rigid sphere into a block through the reference's penalty contact (`bcs.contact`).
+The meshes are `apps/mesh/cube.msh`, `cube5.msh`, `shear_cube.msh`, `footing.msh`,
+`bushing.geo`, `beam20.msh`, `column_buckling50.msh` and `indent_cube.geo` (`make meshes`).
+
+| Input | Reference | Notes | Mesh: this code / reference |
+|-------|-----------|-------|-----------------------------|
+| `01_uniaxial_equilibrium` | FV01 | 1 mm cube to the stretch 9 at 1e-4 /s (80 000 s, 50 steps): the equilibrium branch alone; the experiment of Wang et al. on the plot | 2^3 hexahedra / 6 tets |
+| `02_uniaxial_rate_{0p01,0p03,0p05}` | FV02 | triangle wave to the stretch 2.5 and back at 0.01, 0.03 and 0.05 /s, 100 steps each; the experiments of Hossain et al. (2012) | the same |
+| `03_stress_relaxation` | FV03 | stretch 1.5 in 0.1 s, held to 10 s, 200 steps | the same |
+| `04_creep` | FV04 | dead traction 50 kPa in 0.1 s, held to 10 s, 200 steps | the same |
+| `05_stretch_hold` | FV05 | four 5 s ramps of 0.25 in stretch with 100 s holds up to 2, then back, 840 s in 2000 steps | the same |
+| `06_sinusoidal_tension` | FV06 | 5 mm cube, u_y = 2.5 sin(2 pi t) mm, two cycles in 100 steps | 2^3 hexahedra / 6 tets |
+| `07_sinusoidal_shear` | FV07 | 1 mm cube, base clamped, top face u_x = sin(2 pi t), two cycles in 100 steps | 8 x 8 x 4 hexahedra / 6 x 6 x 4 box, 864 tets |
+| `08_cube_footing` | FV08 | the footing of finite elasticity 07 in NBR: follower pressure to 1500 kPa at 30 s, back to 0 at 60 s (24 steps), recovery to 460 s (10 steps) | 4766 tets / 10 x 10 x 6 box, 3600 tets |
+| `09_bushing_shear` | FV09 | bushing of radius 22.5, height 19.3 with a concave waist, bottom clamped, top sheared +-10 mm in 30 s ramps, 120 s in 200 steps | 7087 curved tets / 2000 straight tets |
+| `10_beam_impulse` | FV10 | 20 x 2 x 2 cantilever, 2 kPa shear pulse over 8 ms, damped free vibration to 0.4 s, 200 steps, dynamic | 20 x 4 x 2 hexahedra / 12 x 6 x 2 box, 864 tets |
+| `11_column_buckling` | FV11 | the 1 x 1 x 20 column of finite elasticity 08 in NBR, shortened by 0.75 mm along a smooth step over 20 ms, held to 40 ms, 200 steps, dynamic | 4 x 4 x 50 hexahedra / the same box, 4800 tets |
+| `12_sphere_indentation` | FV12 | 50 mm cube, a rigid sphere of radius 10 pushed 10 mm into the corner of its top face in 60 s (50 steps), held to 460 s (10 steps) | 15 225 tets, 1 mm under the indenter / 10 x 10 x 6 box, 3600 tets (the coarse notebook) |
+
+`apps/anand_visco_plots.py` reproduces the result plots of the reference pages from the
+ParaView output (or `--logs`) of these runs, one figure per reference figure
+(`02_uniaxial_rates` gathers the three rates), into `out/anand_coupled_theories/
+finite_viscoelasticity/plots/`; it uses the readers of `anand_plots.py` and overlays the
+reference's own histories, `finite_viscoelasticity/reference/<case>.csv` (its notebooks'
+`timeHist` arrays with the reaction of the loaded face added, `reference/README.md`), and the
+experiments its pages show (`reference/exp_data/`).
+
+What the plots show, with the reference's values in parentheses. The block tests of VHB
+(01 to 06) are homogeneous states, and their reactions equal the reference's to 1e-9 or
+better at every step: the equilibrium curve carries 402.07 kPa at the stretch 9 (402.07);
+the relaxation test jumps to 78.0 kPa at the stretch 1.5 (all branches elastic, an
+instantaneous modulus of 78.8 kPa against the relaxed 15.5) and relaxes to 29.47 kPa at 10 s
+(29.47); the creep test reaches the stretch 1.279 at 0.1 s and 1.942 at 10 s (1.942); the
+stretch-and-hold test relaxes towards the equilibrium curve from above on loading and from
+below on unloading, ending at -1.74 kPa (-1.74); the sinusoidal tension loop runs from -276 to
+79 kPa. The three rates of 02 differ from the published reference by 0.4 percent at the stretch
+2.5, which is a typo of that one notebook: its equilibrium Cauchy stress is written with the
+exponent -1.3 of J where the other eleven have -1/3, a factor J^-1.933 on the deviatoric stress;
+with it corrected (`reference/02_uniaxial_rate_*_corrected.csv`) the reference agrees with this
+code to 1e-9 (42.29, 49.89 and 55.36 kPa at the peaks). The sheared block carries 58.2 kPa at
+the shear strain 1 (58.8, 1.3 percent, its mesh not ours: on the reference's own 6 x 6 x 4
+box of tetrahedra, `reference/same_mesh/07_sinusoidal_shear.yaml` and
+`apps/mesh/shear_box_ref.msh`, this code gives 58.79 and agrees with the reference to 0.2
+percent along the loop). The footing corner settles 25.48 mm at 1500 kPa (25.41), springs
+back to 3.42 mm when the pressure is gone (3.42) and recovers to 0.13 mm at 460 s (0.13). The
+cantilever tip swings to 5.25 mm at 12 ms and -4.18 mm at 30 ms and its vibration is damped
+out by 0.3 s (5.21, -4.13: 20 x 4 x 2 hexahedra against 12 x 6 x 2 tetrahedra differ by a
+phase drift of up to 5 percent of the amplitude; on the reference's own mesh,
+`reference/same_mesh/10_beam_impulse.yaml`, the histories agree to 3e-5 of the amplitude at
+every step). The column's axial force rises to 47.45 mN at 11.6 ms (47.51), collapses as the
+column snaps sideways, oscillates and settles at 16.4 mN at 40 ms (16.5). The bushing carries a shear force of 339 N at the shear
+strain 0.52 on the first cycle and 347 N on the reversed one (340, 349: 0.5 percent, on 7087
+curved tetrahedra against 2000 straight ones), its four half-cycles trace one hysteresis loop,
+and 37 N remain when the top face is back in place (37.4). The indenter force rises to 72.2 N at the full depth of 10 mm (71.5 on the
+reference's coarse box, the sum of its contact term; its traction integral 73.0), relaxes to
+65.3 N at 100 s (66.6) and to 55.5 N at 460 s (56.6), and the corner under the indenter
+follows the sphere to 9.97 mm (9.97); on the reference's own box
+(`reference/same_mesh/12_sphere_indentation.yaml`) the force agrees to 1.7 percent, what
+remains being the quadrature of the kinked penalty integrand (degree 4 on the faces in the
+reference, 7 here). The reference applies its penalty on every boundary facet, so on the
+symmetry planes too; that makes no difference, since the lateral faces move down with the
+indenter and stay outside the sphere (checked on the same mesh: identical results). The forces of the reference are its reactions
+where `reference/scripts` add them (the residual summed over the loaded face, as this
+code's), else its traction integrals; the reference integrates at degree 2 (degree 4 in the
+creep and indentation notebooks), this code at 2p + 3 = 7, which is part of what remains on
+the same mesh. The runs take 3 s (the blocks) to 19 min (the bushing, 200 steps on 24 000 unknowns; the indentation with 61 000
+unknowns takes 17 min for its 60 steps) on 4 ranks with the direct solver.
+
 ### Meshes: the Gmsh workflow
 
 Meshes come from files. The intended workflow is: describe the geometry in
@@ -1041,6 +1142,17 @@ struct NeoHookean
 The physics module instantiates `TotalLagrangianIntegrator<M>` once per
 material type at setup through `std::visit`; no dispatch happens per
 quadrature point.
+
+A history-dependent material (`viscoelastic.hpp` is the template) declares
+`HistorySize()` (doubles per quadrature point), `InitialHistory(double *h)`, the
+stresses and energies with the accepted history block and the step length as
+parameters, `PK1<T>(F, h, dt)`, `Energy<T>(F, h, dt)`, `PK1Iso<T>(F, h, dt)`,
+`EnergyIso<T>(F, h, dt)`, and `Update(F, h_old, dt, h_new)`. The kernels see it
+through `HistoryBound` (`kernels/history_bound.hpp`), which fixes the block
+and dt of the point and offers the stateless signatures above; the physics
+keeps the blocks in a `HistoryField` on the kernels' rule, sets dt in
+`SetLoadFactor` and updates and commits them in `AcceptStep`. Nothing else
+in the kernels or the stepper is specific to the material.
 
 ### State of the seam (what is still solid-specific)
 
