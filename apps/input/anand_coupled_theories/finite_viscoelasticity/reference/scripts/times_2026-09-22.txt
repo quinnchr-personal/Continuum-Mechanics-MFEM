@@ -1,0 +1,18 @@
+FV01_VHB_uniaxial_tension_eq exit 0 wall 10 s | Elapsed real time:  0:00:00.183315
+FV02_VHB_uniaxial_tension_neq exit 0 wall 7 s | Elapsed real time:  0:00:00.389209
+Elapsed real time:  0:00:00.377512
+Elapsed real time:  0:00:00.362991
+FV03_VHB_stress_relaxation exit 0 wall 2 s | Elapsed real time:  0:00:00.644510
+FV04_VHB_creep exit 0 wall 8 s | Elapsed real time:  0:00:00.685148
+FV06_VHB_sinusoidal_tension exit 0 wall 1 s | Elapsed real time:  0:00:00.358764
+FV07_VHB_sinusoidal_shear exit 0 wall 44 s | Elapsed real time:  0:00:41.928484
+FV05_VHB_stretch_hold exit 0 wall 9 s | Elapsed real time:  0:00:05.882481
+FV10_NBR_beam_impulse_oscillation exit 0 wall 66 s | Elapsed real time:  0:00:57.473175
+FV08_NBR_cube_footing exit 0 wall 89 s | Elapsed real time:  0:01:18.347618
+FV12_NBR_sphere_indentation_coarse exit 0 wall 175 s | Elapsed real time:  0:02:45.343544
+FV09_NBR_bushing_shear exit 0 wall 234 s | Elapsed real time:  0:03:42.053984
+FV11_NBR_beam_buckle exit 0 wall 373 s | Elapsed real time:  0:06:02.561442
+FV12_NBR_sphere_indentation_MPI exit 1 wall 38 s | 
+ALL_DONE
+FV12_NBR_sphere_indentation_MPI exit 1 wall 31 s | 
+MPI_DONE
