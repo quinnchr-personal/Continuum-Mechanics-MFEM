@@ -1,5 +1,5 @@
 # Buckling of a column with square cross-section (solidmechanicscoupledtheories.github.io, 1. Finite Elasticity, 3D08): 1 x 1 x 20 mm column
-# of 4 x 4 x 50 hexahedra whose nodes carry the reference's imperfection
+# of 4 x 4 x 100 hexahedra whose nodes carry the reference's imperfection
 # x, y -= 0.0025 (1 - cos(2 pi z / 20)) (apps/mesh/perturb_column.py, `make meshes`),
 # Arruda-Boyce. The base is clamped; the top is held in x, y and pushed down by
 # u_z = -2.5 t over 100 steps. The imperfection selects the first mode: the force
@@ -15,7 +15,11 @@
 # iterations per step throughout. The reference's 100 steps are needed: with 50,
 # the tangent predictor carries the nearly straight column across the critical
 # load onto the unstable straight branch (a mid-height deflection of 0.005 mm at
-# four times the Euler load), which Newton loses at 0.8 mm of shortening.
+# four times the Euler load), which Newton loses at 0.8 mm of shortening. The 100
+# elements along the axis (the reference has 50) are needed for the post-buckling
+# force: with 50, Q2 hexahedra of aspect ratio 1.6 carry 2.8 percent less axial force
+# than the converged value at 2.5 mm of shortening, and refining the section alone
+# makes it worse; with 100 the force is within 0.3 percent (verification manual).
 formulation: mixed
 mesh: { file: apps/mesh/column_buckling.msh, order: 2 }
 material: { model: arruda_boyce, mu: 280.0, N: 26.2144, kappa: 280000.0, inverse_langevin: pade }   # kPa, mm: G0 = 280 kPa, lambda_L = 5.12 (N = lambda_L^2), K = 1000 G0, p = K (J - 1)

@@ -122,7 +122,7 @@ $(MESH_DIR)/cube10.msh: $(MESH_DIR)/box.geo
 $(MESH_DIR)/shear_cube.msh: $(MESH_DIR)/box.geo
 	$(GMSH) -3 -format msh22 -setnumber nx 8 -setnumber ny 8 -setnumber nz 4 -o $@ $< > /dev/null
 $(MESH_DIR)/column_buckling.msh: $(MESH_DIR)/box.geo $(MESH_DIR)/perturb_column.py
-	$(GMSH) -3 -format msh22 -setnumber Lz 20 -setnumber nx 4 -setnumber ny 4 -setnumber nz 50 -o $@.straight $< > /dev/null
+	$(GMSH) -3 -format msh22 -setnumber Lz 20 -setnumber nx 4 -setnumber ny 4 -setnumber nz 100 -o $@.straight $< > /dev/null
 	python3 $(MESH_DIR)/perturb_column.py $@.straight $@ 20 0.005 && rm -f $@.straight
 $(MESH_DIR)/column_twist.msh: $(MESH_DIR)/box.geo
 	$(GMSH) -3 -format msh22 -setnumber Lz 3 -setnumber nx 8 -setnumber ny 8 -setnumber nz 32 -o $@ $< > /dev/null

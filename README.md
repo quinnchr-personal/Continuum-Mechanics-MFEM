@@ -678,7 +678,7 @@ pressure vs displacement) can be read from the log.
 | `05_cylinder_inflation` | 3D05 | quarter tube 10/11 x 5 mm, follower pressure to 50 kPa, `tube_quarter.geo` | 3969 curved tets / 600 straight tets |
 | `06_sphere_inflation` | 3D06 | octant shell 10/11 mm, follower pressure to 35 kPa, `sphere_octant.geo` | 2606 curved tets / 2597 straight tets, both of size 0.75 |
 | `07_cube_footing` | 3D07 | 50 mm cube, follower pressure 1500 kPa on a quarter of the top, `footing.geo` | 4766 tets / 10 x 10 x 6 box, 3600 tets |
-| `08_column_buckling` | 3D08 | 1 x 1 x 20 column, imperfection by `perturb_column.py`, shortened by 2.5 mm | 4 x 4 x 50 hexahedra / the same box, 4800 tets |
+| `08_column_buckling` | 3D08 | 1 x 1 x 20 column, imperfection by `perturb_column.py`, shortened by 2.5 mm | 4 x 4 x 100 hexahedra / 4 x 4 x 50 box, 4800 tets |
 | `09_spherical_inclusion` | 3D09 | octant of a cube with a ten times stiffer spherical inclusion (`material.regions`), stretch 2, `inclusion.geo` | 1358 tets / 2039 tets |
 | `10_column_twist` | 3D10 | 1 x 1 x 3 column, top face turned through 2 pi | 8 x 8 x 32 hexahedra, the same |
 
@@ -741,22 +741,24 @@ the same to five digits (`reference/scripts/3D02_same_mesh_check_run.py`); with
 refinement this code converges to 240 kPa, 242.3, 240.9, 240.6, 240.4 over 4, 8, 12,
 16 subdivisions); the torsion cylinder lies on Rivlin's curves for torque and
 axial force, 1.167 N m and a compressive force of 57.4 N at 2.5 rad (the reference's
-reactions 1.155 N m and 56.8 N on its faceted first-order cylinder); the plate with a
+reactions 1.155 N m and 56.8 N, 1 percent below at every twist: its first-order mesh
+is a faceted cylinder whose end face is a 31-gon with 0.993 of the circle's area and
+0.986 of its polar moment); the plate with a
 hole carries 1.639 MPa at a stretch of 3 (1.633); the tube goes through the plateau of the Pade model, 28.7 to
 31 kPa while the inner wall moves from 3 to 30 mm, on the quadrature curve, and stops
 at 40.0 kPa with the inner radius at six times its value (the reference at 37.5 kPa
 and 5.7 times); the sphere stops at its limit pressure, 34.2 kPa with 4.3 mm of wall
 displacement (the quadrature limit point 34.3 kPa at 4.4 mm; the reference 34.0 kPa
 at 3.6 mm); the footing settles 37.97 mm at 1500 kPa (37.80); the buckling column
-reaches 7.13 mN at 0.2 mm of shortening, 3 percent above the Euler load of the
-clamped column, and rises slowly to 7.49 mN at 2.5 mm along the post-buckling path
-(the reference's reaction is 7.16 and 7.70 mN, while its plotted traction
-integral is 6.83 and 8.00; on the reference's own tetrahedral column this code's
-reaction and the reference's agree to four digits with either volumetric law, 7.696
-against 7.696 mN at 2.5 mm, so the remaining 3 percent is the mesh, Q2 hexahedra
-against P2 tetrahedra at the same subdivision, and this code's 8 x 8 x 50 column
-gives 7.45 mN, so the tetrahedra are the ones further from converged; the Euler
-value uses E = 3 G and neglects the finite section); the cube with the inclusion carries 0.5791
+reaches 7.14 mN at 0.2 mm of shortening, 3 percent above the Euler load of the
+clamped column, and rises slowly to 7.67 mN at 2.5 mm along the post-buckling path
+(the reference's reaction is 7.16 and 7.70 mN, while its plotted traction integral is
+6.83 and 8.00; on the reference's own tetrahedral column this code's reaction and the
+reference's agree to four digits with either volumetric law, 7.696 against 7.696 mN
+at 2.5 mm, and that value is converged: 4 x 4 x 50, 8 x 8 x 50 and 4 x 4 x 100
+tetrahedra all give 7.69; Q2 hexahedra need the 100 elements along the axis, with 50
+they give 7.49 and with 8 x 8 x 50, a worse aspect ratio, 7.45; the Euler value uses
+E = 3 G and neglects the finite section); the cube with the inclusion carries 0.5791
 MPa at a stretch of 2 (0.5792), 13 percent more than the matrix alone from an
 inclusion of 6.5 percent of the volume; the twisted column needs a compressive axial
 force of 78 mN to keep its length over a full turn (Poynting effect), as does the
