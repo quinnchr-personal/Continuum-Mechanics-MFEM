@@ -9,7 +9,16 @@ the rigid-sphere contact); their design decisions (reference mesh never moves, t
 `myapps/` untouched, materials are value types templated on the scalar type, no per-exercise
 drivers, both manuals kept current) still hold.
 
-**Status (2026-09-22):** plan written; no gate started.
+**Status (2026-09-22):** TE1–TE4 done. TE1 (axisymmetry) commit 259c0d7c66, TE2 (the coupled
+module, point constraints, the schema, `test_thermoelastic`) 1233e8190c, TE3 (the six inputs,
+meshes, reference histories, `anand_thermo_plots.py`) 128f64e392, TE4 the manuals and the README.
+Measured agreement with the reference: the homogeneous stretch (02) to 1e-8, 01/03/04 to
+0.01–0.3 %, the plate's late state to 0.1 % (its early transient is a through-thickness
+resolution matter), the sail 3–4 % on hexahedra and 0.03 % on the reference's own tetrahedra.
+Deviations from the plan as written: the tangent K_θθ is the exact derivative (the dual seed
+differentiates θ M too); the optional heat-flow output of item 8 was not done (the plots do not
+need it); the sail pins are the five nodes of each edge, since the reference's pins are the
+whole edges.
 
 ## 0. What the examples need
 

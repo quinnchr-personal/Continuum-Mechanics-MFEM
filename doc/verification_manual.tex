@@ -30,6 +30,7 @@
 \newcommand{\bB}{\bm{B}}
 \newcommand{\bC}{\bm{C}}
 \newcommand{\bI}{\bm{I}}
+\newcommand{\bQ}{\bm{Q}}
 \newcommand{\bK}{\bm{K}}
 \newcommand{\bM}{\bm{M}}
 \newcommand{\bR}{\bm{R}}
@@ -88,12 +89,16 @@ The checks form three tiers, each relying on the previous one.
   \item \textbf{Discretisation tests} (\file{tests/test\_solid\_mms},
     \file{test\_mixed}, \file{test\_homogeneous}, \file{test\_loading},
     \file{test\_linear\_elasticity}, \file{test\_dynamics},
-    \file{test\_viscoelastic}):
+    \file{test\_viscoelastic}, \file{test\_axisymmetric},
+    \file{test\_thermoelastic}):
     patch tests, assembled Jacobians against finite differences, manufactured
     solutions with measured convergence rates, homogeneous states against
     closed forms, the boundary-condition and load-scheduling features, the
-    time integration, and the quadrature-point history of a rate-dependent
-    material with the rigid-sphere contact.
+    time integration, the quadrature-point history of a rate-dependent
+    material with the rigid-sphere contact, the axisymmetric kinematics
+    against the plane-strain and three-dimensional closed forms, and the
+    coupled thermo-mechanical problem against the material point, the
+    series solution of conduction and finite differences.
   \item \textbf{Application cases} (\file{apps/input/}, driven by
     \file{tests/test\_verification}, \file{test\_linear\_verification},
     \file{test\_benchmarks}, \file{test\_loading}, \file{test\_parallel} and
@@ -113,12 +118,12 @@ Target & Content \\
 \midrule
 \code{make} & \file{build/libcmf.a}, \file{build/apps/solid\_mechanics}, \file{build/tests/*} \\
 \code{make meshes} & regenerates \file{apps/mesh/*.msh} from the \file{.geo} sources with Gmsh (the \file{.msh} files are kept in the tree) \\
-\code{make check} & serial, about 60 s: \file{test\_base}, \file{test\_materials}, \file{test\_solid\_mms}, \file{test\_mixed}, \file{test\_homogeneous}, \file{test\_loading}, \file{test\_linear\_elasticity}, \file{test\_dynamics}, \file{test\_viscoelastic} \\
+\code{make check} & serial, about 90 s: \file{test\_base}, \file{test\_materials}, \file{test\_solid\_mms}, \file{test\_mixed}, \file{test\_homogeneous}, \file{test\_loading}, \file{test\_linear\_elasticity}, \file{test\_dynamics}, \file{test\_viscoelastic}, \file{test\_axisymmetric}, \file{test\_thermoelastic} \\
 \code{make homogeneous} & the executable on the homogeneous-deformation inputs, compared with the closed forms by \file{apps/homogeneous\_compare.py} \\
 \code{make elastic\_bar} & the elastic bar exercise (Section~\ref{sec:elasticbar}): table and plot of force against displacement by \file{apps/elastic\_bar\_compare.py} \\
 \code{make plate\_with\_hole} & the plate-with-a-hole exercise (Section~\ref{sec:platewithhole}): errors against Kirsch's closed form and plot by \file{apps/plate\_with\_hole\_compare.py} \\
 \code{make dynamics} & the dynamic cases (Section~\ref{sec:dynamiccases}): time histories over their closed forms, measures and plots by \file{apps/dynamics\_compare.py} (about two and a half minutes) \\
-\code{make test} & everything: \code{check}, the Cook inputs (finite strain and small strain, both formulations) serial and with four ranks, \file{test\_linear\_verification} (about 30 s), \file{test\_dynamic\_verification} (about two minutes, then its parallel consistency part with two and four ranks) and \file{dynamics\_compare.py --check}, parallel consistency with two and four ranks, the homogeneous comparison, \file{test\_mixed --full}, \file{test\_benchmarks} serial and parallel, \file{test\_loading} with four ranks, \file{test\_verification}, and finally the Cook ratio gate \\
+\code{make test} & everything: \code{check}, the Cook inputs (finite strain and small strain, both formulations) serial and with four ranks, \file{test\_linear\_verification} (about 30 s), \file{test\_dynamic\_verification} (about two minutes, then its parallel consistency part with two and four ranks) and \file{dynamics\_compare.py --check}, parallel consistency with two and four ranks, the homogeneous comparison, \file{test\_mixed --full}, \file{test\_benchmarks} serial and parallel, \file{test\_loading}, \file{test\_axisymmetric} and \file{test\_thermoelastic} with four and two ranks, \file{test\_verification}, and finally the Cook ratio gate \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -177,6 +182,10 @@ Source & Meshes & Geometry and groups \\
 \file{footing.geo} & \file{footing.msh} & 50\,mm cube with a quarter patch on top; left, front, bottom, patch, top\_rest, right, back \\
 \file{inclusion.geo} & \file{inclusion.msh} & octant of a cube with a spherical inclusion; volumes inclusion, matrix; the six box faces \\
 \file{perturb\_column.py} & \file{column\_buckling}, \file{column\_euler} & adds the imperfection $x, y \mathrel{-}= \delta_0(1 - \cos 2\pi z/L)$ to a straight box mesh \\
+\file{strip.geo} & \file{strip.msh} & meridian strip $A \le r \le B$, $0 \le z \le H$ of the axisymmetric tube, $n_r\times n_z$ quadrilaterals; bottom, outer, top, inner \\
+\file{rect.geo} & \file{thermo\_block}, \file{thermo\_cylinder}, \file{thermo\_plate} & $L_x\times L_y$ rectangle, $n_x\times n_y$ quadrilaterals; bottom, right, top, left (the reference's rectangles of the thermoelasticity examples) \\
+\file{bilayer\_beam.geo} & \file{bilayer\_beam.msh} & $100\times1$ beam of two layers of $200\times2$ quadrilaterals; bottom, right, top, left; surfaces bottom\_layer, top\_layer \\
+\file{box.geo} & \file{sail.msh} & the $100\times100\times1$ sail, $10\times10\times2$ hexahedra (\file{sail\_box\_ref.msh}: the reference's tetrahedra, by \file{export\_box.py}) \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -559,6 +568,124 @@ solver and the tangent predictor.
     unknown type.
 \end{itemize}
 
+\subsection{Axisymmetric kinematics (\texttt{test\_axisymmetric})}
+\label{sec:testaxi}
+The axisymmetric option of the kernels (Section~``Two-dimensional
+problems'' of the theory manual: $x = r$, $y = z$, the hoop stretch
+$F_{33} = 1 + u_r/r$ and the weight $2\pi r$ on every integral), in both
+formulations on $(r, z)$ rectangles of Q2 (Q2--Q1) quadrilaterals, isochoric
+neo-Hookean with $\mu = 1$, $\kappa = 10$, the direct solver and the tangent
+predictor.
+\begin{itemize}[nosep]
+  \item \textbf{Patch test}, both formulations and both models
+    (iso-neo-Hookean, and \code{linear\_elastic} without the predictor): the
+    uniform dilatation $u_r = \varepsilon r$, $u_z = \varepsilon z$
+    prescribed on every face of a ring $[1, 2]\times[0, 1]$ and of a disc
+    $[0, 1]\times[0, 1]$ that touches the axis.  $\bF = (1 + \varepsilon)\bI$,
+    hoop stretch included, at every quadrature point and in both nodal and
+    element presentations of \code{deformation\_gradient} to $4\times10^{-16}$;
+    the residual of the free interior dofs at round-off; the axial reaction of
+    the top face equals $P_{zz}\,\pi(B^2 - A^2)$, the stress times the
+    annulus of the solid of revolution ($10^{-13}$).
+  \item \textbf{Rivlin's cylinder} (\file{rivlin\_cylinder\_axisymmetric.yaml}):
+    the inflated thick-walled cylinder of Section~\ref{sec:rivlincyl}, run as a
+    meridian strip $[1, 2]\times[0, 0.5]$ of $16\times2$ quadrilaterals with
+    $z$ rollers on both ends (a plane-strain state in the $(r, z)$ description).
+    The inner and outer radii agree with the plane-strain run of the
+    quarter annulus to $10^{-8}$ and with Rivlin's closed form to the
+    discretisation error of that run; the axial reactions of the two ends are
+    equal and opposite.
+  \item \textbf{Green--Zerna's sphere} (\file{green\_zerna\_sphere\_axisymmetric.yaml}):
+    the inflated shell of Section~\ref{sec:greenzerna} as a quarter annulus
+    in the $(r, z)$ half-plane (\file{annulus.msh}, curved, with an
+    equatorial roller): the radii agree with the three-dimensional octant of
+    \file{test\_verification} to $3\times10^{-7}$ and the inner radius at the
+    pole equals that at the equator (a spherical state).
+  \item \textbf{Jacobian}, both formulations: a follower pressure on the
+    outer wall and a rigid sphere pressing on the top face, at a perturbed
+    state; $\bm J\bm v$ against central differences of the residual to
+    $10^{-9}$ (the hoop seeds of the material tangent, of the follower face
+    and of the contact face).
+  \item \textbf{Mass of a solid of revolution}: the consistent mass matrix of
+    the dynamics decorator on the ring, $\bm 1^T\bm M\bm 1 = d\,\rho\,\pi(B^2 - A^2)H$
+    to $10^{-16}$, the mass of the ring times the space dimension.
+  \item \textbf{Schema}: \code{plane: axisymmetric} accepted in 2D with either
+    formulation, refused on a 3D mesh and together with \code{plane: stress}.
+\end{itemize}
+
+\subsection{Finite thermoelasticity and point constraints (\texttt{test\_thermoelastic})}
+\label{sec:testthermo}
+The coupled $u$--$p$--$\theta$ formulation (Section~``Finite
+thermoelasticity'' of the theory manual) with the thermoelastic
+iso-neo-Hookean material, $\mu = 1$, $\kappa = 50$, $\theta_0 = 300$,
+$\alpha = 10^{-3}$, $c_v = 1$, $k = 1$, entropic, on boxes of Q2--Q1--Q1
+elements with the direct solver, quasi-static in physical time.
+\begin{itemize}[nosep]
+  \item \textbf{Material point}, quadratic and logarithmic laws: $\bP(\bF, \theta)$
+    is the derivative of the energy in $\bF$ ($10^{-7}$, central
+    differences); the isochoric stress is $\theta/\theta_0$ times the base's
+    ($10^{-13}$); $\partial\bP/\partial\theta$, $\bM = \bF^{-1}\partial\bP/\partial\theta$,
+    $\partial(u'(J_m)/J_\theta)/\partial\theta$ and $\partial(u'(J_m)/J_\theta)/\partial J$
+    against central differences ($10^{-8}$, $10^{-9}$, $10^{-7}$); the
+    stress-free volume ratio $J_\theta = e^{3\alpha(\theta - \theta_0)}$ makes
+    the constitutive pressure vanish ($10^{-14}$); objectivity of $\bP$, the
+    energy and the referential flux under a rotation of the current
+    configuration ($10^{-12}$); Fourier's law $\bQ = -kJ\bC^{-1}\Grad\theta$
+    ($10^{-13}$); at $\theta_0$ the material is the base.
+  \item \textbf{Free thermal expansion}, both laws: the $2^3$ cube on three
+    rollers with $\theta_0 + 40$ prescribed on every face, held for five
+    steps of $10^3$ time units (the interior relaxes by $10^{-4}$ per step):
+    $J = J_\theta$ at every quadrature point to $10^{-10}$, the temperature
+    uniform to $10^{-9}$, pressure, stress and support reactions zero
+    ($10^{-9}\kappa$, $10^{-9}$, $10^{-8}$), the corner displaced by
+    $J_\theta^{1/3} - 1$ in every direction ($10^{-10}$), and the mechanical
+    energy zero.
+  \item \textbf{Adiabatic homogeneous stretch}: rollers on three faces,
+    $u_y$ ramped to 0.5 in four steps, no thermal entries.  The state is
+    homogeneous, so the material point with the solution's $\bF$ (the
+    lateral stretches read from the faces) integrates the same heat equation
+    $c_v(\theta - \theta_n) = \tfrac12\theta\,\bM(\bF, \theta):(\bC - \bC_n)$
+    step by step: the temperature agrees to $10^{-9}$, the pressure is the
+    constitutive one ($10^{-8}$), the lateral faces are free ($|P_{11}|, |P_{33}| < 10^{-8}$),
+    the fields are uniform ($10^{-8}$), and the entropic elastomer heats as
+    it is stretched (the Gough--Joule effect).
+  \item \textbf{Transient conduction}: $\alpha = 0$ and a constant shear
+    modulus decouple the heat equation; a rollered strip $0 < x < 1$ of
+    $16\times1$ elements at $\theta_0$, insulated but for $\theta_0 + 1$ on
+    $x = 1$ from $t = 0^+$.  The mechanics stays at rest ($10^{-12}$); the
+    temperature of the insulated end at $t = 0.5$ against the series
+    solution of the heat equation: errors $-2.7\times10^{-3}$ with 100 steps
+    and $-1.3\times10^{-3}$ with 200 (the implicit Euler method is first
+    order in the step; the check asks for a halving and for $4\times10^{-3}$).
+  \item \textbf{Heat-flux entry}: on a cube stretched to
+    $\bF = \diag(1.2, 0.9, 1.1)$ with the history at that state, the
+    temperature residual sums to $-\Delta t\,h\,A$ with $A$ the current area
+    $1.2\times0.9$ of the top face (per current area) or its reference area
+    ($10^{-12}$).
+  \item \textbf{Block Jacobian}, plane strain and axisymmetric, with and
+    without face terms: after an accepted random state, a step of length 0.4
+    under way at another random state with a fixed bottom face, a pinned
+    node, a prescribed temperature, a follower pressure and a heat flux per
+    current area; $\bm J\bm v$ over the three blocks against central
+    differences to $10^{-6}$ (measured $10^{-8}$), and the direct solver's
+    residual on the merged $3\times3$ block system at $10^{-13}$.
+  \item \textbf{Point constraints}, the coupled, the mixed and the
+    displacement formulations: a $4\times4$ plane-strain block on a pin at
+    $(0, 0)$ and a vertical support at $(1, 0)$ (\code{point} entries) under
+    a dead traction on its top face in two increments.  Three essential
+    dofs; the reactions of the two pins balance the load to $10^{-10}$ with
+    no horizontal reaction; the pinned nodes do not move and the supported
+    one slides; a point that is not a node is refused.
+  \item \textbf{Schema}: the thermal block and its defaults, the
+    temperature, heat-flux and point entries, the temperature output field,
+    a region with its own expansion coefficient, and the refusals: thermal
+    without a time block, with the displacement formulation, with an
+    iterative linear solver, with plane stress, on a coupled model or a
+    viscoelastic one, a missing $c_v$, thermal entries without the material,
+    an unknown \code{per\_unit}, \code{point} with \code{attr} or on a
+    traction, a region's own $\theta_0$, and inertia with a temperature.
+\end{itemize}
+
 \subsection{Parallel consistency (\texttt{test\_parallel})}
 The Cook inputs of both formulations, finite strain and small strain, are
 run serially with tightened tolerances (\code{--write}) and the recorded
@@ -749,6 +876,7 @@ with the follower tangent); and the error decreases under refinement.  The
 README quotes the agreement as $10^{-6}$ on the refined mesh.
 
 \subsection{Green--Zerna inflation of a thick-walled sphere}
+\label{sec:greenzerna}
 
 \paragraph{Problem.}
 Octant of a spherical shell $A = 10$, $B = 11$ (\file{sphere\_octant.msh},
@@ -1603,6 +1731,85 @@ and stay outside the sphere (checked on the same mesh: identical results).  The 
 4 ranks with the direct solver; the reference's notebooks, serial, 1\,s to
 6\,min (FV11).
 
+\subsection{Finite thermoelasticity (\texttt{finite\_thermoelasticity/})}
+\label{sec:anandthermo}
+
+\paragraph{Reference.}
+The six "Finite Thermoelasticity" examples of the same site, TE01 to TE06.
+The material is the thermoelastic model of the theory manual's section of
+that name: an Arruda--Boyce solid with the entropic shear modulus
+$G_0\theta/\theta_0$, $G_0 = 280$\,kPa, $\lambda_L = 5.12$, Pad\'e inverse
+Langevin, $K = 1000\,G_0$ with the reference's logarithmic volumetric law,
+$\alpha = 180\times10^{-6}$/K, $c_v = 1839$\,kPa/K per unit reference volume,
+$k = 160$\,$\mu$W/(mm\,K), $\theta_0 = 298$\,K (273 for the sail); units
+kPa, mm, s, K.  Every input is the coupled $u$--$p$--$\theta$ formulation on
+Q2--Q1--Q1 quadrilaterals or hexahedra of the reference's subdivisions,
+quasi-static in physical time with the reference's steps, the direct solver
+and the tangent predictor, and prints the probes and reactions of the
+reference's plots after every step.
+
+\begin{center}
+\small
+\begin{tabular}{@{}l l p{7.0cm} p{3.8cm}@{}}
+\toprule
+Input & Reference & Problem & Mesh: this code / reference \\
+\midrule
+\file{01\_constrained\_heating} & TE01 & plane-strain $10\times10$ block between rollers on three sides, its top heated by $50(1 - e^{-t/20})$\,K; 400 steps of 1\,s & $6\times6$ quadrilaterals / crossed triangles \\
+\file{02\_adiabatic\_stretch} & TE02 & axisymmetric cylinder $R = H = 10$ pulled to the stretch 8 in 100 steps, insulated & $20\times20$ / the same \\
+\file{03\_heating\_contraction} & TE03 & the cylinder under a dead traction of 2\,MPa ramped over 50\,s at $\theta_0$, then its surface heated by 50\,K over 50\,s and held to 300\,s; 150 steps & the same \\
+\file{04\_bilayer\_actuator} & TE04 & plane-strain $100\times1$ beam of two layers, the top one without thermal expansion (a region), $u_x = 0$ on the left edge and the node $(0, 0)$ pinned, three edges heated by 50\,K over 3600\,s; 60 steps & $200\times2$ per layer / the same \\
+\file{05\_plate\_flux} & TE05 & axisymmetric plate $R = 50$, $t = 1$, the rim node $(50, 0)$ pinned, an inward flux of $10^4$\,$\mu$W/mm$^2$ per current area on top, $\theta_0$ on the bottom; 100 steps of 0.2\,s & $20\times2$ / the same \\
+\file{06\_solar\_sail} & TE06 & $100\times100\times1$ membrane at 273\,K, rollers on two side faces, the edges $x = y = 0$ and $x = y = 100$ pinned, four faces heated by 50\,K and a follower pressure ramped to 10\,Pa over 100 steps & $10\times10\times2$ hexahedra / the same box of 1200 tetrahedra \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\paragraph{Differences from the reference that change the numbers.}
+Quadrilaterals and hexahedra replace the crossed triangles and the
+tetrahedra (a crossed triangle pair carries a node at its centre, so the
+reference's P1 temperature has twice the layers through the thickness of the
+plate and the beam), and the reference integrates at degree 2 where this
+code integrates at 7.  The reference's pressure unknown is the mean
+pressure ($\bP = \dots - Jp\bF^{-T}$), this code's its negative.  Its
+"pinned corners" of the sail are every displacement dof on the two edges
+$x = y = 0$ and $x = y = 100$, which the input reproduces with the five
+nodes of each edge.  \file{reference/same\_mesh/06\_solar\_sail.yaml} runs
+the sail on the reference's own tetrahedra (\file{apps/mesh/sail\_box\_ref.msh}).
+
+\paragraph{Plots.}
+\file{apps/anand\_thermo\_plots.py} reproduces the reference's figures, one
+per figure, from the ParaView output or the logs of the runs with the
+readers of \file{anand\_plots.py}, and overlays the reference's histories
+(\file{reference/<case>.csv}: its notebooks' \code{timeHist} arrays with
+the reaction of the loaded face added for the stretched cylinder,
+\file{reference/README.md}).
+
+\paragraph{What the plots show.}
+With the reference's values in parentheses.  The stretched cylinder (02) is
+a homogeneous state, and its axial force and temperature agree with the
+reference to $10^{-8}$ at every step: the nominal stress reaches
+7.30\,MPa at the stretch 8 and the Gough--Joule heating raises the
+temperature by 7.95\,K.  The constrained block (01) heats through
+conduction, the centre lagging the top by 40\,K at 50\,s, and the pressure
+at its bottom rises to 4.65\,kPa at 400\,s (4.65); the temperatures differ
+from the reference's crossed triangles by at most 0.17\,K of the 50\,K rise
+(0.3\%) and the pressure by 0.1\%.  The loaded cylinder (03) stretches to
+5.26 under 2\,MPa (5.26) and contracts to 5.04 when its surface is heated
+by 50\,K (5.03): $u_z$ to 0.01\% and the force to 0.02\%.  The bilayer (04)
+bends to a tip deflection of 0.715\,$L$ at 348\,K (0.715), $u_y$ to 0.012\%.
+The plate (05) heats to 360.2\,K at the top of its axis and deflects
+3.16\,mm at 20\,s (360.1, 3.16: 0.01\% and 0.14\%); its early transient
+differs by up to 3\,K at 0.2\,s, where the diffusion length is a fifth of
+the thickness and the two P1 layers of the $20\times2$ mesh resolve it less
+well than the reference's four: with four and eight layers (a
+$20\times4$ and a $40\times8$ mesh of the same input) the deviation at
+0.2\,s falls to 1.0 and 0.3\,K.  The sail (06) deflects 10.3\,mm at A and
+18.8\,mm at B under 10\,Pa (10.06, 18.01: 2.9\% and 4.1\% on the hexahedra);
+on the reference's own tetrahedra the two histories agree with the
+reference to 0.035\% and 0.018\% at every step.  The runs take 3 to 38\,s
+(the sail) on 4 ranks with the direct solver, 66\,s for the same-mesh sail;
+the reference's notebooks, serial, 3 to 74\,s.
+
 %============================================================================
 \section{Summary}
 %============================================================================
@@ -1626,6 +1833,7 @@ plate with hole & Kirsch & stresses to $2\%$ & \file{test\_verification} \\
 Cook's membrane & frozen values, self-convergence & $10^{-8}$; ratio gate not met & \file{test\_benchmarks} \\
 Anand examples & FEniCSx codes, analytical curves & plots & \file{anand\_plots.py} \\
 Anand viscoelasticity examples & FEniCSx codes, experiments & block tests $10^{-9}$, structures 0.2--1\%, same-mesh checks & \file{anand\_visco\_plots.py} \\
+Anand thermoelasticity examples & FEniCSx codes & the homogeneous stretch $10^{-8}$, structures 0.01--0.3\%, the sail 3--4\% (0.03\% on the same mesh) & \file{anand\_thermo\_plots.py} \\
 parallel consistency & serial run & norms to $10^{-10}$ & \file{test\_parallel} \\
 \midrule
 linear operator & MFEM \code{ElasticityIntegrator}, hyperelastic tangents at $\bu = \bm 0$ & $10^{-12}$ & \file{test\_linear\_elasticity} \\
@@ -1649,6 +1857,8 @@ incompressible tube (mixed) & Knowles' equation & radius $0.5\%$, period $0.5\%$
 \midrule
 viscoelastic material & instantaneous and relaxed limits, Maxwell decay, tangent & $10^{-12}$; $10^{-6}$; $10^{-10}$ & \file{test\_materials} \\
 viscoelastic history, contact & material point along the solution; closed-form contact resultant; support reaction & $10^{-13}$; $10^{-12}$; $10^{-9}$ & \file{test\_viscoelastic} \\
+axisymmetric kinematics & patch test, Rivlin's cylinder and Green--Zerna's sphere as $(r, z)$ sections, Jacobians, mass & $10^{-15}$; $10^{-8}$, $3\times10^{-7}$; $10^{-9}$; $10^{-16}$ & \file{test\_axisymmetric} \\
+thermoelastic material, coupled problem & derivatives, objectivity; free expansion; adiabatic stretch against the material point; series solution of conduction; block Jacobians; pins & $10^{-8}$; $10^{-10}$; $10^{-9}$; $10^{-3}$ (halving); $10^{-8}$; $10^{-10}$ & \file{test\_thermoelastic} \\
 \bottomrule
 \end{tabular}
 \end{center}

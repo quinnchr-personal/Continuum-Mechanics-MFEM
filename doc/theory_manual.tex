@@ -16,6 +16,7 @@
 % ---------------------------------------------------------------------------
 \newcommand{\ud}{\,\mathrm{d}}
 \newcommand{\Grad}{\operatorname{Grad}}
+\newcommand{\Div}{\operatorname{Div}}
 \newcommand{\Dive}{\operatorname{Div}}
 \newcommand{\grad}{\operatorname{grad}}
 \newcommand{\dive}{\operatorname{div}}
@@ -45,6 +46,7 @@
 \newcommand{\bB}{\bm{B}}
 \newcommand{\bE}{\bm{E}}
 \newcommand{\bI}{\bm{I}}
+\newcommand{\bQ}{\bm{Q}}
 \newcommand{\bH}{\bm{H}}
 \newcommand{\bA}{\mathbb{A}}
 \newcommand{\bphi}{\bm{\varphi}}
@@ -175,17 +177,29 @@ the verification manual.
     by the reference's implicit update, in both formulations and with
     inertia; the first history-dependent material of the library, with a
     quasi-static analysis in physical time (the \code{time} block).
+  \item Finite thermoelasticity (Section~\ref{sec:thermoelasticity}): a
+    decoupled model with the temperature as a second state variable
+    (entropic shear modulus, thermal expansion through the volumetric law,
+    Fourier conduction) and the heat equation with the thermoelastic
+    heating, solved as a coupled displacement--pressure--temperature problem
+    on Taylor--Hood spaces in physical time, with prescribed temperatures
+    and heat fluxes per current area as boundary conditions.
   \item Two formulations: a pure displacement formulation with the
     assembled tangent, and a mixed displacement--pressure formulation on
-    Taylor--Hood pairs for near- and fully incompressible materials.
-  \item Two-dimensional problems as plane strain (default) or plane stress
+    Taylor--Hood pairs for near- and fully incompressible materials; the
+    coupled formulation extends the mixed one by the temperature.
+  \item Two-dimensional problems as plane strain (default), plane stress
     (displacement formulation; the thickness stretch is eliminated
-    pointwise at the material level).
+    pointwise at the material level) or axisymmetric (Section~\ref{sec:axisymmetric}:
+    the meridian section of a solid of revolution, the hoop stretch in the
+    kernels and the weight $2\pi r$ on every integral, either formulation).
   \item Boundary conditions: prescribed displacements on all or some
-    components, nominal tractions, dead normal pressures, follower
-    pressures per unit current area, a body force per unit mass, and a
-    rigid-sphere penalty contact, each with its own load schedule and data
-    given as expressions of the reference coordinates and the pseudo-time.
+    components of faces or of single nodes, nominal tractions, dead normal
+    pressures, follower pressures per unit current area, a body force per
+    unit mass, a rigid-sphere penalty contact, and for the coupled problem
+    prescribed temperatures and inward heat fluxes, each with its own load
+    schedule and data given as expressions of the reference coordinates and
+    the pseudo-time.
   \item Consistent tangents from forward-mode automatic differentiation of
     the same code that evaluates the stress (Ogden and the compressible
     plane-stress adapter use analytic or implicit derivatives where
@@ -205,10 +219,12 @@ the verification manual.
 
 Not implemented: explicit time integration, physical damping other than
 the Maxwell branches, modal analysis, inelasticity other than the viscous
-flow of those branches (plasticity, damage), temperature dependence,
-contact other than the rigid-sphere penalty, point loads, multi-point or
-periodic constraints, discontinuous Galerkin or hybridised discretisations,
-partial assembly, and device execution.  Section~\ref{sec:seam} lists what of the
+flow of those branches (plasticity, damage), inertia with a temperature
+field, convection or radiation boundary conditions, volumetric heat
+sources, temperature-dependent conductivity or heat capacity, torsion in
+the axisymmetric description, contact other than the rigid-sphere penalty,
+point loads, multi-point or periodic constraints, discontinuous Galerkin or
+hybridised discretisations, partial assembly, and device execution.  Section~\ref{sec:seam} lists what of the
 present code is specific to the solid and what a second physics would
 generalise.
 
@@ -219,8 +235,8 @@ configuration is $\Omega_t$.  The left Cauchy--Green tensor is $\bB = \bF\bF^T$,
 the right one $\bC = \bF^T\bF$.  The pressure unknown of the mixed formulation
 and the \code{pressure} output field are the tensile-positive mean stress
 $p = \tfrac13\tr\bsig$.  In two dimensions every $3\times3$ tensor is built
-from the in-plane block with $F_{33} = 1$ (plane strain) or
-$F_{33} = \lambda_3$ (plane stress).
+from the in-plane block with $F_{33} = 1$ (plane strain), $F_{33} = \lambda_3$
+(plane stress) or $F_{33} = 1 + u_r/r$ (axisymmetric).
 
 The verification manual (\file{doc/verification\_manual.tex}) documents
 every input and test; its appendix collects the closed-form homogeneous
@@ -294,6 +310,7 @@ dimension.
 
 %============================================================================
 \section{Balance of momentum and the displacement weak form}
+\label{sec:momentum}
 \label{sec:weak}
 %============================================================================
 
@@ -935,6 +952,54 @@ the interior lagging, shear-dominated sheet problems need increments that
 shear a boundary layer of elements by no more than a few percent, since the
 energy grows like $(\det\bF_{2D})^{-2}$.
 
+\subsection{Axisymmetry}
+\label{sec:axisymmetric}
+
+\code{plane: axisymmetric} (either formulation) reads the two-dimensional
+mesh as the meridian section of a solid of revolution, $x = r$ and $y = z$,
+without torsion: the displacement has the components $(u_r, u_z)$, the
+reference position of a material point is $(r, z)$ and its current one
+$(r + u_r, z + u_z)$ in the same meridian plane.  The deformation gradient
+in the cylindrical basis $(\be_r, \be_z, \be_\phi)$ is the in-plane block
+$\bI + \Grad\bu$ of \eqref{eq:embed} completed by the hoop stretch
+\begin{equation}
+  F_{33} = \frac{r + u_r}{r} = 1 + \frac{u_r}{r},
+  \qquad F_{33} \to 1 + \partial_r u_r = F_{rr} \ \text{on the axis},
+  \label{eq:hoop}
+\end{equation}
+the ratio of the current to the reference circumference, with no
+out-of-plane shears; on the axis, where $u_r/r$ is indeterminate, the limit
+$F_{rr}$ is used (a point is on the axis when $r$ is not positive).  The
+volume element of the solid of revolution is $2\pi r\,\ud r\,\ud z$ and a
+surface element $2\pi r\,\ud s$, so every integral of the weak forms of
+Sections~\ref{sec:momentum} and \ref{sec:mixed}, of the loads of
+Section~\ref{sec:loads} and of the mass matrix of Section~\ref{sec:dynamics}
+carries the weight $2\pi r$: energies, reactions, resultants and masses are
+the totals over the full revolution (per unit radian times $2\pi$), and a
+traction or pressure of the input acts on the real surface.  The variation
+of $F_{33}$ with respect to a radial nodal displacement is $N_a/r$
+($\partial_r N_a$ on the axis), so the B-operator of a displacement dof
+carries that hoop term in the $(3, 3)$ slot next to the in-plane entries,
+the residual contracts the full $3\times3$ stress with it,
+\begin{equation}
+  R_{ai} = \int_{\Omega_R} \Bigl[P_{ij}\,\partial_j N_a + \delta_{ir}\,P_{33}\,\frac{N_a}{r}\Bigr] 2\pi r\,\ud A,
+\end{equation}
+and the material tangent of Section~\ref{sec:ad} is seeded on the four
+in-plane entries and the hoop one, five directions instead of four.  The
+face kernels (follower pressure, contact, the heat flux of
+Section~\ref{sec:thermoelasticity}) complete $\bF$ the same way at their
+quadrature points and weight by $2\pi r$; the dead loads and the body force
+are multiplied by $2\pi r$ through their coefficients; the reference
+density that enters the mass matrix is multiplied likewise; the quadrature
+outputs use the completed $\bF$.  Plane strain and three dimensions are
+untouched: the axisymmetric branch is a flag of the kernels tested once per
+element.  The axis is a boundary of the mesh like any other and $u_r = 0$
+is to be prescribed there.  The inputs
+\file{rivlin\_cylinder\_axisymmetric.yaml} and
+\file{green\_zerna\_sphere\_axisymmetric.yaml} run the inflated cylinder
+and sphere of the verification set in this description
+(\file{tests/test\_axisymmetric.cpp}).
+
 %============================================================================
 \section{Mixed displacement--pressure formulation}
 \label{sec:mixed}
@@ -1507,6 +1572,164 @@ history-dependent material needs a physical time, so the input must carry a
 block; the pseudo-time of a plain quasi-static analysis has no rate.
 
 %============================================================================
+\section{Finite thermoelasticity}
+\label{sec:thermoelasticity}
+%============================================================================
+
+A \code{thermal} block under a decoupled model makes it a thermoelastic
+material and the temperature $\theta$ a third unknown next to the
+displacement and the pressure: the model of the finite thermoelasticity
+chapter of Anand's coupled theories and of its FEniCSx codes
+\cite{anandbook}, whose six examples are reproduced in
+\file{apps/input/anand\_coupled\_theories/finite\_thermoelasticity/}.  This
+section gives the model, the heat equation and its time integration, the
+coupled weak form and its tangents, and where the pieces live.
+
+\subsection{Constitutive model}
+
+The free energy per unit reference volume is
+\begin{equation}
+  \psi(\bF, \theta) = s(\theta)\,\Psi_{\mathrm{iso}}(\bFb) + \kappa\,u\!\left(\frac{J}{J_\theta}\right) - c_v\Bigl[\theta\ln\frac{\theta}{\theta_0} - (\theta - \theta_0)\Bigr],
+  \qquad
+  J_\theta = e^{3\alpha(\theta - \theta_0)},
+  \label{eq:thermoenergy}
+\end{equation}
+with $\Psi_{\mathrm{iso}}$ and $u$ those of the base model
+(Section~\ref{sec:classification}), $s(\theta) = \theta/\theta_0$ for an
+\emph{entropic} elastomer, whose shear modulus is proportional to the
+temperature (the default; $s = 1$ turns it off), $J_\theta$ the stress-free
+volume ratio of a free thermal expansion with the linear coefficient
+$\alpha$, $c_v$ the heat capacity per unit reference volume and $\theta_0$
+the reference temperature, which is also the initial one.  The stress at
+fixed $\theta$ is
+\begin{equation}
+  \bP = s(\theta)\,\bP_{\mathrm{iso}}(\bF) + U'(J, \theta)\,J\bF^{-T},
+  \qquad
+  U'(J, \theta) = \frac{\kappa\,u'(J_m)}{J_\theta}, \quad J_m = \frac{J}{J_\theta},
+  \label{eq:thermostress}
+\end{equation}
+so that a free expansion to $J = J_\theta$ is stress free for every
+volumetric law, and for the logarithmic law $U' = \kappa[\ln J - 3\alpha(\theta - \theta_0)]/J$,
+the reference's pressure.  In the coupled formulation the volumetric term
+is replaced by the pressure field, $\bP = s(\theta)\bP_{\mathrm{iso}} + pJ\bF^{-T}$,
+with the constraint
+\begin{equation}
+  \frac{u'(J_m)}{J_\theta} - \frac{p}{\kappa} = 0
+  \qquad (\kappa = \infty:\ u'(J_m) = 0,\ \text{i.e.}\ J = J_\theta),
+  \label{eq:thermoconstraint}
+\end{equation}
+the mixed constraint of Section~\ref{sec:mixed} on the mechanical volume
+ratio $J_m$, with the tangents $u''(J_m)/J_\theta^2$ in $J$ and
+$-3\alpha[u''(J_m)J_m + u'(J_m)]/J_\theta$ in $\theta$.  The entropy per
+unit reference volume is $\eta = -\partial\psi/\partial\theta$; the
+thermoelastic coupling of the heat equation is carried by its dependence on
+the deformation, through the second Piola--Kirchhoff stress
+$\bS = \bF^{-1}\bP$ of the displacement form \eqref{eq:thermostress}:
+\begin{equation}
+  \bM = \frac{\partial\bS}{\partial\theta} = \bF^{-1}\frac{\partial\bP}{\partial\theta},
+  \qquad
+  \frac{\partial\bP}{\partial\theta} = s'(\theta)\,\bP_{\mathrm{iso}}(\bF) + \frac{\partial U'}{\partial\theta}\,J\bF^{-T},
+  \label{eq:thermoM}
+\end{equation}
+an explicit function of $(\bF, \theta)$ that the material evaluates with
+any scalar type (for the entropic model with the logarithmic law it is the
+reference's $J^{-2/3}(G_0/\theta_0)\zeta(\bI - \tfrac13\tr\bC\,\bC^{-1}) - 3\kappa\alpha\,\bC^{-1}$).
+Heat is conducted by Fourier's law with the spatial conductivity $k$, whose
+referential flux is
+\begin{equation}
+  \bQ = -k\,J\,\bC^{-1}\Grad\theta .
+  \label{eq:fourier}
+\end{equation}
+The material is the adapter \code{Thermoelastic<Base>}
+(\file{kernels/materials/thermoelastic.hpp}) over the six decoupled models,
+held in the variant \code{ThermoMaterial}, with the parameters
+\code{theta0}, \code{alpha}, \code{c\_v}, \code{k} and \code{entropic}; a
+region may change every one of them but $\theta_0$, which is the one
+reference temperature of the problem.  Maxwell branches, the small-strain
+model and the coupled compressible models cannot carry a temperature.
+
+\subsection{The heat equation and its time integration}
+
+With the entropy as above the balance of energy in the reference
+configuration reads
+\begin{equation}
+  c_v\,\dot\theta = \tfrac12\,\theta\,\bM : \dot\bC - \Div\bQ,
+  \label{eq:heat}
+\end{equation}
+the second term being the thermoelastic (Gough--Joule) heating: an entropic
+elastomer warms when stretched and contracts when heated under load.  Over
+a step $t_n \to t_{n+1} = t_n + \Delta t$ of the \code{time} block the
+equation is integrated by the implicit Euler method, the reference's
+scheme,
+\begin{equation}
+  c_v(\theta - \theta_n) - \tfrac12\,\theta\,\bM(\bF, \theta):(\bC - \bC_n) + \Delta t\,\Div\bQ(\bF, \theta) = 0
+  \label{eq:heatstep}
+\end{equation}
+at the end of the step, with the accepted $\bC_n$ and $\theta_n$ of every
+quadrature point held in a \code{HistoryField} of seven numbers (the six
+components of $\bC_n$ in the order $xx, yy, zz, xy, yz, xz$ and
+$\theta_n$), written by the accept hook of the stepper from the converged
+state and reset to $\bI$ and $\theta_0$ at the start.  The protocol is that
+of Section~\ref{sec:viscoelasticity}: \code{SetLoadFactor} makes
+$\Delta t = t - t_n$ the length of the step under way, between steps
+$\Delta t = 0$ and the temperature rows vanish at the accepted state.  The
+scheme is first order in the step; the tests measure the halving of the
+error against the series solution of a conduction problem.
+
+\subsection{Coupled weak form, kernel and module}
+
+The unknown is $[\bu; p; \theta]$ on the Taylor--Hood spaces of
+Section~\ref{sec:mixed} with the temperature on the pressure's space
+(order $k - 1$; the reference's element).  The residuals of the step are
+\begin{align}
+  R_u(\bw) &= \int_{\Omega_R} \bigl[s(\theta)\bP_{\mathrm{iso}}(\bF) + pJ\bF^{-T}\bigr]:\Grad\bw\,\ud V + [\text{follower and contact terms}] - \sum_i s_i(t)\,[\text{dead loads}], \notag\\
+  R_p(q_p) &= \int_{\Omega_R} q_p\Bigl[\frac{u'(J_m)}{J_\theta} - \frac{p}{\kappa}\Bigr]\ud V, \label{eq:thermoweak}\\
+  R_\theta(q) &= \int_{\Omega_R} q\Bigl[c_v(\theta - \theta_n) - \tfrac12\theta\,\bM:(\bC - \bC_n)\Bigr]\ud V + \Delta t\int_{\Omega_R} k\,J\,\bC^{-1}\Grad\theta\cdot\Grad q\,\ud V \notag\\
+  &\quad - \Delta t\sum_i s_i(t)\oint_{\Gamma_i} h_i\,|\cof\bF\,\bN|\,q\,\ud A_R, \notag
+\end{align}
+the last sum over the heat-flux entries of Section~\ref{sec:thermalbcs};
+the prescribed temperatures are essential conditions of the third block, the
+prescribed displacements of the first, and the pressure carries none.  The
+kernel (\file{kernels/thermo\_mixed\_total\_lagrangian.hpp}) evaluates the
+four densities $\bP$, the constraint, the capacity--heating term and the
+flux $-\bQ$ of a point by one templated function of $(\bF, p, \theta, \Grad\theta)$
+with the point's $\bC_n$, $\theta_n$ as parameters, and forms the nine
+tangent blocks by dual seeds of that function: one seed per entry of $\bF$
+that the displacement dofs reach (the in-plane block, plus the hoop stretch
+of an axisymmetric point), one for $p$, one for $\theta$ and one per
+component of $\Grad\theta$, each a rank-one update of the element matrices
+with the B-rows of the dofs it depends on.  So $\bK_{uu}$, $\bK_{pu}$ and
+$\bK_{\theta u}$ come from the $\bF$ seeds (the last through
+$\bM(\bF)$, $\bC(\bF)$ and $J\bC^{-1}$), $\bK_{up}$ and $\bK_{pp}$ from the
+$p$ seed, $\bK_{u\theta}$ (through $s(\theta)$), $\bK_{p\theta}$ (through
+$J_\theta$) and the capacity and heating parts of $\bK_{\theta\theta}$ from
+the $\theta$ seed, and the conduction part of $\bK_{\theta\theta}$ from the
+gradient seeds; $\bK_{\theta p} = \bm 0$.  The tangent is the exact
+derivative of \eqref{eq:thermoweak}, including $\theta\,\partial\bM/\partial\theta$
+(the dual seed differentiates $\bM$ too).  The face integrators of the
+mixed formulation are reused through an adapter that sizes the temperature
+entries of the element vectors and matrices to zero, since the block form
+keeps one set across integrators; the heat-flux face integrator fills the
+temperature block and its tangent in the displacement.  The module
+\code{ThermoSolidMechanicsTL} (\file{physics/thermo\_solid\_mechanics\_tl.*})
+is the mixed module of Section~\ref{sec:mixed} with the third space, the
+history, the thermal entries, the initial state $\theta = \theta_0$, the
+nodal field \code{temperature} and the quadrature quantities with the
+field pressure and the entropic modulus.  It is selected by
+\code{formulation: mixed} together with the thermal block and needs the
+\code{time} block; the displacement formulation with a temperature (a
+penalty on the thermal expansion) and inertia with a temperature are input
+errors, as is plane stress.  The linear solver is the sparse direct solver
+of Section~\ref{sec:direct} on the merged $3\times3$ block Jacobian: the
+saddle-point preconditioner has no temperature block.  The tangent
+predictor of Section~\ref{sec:loadstepping} spreads the increments of the
+prescribed displacements and temperatures through the body before Newton
+starts, and the stretched cylinder of the examples needs it, since a large
+prescribed increment applied to one layer of elements inverts them at the
+plain start.  The energy diagnostic is the mechanical free energy
+$s(\theta)\Psi_{\mathrm{iso}} + \kappa u(J_m)$ of the displacement form.
+
+%============================================================================
 \section{Boundary conditions and loading}
 \label{sec:loads}
 %============================================================================
@@ -1563,6 +1786,19 @@ projection of $\bar\bu_i$ (\code{ApplyDirichlet}); the residual is zeroed
 and the Jacobian rows and columns eliminated there.  Two entries may
 overlap on shared edges or corners; the later entry wins and a warning
 names entries that prescribe the same component on the same attribute.
+
+\paragraph{Point constraints.}
+An entry with \code{point} in place of the attributes prescribes its
+components at the displacement node nearest to the given point: the owning
+rank is found by a global minimum of the distance over the true dofs, the
+entry's essential dofs are that node's components, and the data is the
+coefficient's value at the node (the projection of $\bar\bu_i$ read there).
+A point farther than $10^{-8}$ of the mesh diameter from every node is an
+input error.  Nothing else changes: the schedule, the elimination and the
+reaction (the nodal force at the node) are those of a face entry.  This is
+how single nodes are pinned to remove rigid modes, as the reference codes
+of Section~\ref{sec:thermoelasticity} do; an edge of nodes takes one entry
+per node.
 
 \subsection{Dead loads}
 
@@ -1631,6 +1867,25 @@ accepted state gives the nodal contact forces, summed like a reaction
 (Section~\ref{sec:reactions}).  The face kernel
 (\file{kernels/rigid\_sphere\_contact.hpp}, both formulations) integrates
 with the rule of the follower pressure.
+
+\subsection{Thermal boundary conditions}
+\label{sec:thermalbcs}
+
+The coupled problem of Section~\ref{sec:thermoelasticity} adds two kinds of
+entry on the temperature space, kept by that module rather than by the load
+set.  A \code{temperature} entry prescribes $\theta = s_i(t)\bar\theta_i$ on
+the faces of its attributes (one expression; under the \code{time} block an
+entry without a schedule is constant, so the expression itself is the
+history): its essential dofs of the temperature block are treated as those
+of the displacement.  A \code{heat\_flux} entry applies an inward heat flux
+$h$, by default per unit current area, which in the reference configuration
+is $h\,|\cof\bF\,\bN|$ per unit reference area (Nanson), so that the term
+depends on the displacement and carries a tangent in it by dual numbers over
+the face dofs, as the follower pressure; with \code{per\_unit:
+reference\_area} it is $h$ itself.  The entry contributes
+$-\Delta t\,s_i(t)\oint h\,|\cof\bF\,\bN|\,q\,\ud A_R$ to the temperature
+residual of the step.  Insulated is the natural condition; convection,
+radiation, volumetric sources and thermal contact are not provided.
 
 \subsection{Reactions}
 \label{sec:reactions}
@@ -1987,6 +2242,7 @@ three decades of $\Delta t$, independent of the mesh.  The term exists only
 when the dynamic problem hands the solver $c_M$.
 
 \subsection{Sparse direct solver}
+\label{sec:direct}
 \label{sec:directsolver}
 
 With \code{solver.linear.type: direct} every Newton system is solved by a
@@ -2179,7 +2435,7 @@ with a second physics:
 
 \begin{center}
 \small
-\begin{tabular}{@{}l l l@{}}
+\begin{tabular}{@{}l p{6.2cm} p{4.6cm}@{}}
 \toprule
 Symbol & Meaning & Input key \\
 \midrule
@@ -2195,6 +2451,11 @@ $\mathcal{L}^{-1}$ & inverse Langevin approximation, \code{pade} (default) or \c
 $\mu_r, \alpha_r$ & Ogden terms & \code{material.mu\_r}, \code{material.alpha\_r} \\
 $\rho_R$ & reference density, also by region & \code{material.rho0} \\
 $G_i, \tau_i$ & Maxwell branches: non-equilibrium shear modulus, relaxation time & \code{material.branches} \\
+$\theta_0, \alpha, c_v, k$ & reference temperature, expansion, heat capacity, conductivity & \code{material.thermal} \\
+$s(\theta)$ & entropic scaling of the shear modulus & \code{material.thermal.entropic} \\
+$\bar\theta, h$ & prescribed temperature, inward heat flux & \code{bcs.temperature}, \code{bcs.heat\_flux} \\
+$r, z$ & coordinates of an axisymmetric mesh & \code{plane: axisymmetric} \\
+$\bX_{\mathrm{pin}}$ & a pinned node & \code{point} of a Dirichlet entry \\
 $t_{\text{final}}, \Delta t$ (rate-dependent, no inertia) & end time, time step & \code{time.t\_final}, \code{dt} | \code{steps} \\
 $r, \bm c(t), k$ & rigid sphere: radius, centre, penalty & \code{bcs.contact} \\
 $t_{\text{final}}, \Delta t$ & end time, time step & \code{dynamics.t\_final}, \code{dt} | \code{steps} \\
@@ -2227,15 +2488,17 @@ File & Content \\
 \file{base/fields.hpp}, \file{output}, \file{probes} & field registry, ParaView writer, point probes \\
 \file{kernels/total\_lagrangian.hpp} & quadrature-point functions and the displacement integrator \\
 \file{kernels/mixed\_total\_lagrangian.hpp} & $u$--$p$ quadrature-point functions and block integrator \\
+\file{kernels/thermo\_mixed\_total\_lagrangian.hpp} & $u$--$p$--$\theta$ kernel: point densities, dual-seeded tangent blocks, the heat-flux face integrator, the adapter of the two-block face integrators \\
 \file{kernels/follower\_pressure.hpp} & follower-pressure face integrators (both formulations) \\
 \file{kernels/rigid\_sphere\_contact.hpp} & rigid-sphere penalty contact face integrators (both formulations) \\
 \file{kernels/history\_field.\{hpp,cpp\}}, \file{history\_bound.hpp} & quadrature-point history of a material; its per-point binding to the kernels' stateless contract \\
-\file{kernels/materials/*.hpp} & material functors (hyperelastic, \file{linear\_elastic.hpp}, the \file{viscoelastic.hpp} adapter with Maxwell branches), isochoric helpers, volumetric laws, spectral solver, plane-stress adapter, dual tangent \\
+\file{kernels/materials/*.hpp} & material functors (hyperelastic, \file{linear\_elastic.hpp}, the \file{viscoelastic.hpp} adapter with Maxwell branches, the \file{thermoelastic.hpp} adapter with a temperature), isochoric helpers, volumetric laws, spectral solver, plane-stress adapter, dual tangent \\
 \file{kernels/materials/kinematics.hpp} & finite or small strain as a trait of the material: Cauchy stress, volume ratio, strain \\
 \file{kernels/materials/materials.\{hpp,cpp\}} & material variants, factory, moduli resolution, region tables \\
-\file{physics/loads.\{hpp,cpp\}} & load set: Dirichlet entries, dead loads, follower and contact scales, schedules, reactions and resultants \\
+\file{physics/loads.\{hpp,cpp\}} & load set: Dirichlet entries on faces or single nodes, dead loads, follower and contact scales, the axisymmetric weight, schedules, reactions and resultants \\
 \file{physics/solid\_mechanics\_tl.\{hpp,cpp\}} & displacement formulation module \\
 \file{physics/mixed\_solid\_mechanics\_tl.\{hpp,cpp\}} & mixed formulation module \\
+\file{physics/thermo\_solid\_mechanics\_tl.\{hpp,cpp\}} & coupled $u$--$p$--$\theta$ module: the third space, the accepted $\bC$ and $\theta$, thermal entries, the initial temperature \\
 \file{physics/solid\_problem.\{hpp,cpp\}} & common interface, factory by formulation, YAML load installer \\
 \file{physics/quadrature\_fields.\{hpp,cpp\}} & quadrature quantities and their presentations \\
 \file{physics/dynamic\_solid\_problem.\{hpp,cpp\}} & inertia as a decorator over a solid problem: mass matrix, step equation, initial state, energies, reactions with inertia \\

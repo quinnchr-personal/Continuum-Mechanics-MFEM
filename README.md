@@ -108,7 +108,9 @@ make check      # serial, ~60 s: tensor/dual/YAML units, materials, patch tests 
                 # small-strain linear elasticity (operator vs MFEM's ElasticityIntegrator, outputs),
                 # inertia and time integration (free fall, orders, energy, mixed u-p), finite
                 # viscoelasticity (history against the material point, Jacobians, rigid-sphere contact,
-                # the time block and the schema)
+                # the time block and the schema), axisymmetric kinematics (patch test, Rivlin's cylinder
+                # and Green-Zerna's sphere as (r, z) sections, Jacobians, mass), finite thermoelasticity
+                # (the material point, free expansion, the adiabatic stretch, conduction, Jacobians, pins)
 make homogeneous # the app on apps/input/finite_elasticity/verification/homogeneous_deformations/*.yaml, compared with the closed forms (python3 + yaml)
 make elastic_bar # the elastic bar exercise: linear against Gent, force-displacement table and plot (python3 + yaml + matplotlib)
 make plate_with_hole # the plate-with-a-hole exercise: errors against Kirsch's closed form and plot (python3 + yaml + pyvista + matplotlib)
@@ -159,7 +161,10 @@ nu = 0.4999 (kappa = 4.0e5). Both add a `pressure` output field.
 ```yaml
 formulation: displacement         # displacement (default) | mixed (u-p, needs mesh.order >= 2)
 plane: strain                     # 2D only: strain (F33 = 1, default) | stress (F33 = thickness stretch with
-                                  # sigma33 = 0; displacement formulation, incompressible models allowed)
+                                  # sigma33 = 0; displacement formulation, incompressible models allowed) |
+                                  # axisymmetric (x = r, y = z, F33 = 1 + u_r / r, every integral weighted by
+                                  # 2 pi r: forces, reactions and masses are those of the solid of revolution;
+                                  # either formulation; see "Axisymmetric problems" below)
 mesh:
   file: apps/mesh/cook.msh        # Gmsh .msh (2.2 or 4.x, ASCII or binary) or any format MFEM reads;
                                   # physical groups become the element/boundary attributes and their
@@ -198,6 +203,12 @@ material: { model: neo_hookean, E: 250.0, nu: 0.3, rho0: 1.0 }
   #   Anand's coupled theories: the viscous right Cauchy-Green tensor of each branch as an internal
   #   variable at the quadrature points, updated implicitly per step; see "Finite viscoelasticity"
   #   below). Either formulation; needs a physical time (the time or the dynamics block).
+  #   thermal: { theta0: 298.0, alpha: 180.0e-6, c_v: 1839.0, k: 160.0, entropic: true } makes a decoupled
+  #   model thermoelastic and adds the temperature as a third unknown (formulation: mixed, a time block,
+  #   solver.linear.type: direct; no branches, no dynamics, no plane stress): the shear modulus scales
+  #   with theta/theta0 (entropic: true, default) or not, the volumetric law acts on J / exp(3 alpha
+  #   (theta - theta0)), c_v is the heat capacity per unit reference volume and k the spatial conductivity
+  #   of Fourier's law; the initial temperature is theta0. See "Finite thermoelasticity" below.
   # linear_elastic: small-strain (geometrically linear) isotropic elasticity, either formulation;
   #   keys mu (or E, nu) and one of kappa | nu | incompressible, as for iso_neo_hookean, no volumetric
   #   law: sigma = 2 mu dev(eps) + kappa tr(eps) I with eps = sym(grad u). nu = 0.5 needs
@@ -208,14 +219,17 @@ material: { model: neo_hookean, E: 250.0, nu: 0.3, rho0: 1.0 }
   #   numbers); keys not given are inherited from the base, a region giving any of kappa | nu |
   #   incompressible replaces the base's bulk specification, every region must be incompressible
   #   or none, and no attribute may be covered twice. The base applies everywhere else. A region's
-  #   rho0 is its density (body force and mass).
+  #   rho0 is its density (body force and mass). A region may give its own thermal keys but theta0
+  #   (thermal: { alpha: 0.0 }: no expansion in that region), if the base has a thermal block.
 bcs:
   dirichlet: [ { attr: [left], expression: ["0", "0"] } ]      # attr: physical-group names and/or numbers;
   traction:  [ { attr: [right], expression: ["0", "3.75"] } ]  # expression: one string f(x, y, z, t) per
                                                                # component in the reference coordinates
   # (e.g. ["x", "-0.5*y"] for an affine stretch); nominal traction per unit reference area (dead load).
   # Dirichlet entries may add components: [x, z] (or 0-based indices) to prescribe a subset (rollers,
-  # symmetry planes). Tractions may set type: pressure (dead, T = -p N; a single string) or
+  # symmetry planes), or replace attr by point: [0.0, 0.0] to pin the node nearest to that point (the
+  # expression is evaluated there; a point farther than 1e-8 of the mesh diameter from every node is
+  # an error). Tractions may set type: pressure (dead, T = -p N; a single string) or
   # type: follower_pressure (T = -p J F^-T N per current area). Every entry may add
   # schedule: { type: ramp, from: 0.0, to: 1.0 } | { type: constant } | { type: table, t: [..], s: [..] }:
   # its data is schedule(t) * f over the pseudo-time t in [0, 1]; the default is the ramp unless f
@@ -227,6 +241,12 @@ bcs:
   # traction 2 penalty <..>_+ (x - c) pushes what lies inside the sphere out of it. The resultant force
   # and moment on the body are reported with the reactions under the entry's name. An optional
   # schedule scales the penalty (constant by default).
+  temperature: [ { attr: [top], name: heated, expression: "298 + 50*(1 - exp(-t/20))" } ]
+  heat_flux:   [ { attr: [top], name: lamp, expression: "1.0e4", per_unit: current_area } ]
+  # Thermal conditions of a thermoelastic material (material.thermal): temperature prescribes theta
+  # on faces (one expression f(x, y, z, t); schedule(t) * f, constant by default under the time block);
+  # heat_flux applies an inward heat flux h per unit current area (per_unit: current_area, the default,
+  # through |cof F N|) or reference_area. Insulated is the natural condition.
 body_force: { expression: ["0", "0"], schedule: { type: ramp } }   # per unit mass; rho0 * b enters the
                                                                    # weak form; omit for none
 time:                             # optional: a quasi-static analysis in physical time (rate-dependent materials).
@@ -255,15 +275,15 @@ solver:
              inner_rtol: 1e-3, inner_max_it: 50, augmentation: 1.0 }
                                   # type: gmres_amg | cg_amg | direct; amg: elasticity | systems
                                   # direct: sparse LU (MUMPS through PETSc) of every Newton system, either
-                                  # formulation, serial or parallel; the other keys of `linear` are then
-                                  # unused. Much the fastest choice up to some 1e5 unknowns (the iterative
+                                  # formulation, serial or parallel (required by the coupled u-p-theta
+                                  # formulation); the other keys of `linear` are then unused. Much the fastest choice up to some 1e5 unknowns (the iterative
                                   # solvers are meant for problems too large to factor); needs an MFEM
                                   # built with MFEM_USE_PETSC and a PETSc with MUMPS
                                   # inner_*, augmentation: mixed formulation only (see below)
 output:
   paraview: out/cook              # empty or absent -> no files
-  fields: [displacement, vonmises, jacobian]   # nodal unknowns: displacement, pressure (mixed), and in a dynamic
-                                  # analysis velocity, acceleration; quadrature
+  fields: [displacement, vonmises, jacobian]   # nodal unknowns: displacement, pressure (mixed), temperature
+                                  # (thermoelastic), and in a dynamic analysis velocity, acceleration; quadrature
                                   # quantities: cauchy_stress (6: xx yy zz xy yz xz), pk1_stress (9, row-major),
                                   # deformation_gradient (9), strain (6: Green-Lagrange; the infinitesimal
                                   # strain for linear_elastic), jacobian, vonmises, energy_density,
@@ -386,6 +406,26 @@ report lists the failed attempts and the bisection count; the app prints
 `load step k/n: t = a -> b` per increment and `probe_every_step: true`
 prints every probe after every step with its `t`.
 
+**Point constraints.** A Dirichlet entry with `point: [x, y(, z)]` instead of
+`attr` prescribes its components at the displacement node nearest to that
+point: the owning rank is found by a global minimum over the true dofs, the
+data is the coefficient's value at the node, the schedule and the reactions
+work as for face entries (the reaction is the nodal force there), and a point
+farther than 1e-8 of the mesh diameter from every node is an error. It is how
+the reference pins single nodes of its thermoelastic examples (the bilayer's
+corner, the plate's rim, the sail's edges: one entry per node, so an edge of a
+Q2 mesh takes an entry per node along it). Both formulations, in the
+`LoadSet`; the essential-dof machinery is unchanged.
+
+**Thermal conditions** (thermoelastic material, see "Finite thermoelasticity"
+below): `bcs.temperature` entries prescribe the temperature on faces, one
+expression `f(x, y, z, t)` with a schedule as the others (constant by default
+under the `time` block), and `bcs.heat_flux` entries apply an inward heat flux
+per unit current area (`per_unit: current_area`, the default, through the
+areal Jacobian `|cof F N|` with its tangent in the displacement) or per unit
+reference area. Insulated is the natural condition; there is no convection,
+radiation or volumetric source.
+
 **Programmatic use.** `AddDirichlet`, `AddTraction`, `AddPressure(attrs, p,
 follower)` and `SetBodyForce` take any MFEM coefficient (the tests use
 `AffineVectorCoefficient` and function coefficients) and an optional
@@ -401,9 +441,9 @@ expressions converges at third order, the symmetry cube reproduces the
 closed form, the follower tangent matches finite differences, the cylinder
 inflates as Rivlin says).
 
-Not supported: point loads and nodal constraints (use a small physical
-group), multi-point or periodic constraints, contact, automatic step growth
-after a bisection. In a quasi-static analysis `t` is a pseudo-time; with a
+Not supported: point loads (use a small physical group), multi-point or
+periodic constraints, contact other than the rigid sphere, automatic step
+growth after a bisection. In a quasi-static analysis `t` is a pseudo-time; with a
 `dynamics:` block it is the physical time (see "Dynamics" below).
 
 ### Verification cases (`apps/input/finite_elasticity/verification/`)
@@ -886,6 +926,58 @@ creep and indentation notebooks), this code at 2p + 3 = 7, which is part of what
 the same mesh. The runs take 3 s (the blocks) to 19 min (the bushing, 200 steps on 24 000 unknowns; the indentation with 61 000
 unknowns takes 17 min for its 60 steps) on 4 ranks with the direct solver.
 
+#### Finite thermoelasticity (`finite_thermoelasticity/`)
+
+`finite_thermoelasticity/` holds the six "3. Finite Thermoelasticity" examples: the
+thermoelastic material of that chapter (`material.thermal`, "Finite thermoelasticity" below),
+an Arruda-Boyce solid with the entropic shear modulus G0 theta/theta0, G0 = 280 kPa,
+lambda_L = 5.12, K = 1000 G0 with the reference's logarithmic volumetric law, alpha = 180e-6 /K,
+c_v = 1839 kPa/K per unit reference volume, k = 160 uW/(mm K), theta0 = 298 K (273 for the
+sail), in kPa, mm, s and K; the coupled u-p-theta formulation on Q2-Q1-Q1 quadrilaterals or
+hexahedra of the reference's subdivisions, quasi-static in physical time with the reference's
+steps (`time:`), the direct solver and the tangent predictor. Three cases are axisymmetric
+(`plane: axisymmetric`), three pin single nodes (`point:`), the bilayer is a material region
+without thermal expansion, the plate takes a heat flux per current area. The meshes are
+`apps/mesh/thermo_block.msh`, `thermo_cylinder.msh`, `thermo_plate.msh` (`rect.geo`),
+`bilayer_beam.msh` and `sail.msh` (`make meshes`); `run_set.sh` runs the six on 4 ranks
+(3 to 38 s each).
+
+| Input | Reference | Notes | Mesh: this code / reference |
+|-------|-----------|-------|-----------------------------|
+| `01_constrained_heating` | TE01 | plane-strain 10 x 10 block between rollers on three sides, its top heated by 50 (1 - exp(-t/20)) K, 400 steps of 1 s | 6 x 6 quadrilaterals / crossed triangles |
+| `02_adiabatic_stretch` | TE02 | axisymmetric cylinder R = H = 10 pulled to the stretch 8 in 100 steps, insulated (Gough-Joule heating) | 20 x 20 / the same |
+| `03_heating_contraction` | TE03 | the cylinder under a dead traction of 2 MPa ramped over 50 s, then its surface heated by 50 K over 50 s and held to 300 s, 150 steps | the same |
+| `04_bilayer_actuator` | TE04 | plane-strain 100 x 1 beam of two layers, the top one without expansion (a region), u_x = 0 on the left edge and the node (0, 0) pinned, three edges heated by 50 K over 3600 s, 60 steps | 200 x 2 per layer / the same |
+| `05_plate_flux` | TE05 | axisymmetric plate R = 50, t = 1, the rim node (50, 0) pinned, an inward flux of 1e4 uW/mm^2 per current area on top, theta0 on the bottom, 100 steps of 0.2 s | 20 x 2 / the same |
+| `06_solar_sail` | TE06 | 100 x 100 x 1 membrane at 273 K, rollers on two side faces, the edges x = y = 0 and x = y = 100 pinned, four faces heated by 50 K and a follower pressure ramped to 10 Pa, 100 steps | 10 x 10 x 2 hexahedra / the same box of 1200 tetrahedra |
+
+`apps/anand_thermo_plots.py` reproduces the result plots of the reference pages from the
+ParaView output (or `--logs`) of these runs, one figure per reference figure, into
+`out/anand_coupled_theories/finite_thermoelasticity/plots/`, and overlays the reference's own
+histories (`finite_thermoelasticity/reference/<case>.csv`, its notebooks' `timeHist` arrays,
+`reference/README.md`).
+
+What the plots show, with the reference's values in parentheses. The stretched cylinder (02)
+is a homogeneous state and its axial force and temperature agree with the reference to 1e-8
+at every step: the nominal stress reaches 7.30 MPa at the stretch 8 and the Gough-Joule
+heating raises the temperature by 7.95 K. The constrained block (01) heats through conduction
+and the pressure at its bottom rises to 4.65 kPa at 400 s (4.65; the reference's pressure
+unknown is the mean pressure, the negative of this code's); its temperatures differ from the
+reference's crossed triangles by at most 0.17 K of the 50 K rise. The loaded cylinder (03)
+stretches to 5.26 under 2 MPa and contracts to 5.04 when its surface is heated by 50 K (5.26,
+5.03: u_z to 0.01 percent, the force to 0.02). The bilayer (04) bends to a tip deflection of
+0.715 L at 348 K (0.715, 0.012 percent). The plate (05) heats to 360.2 K at the top of its
+axis and deflects 3.16 mm at 20 s (360.1, 3.16); its early transient differs by up to 3 K at
+0.2 s, where the diffusion length is a fifth of the thickness and the two P1 layers of the
+20 x 2 mesh resolve it less well than the reference's crossed triangles (with four and eight
+layers the deviation falls to 1.0 and 0.3 K). The sail (06) deflects 10.3 mm at A = (70, 60,
+0) and 18.8 mm at B = (100, 0, 0) under 10 Pa (10.06, 18.01: 3 to 4 percent on the
+hexahedra); on the reference's own tetrahedra (`reference/same_mesh/06_solar_sail.yaml`,
+`apps/mesh/sail_box_ref.msh`) the two histories agree with the reference to 0.035 and 0.018
+percent at every step. The reference's "pinned corners" of the sail are every displacement dof
+on the two edges x = y = 0 and x = y = 100 (its `locate_dofs_geometrical` has no condition on
+z), which the input reproduces with the five nodes of each edge.
+
 ### Meshes: the Gmsh workflow
 
 Meshes come from files. The intended workflow is: describe the geometry in
@@ -902,7 +994,10 @@ named 'lefft' (boundary attributes: 1 (bottom), 2 (right), 3 (top), 4
 with their names, at startup.
 
 The example geometries are in `apps/mesh/`: `square.geo` (unit square, n x n
-quadrilaterals, groups bottom/right/top/left), `cook.geo` (Cook's membrane,
+quadrilaterals, groups bottom/right/top/left), `rect.geo` (an Lx x Ly
+rectangle, nx x ny quadrilaterals, the same groups; the reference's rectangles
+of the thermoelasticity examples), `bilayer_beam.geo` (the two-layer beam of
+that set, surfaces bottom_layer and top_layer), `cook.geo` (Cook's membrane,
 same groups; the transfinite mesh of the straight-sided quadrilateral is the
 bilinear map the former cartesian + corners input used, so the frozen
 benchmark values are unchanged), and `box.geo` (Lx x Ly x Lz hexahedra,
@@ -1008,6 +1103,28 @@ dominated sheet problems need increments that do not shear a boundary layer
 of elements by more than a few percent (the energy grows like 1/det F2D^2),
 e.g. `load_steps` such that the shear per step is about 0.05.
 
+### Axisymmetric problems
+
+`plane: axisymmetric` (2D, either formulation) reads the mesh as the meridian
+section of a solid of revolution, x = r and y = z, with no torsion: the
+displacement has the components (u_r, u_z), the kernels complete F with the
+hoop stretch F33 = 1 + u_r / r (F_rr on the axis, its limit) and weight every
+integral by 2 pi r, so that reactions, forces, energies and the mass matrix
+are the totals of the solid of revolution and a dead traction, a follower
+pressure, a contact term or a body force is applied to the real surface or
+volume. The B-operator of a displacement dof carries the hoop term N_a / r in
+the (3, 3) slot, the material tangent is seeded on the in-plane entries and
+the hoop one, and the face kernels use the completed F. The axis is a
+boundary like any other (`left` of `rect.geo` when the rectangle starts at
+r = 0): put u_r = 0 there. Every quadrature quantity uses the completed F.
+`apps/input/finite_elasticity/verification/rivlin_cylinder_axisymmetric.yaml`
+and `green_zerna_sphere_axisymmetric.yaml` run Rivlin's cylinder (a strip
+with z rollers) and the Green-Zerna sphere (a quarter annulus) in this
+description and reproduce the plane-strain and three-dimensional runs to
+1e-8 and 3e-7 (`tests/test_axisymmetric.cpp`, which also checks the patch
+test, the Jacobians with face terms and the mass). Not supported: torsion
+(a hoop displacement), plane stress with it.
+
 Linear solver note: the Krylov tolerance is relative to the AMG-preconditioned
 residual. The `elasticity` options (rigid-body-mode interpolation) work well
 in 2D but stall on slender 3D p = 2 meshes; the solver then falls back to the
@@ -1083,6 +1200,44 @@ solutions in two places:
   (both nodal projections, element averages, raw quadrature values); all
   exact to solver tolerance with quadratic Newton convergence (the Ogden
   tangent is analytic, see below).
+
+### Finite thermoelasticity (`material.thermal`, the u-p-theta formulation)
+
+A `thermal:` block under a decoupled model (`theta0`, `alpha`, `c_v`, `k`, `entropic`, "YAML
+schema" above) makes it thermoelastic and adds the temperature as a third unknown on the
+pressure's space (Q2-Q1-Q1, the reference's element): `formulation: mixed`, a `time:` block
+and `solver.linear.type: direct` are required, and Maxwell branches, `dynamics:`, plane stress
+and the coupled compressible models are refused with it (`doc/theory_manual.tex`, "Finite
+thermoelasticity"). The model is Anand's: the free energy s(theta) Psi_iso(Fbar) + kappa u(J /
+J_theta) - c_v [theta ln(theta/theta0) - (theta - theta0)] with s = theta/theta0 (entropic,
+the default) or 1 and J_theta = exp(3 alpha (theta - theta0)), so that a free expansion to
+J = J_theta is stress free for every volumetric law and the mixed constraint reads
+u'(J/J_theta)/J_theta - p/kappa = 0 (for the logarithmic law exactly the reference's
+p = K (ln J - 3 alpha (theta - theta0))/J, with the opposite sign convention: this code's p is
+tensile positive); the heat equation c_v theta_dot = 1/2 theta M : C_dot - Div Q with the
+thermoelastic (Gough-Joule) heating through M = F^-1 dP/dtheta of the displacement-form stress
+and Fourier's law Q = -k J C^-1 Grad theta with the spatial conductivity k, integrated by the
+implicit Euler method over the steps of the `time` block with the accepted C and theta of every
+quadrature point as the history (seven numbers, advanced when a step is accepted). The kernel
+(`src/kernels/thermo_mixed_total_lagrangian.hpp`) evaluates the residual densities of a point
+by one templated function and forms the nine tangent blocks by dual seeds on the entries of F,
+p, theta and Grad theta, so the tangent is exact; the module
+(`src/physics/thermo_solid_mechanics_tl.{hpp,cpp}`) is the mixed one with the third space,
+the thermal entries (`bcs.temperature`, `bcs.heat_flux`, "Thermal conditions" above), the
+initial temperature theta0 and the nodal field `temperature`. A region may change every
+thermal key but theta0. Use `solver.predictor: tangent` when displacements or temperatures are
+prescribed in large increments: the plain start applies the whole increment to one layer of
+elements (the stretched cylinder of the examples inverts them without it). Tests:
+`tests/test_thermoelastic.cpp` (`make check`): the material point (the stress from the energy,
+dP/dtheta and M against differences, objectivity, Fourier's law), free thermal expansion to
+J = exp(3 alpha dtheta) for two laws, the adiabatic stretch against the material point's
+integration of the heat equation, transient conduction against the series solution, the flux
+entry per current area, the 3 x 3 block Jacobian against finite differences (plane strain and
+axisymmetric, with a follower pressure, a flux and a pin), the point constraints in all three
+formulations, and the schema. Not supported: inertia with a temperature, the displacement
+(penalty) formulation with thermal expansion, convection and radiation, volumetric heat
+sources, temperature-dependent conductivity or heat capacity, thermal contact, anisotropic
+conductivity, iterative solvers for the three-block system.
 
 ### Adding a material (NeoHookean as the template)
 
