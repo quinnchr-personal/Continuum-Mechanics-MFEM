@@ -762,7 +762,10 @@ E = 3 G and neglects the finite section); the cube with the inclusion carries 0.
 MPa at a stretch of 2 (0.5792), 13 percent more than the matrix alone from an
 inclusion of 6.5 percent of the volume; the twisted column needs a compressive axial
 force of 78 mN to keep its length over a full turn (Poynting effect), as does the
-torsion cylinder. With the direct solver the runs take 16 s (01) to 12 min (05) on
+torsion cylinder, with a torque of 94.4 mN mm; the reference notebook plots nothing
+for this case, but its reactions, added to the notebook on its 8 x 8 x 32 hexahedra,
+which are this code's mesh, agree with ours to 0.02 percent at every angle (77.95 mN
+and 94.44 mN mm at 2 pi). With the direct solver the runs take 16 s (01) to 12 min (05) on
 4 ranks; the reference's notebooks, serial, 3 s (3D01) to an hour (3D10).
 
 Differences from the reference that change the numbers: the reference caps the

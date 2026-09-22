@@ -584,6 +584,13 @@ def plot_10(data, ax):
     ax.plot(theta, -m[:, 2], "o-", ms=3, label="torque (magnitude), this code")
     ax2 = ax.twinx()
     ax2.plot(theta, f[:, 2], "s-", ms=3, color="C3", label="axial force, this code")
+    # The reference notebook records nothing; reference/scripts/3D10_column_twist_rxn_run.py
+    # adds the angle and the reactions of the fixed bottom face (torque about +z, axial
+    # force), which are the opposite of the top face's.
+    ref = reference("10_column_twist")
+    if ref is not None:
+        ax.plot(ref[0], ref[1], **{**REF_STYLE, "label": "torque, reference (FEniCSx, reaction)"})
+        ax2.plot(ref[0], -ref[2], **{**REF_STYLE, "marker": "+", "label": "axial force, reference (FEniCSx, reaction)"})
     ax.set_xlabel("twist angle (rad)")
     ax.set_ylabel("torque (mN mm)")
     ax2.set_ylabel("axial force (mN)")

@@ -26,6 +26,7 @@ clone of the repository. The columns are the notebooks' `timeHist0, timeHist1, .
 | 05, 06 | time (s), pressure (kPa), radial displacement of the inner wall (mm) |
 | 07 | time (s), pressure on the patch (kPa), u_z of the footing centre (mm) |
 | 08 | time (s), u_z of the top (mm, negative), axial force (mN, negative), reaction (mN) |
+| 10 | twist angle (rad), reaction torque about +z (mN mm), reaction axial force (mN), on the fixed bottom face (the top face carries the opposite); the notebook itself records nothing |
 
 The force columns of the notebooks are boundary integrals of the finite element stress
 (`dot(Tmat, n) * ds`); the reaction columns, added by `scripts/*_rxn_run.py`, are the
@@ -33,7 +34,7 @@ residual (no boundary conditions applied) summed over the dofs of the loaded fac
 this code's reactions. `anand_plots.py` overlays the reaction where present.
 
 Cases 05 and 06 end when the reference's Newton fails past the limit point (the
-notebook's `Ended Early`); the rows after that are dropped. 3D10 records no history.
+notebook's `Ended Early`); the rows after that are dropped.
 
 Where the loaded face has clamped corners (02, 08) the traction integral differs from
 the reaction by several percent on the reference's tetrahedral meshes.
