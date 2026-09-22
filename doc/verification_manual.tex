@@ -1336,9 +1336,10 @@ points, the force differs from the reaction of the code (the residual summed
 over the prescribed dofs) where the loaded face meets free faces or clamped
 corners: $+9.7\%$ for case 04 and $-8\%$ for case 08 at the end of the run,
 $+3.5\%$ for 02, $0.6\%$ for 03, $0.1\%$ for 09 and 10, round-off for the
-homogeneous cube.  So when the code's log sits beside the output
-(\file{logs/<case>.log}, as \file{logs/run\_set.sh} writes it) the script
-takes the reactions from the log; with \code{--logs} it reads probes and
+homogeneous cube.  So the script takes the reactions from
+\file{<paraview>/reactions.csv} when the run wrote it
+(\code{output.reactions: true}), or else from the code's log beside the
+output (\file{logs/<case>.log}, as \file{logs/run\_set.sh} writes it); with \code{--logs} it reads probes and
 reactions from the logs alone (\file{<dir>/<case>.log}). It overlays an analytical curve where one exists:
 the homogeneous incompressible and nearly incompressible Arruda--Boyce
 response for the uniaxial and shear blocks, Rivlin's universal torsion for torque and

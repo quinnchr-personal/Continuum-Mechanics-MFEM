@@ -1,5 +1,7 @@
 #include "base/output.hpp"
 
+#include <iomanip>
+
 namespace cmf
 {
 
@@ -68,6 +70,35 @@ void ParaViewWriter::RegisterAll(const OutputConfig &cfg,
                         "' is not provided by this physics");
     }
   }
+}
+
+ReactionWriter::ReactionWriter(const std::string &collection_path, std::vector<std::string> names,
+                               bool root)
+  : path_(collection_path + "/reactions.csv"), names_(std::move(names)), root_(root)
+{
+}
+
+void ReactionWriter::Append(int step, double t, const std::vector<std::array<double, 6>> &values)
+{
+  if (!root_) { return; }
+  MFEM_VERIFY(values.size() == names_.size(), "ReactionWriter: one value set per named entry");
+  if (!out_.is_open())
+  {
+    out_.open(path_);
+    if (!out_) { throw ConfigError("output.reactions: cannot write '" + path_ + "'"); }
+    out_ << "step,t";
+    for (const std::string &n : names_)
+    {
+      for (const char *c : {"fx", "fy", "fz", "mx", "my", "mz"}) { out_ << "," << n << "_" << c; }
+    }
+    out_ << "\n";
+  }
+  out_ << step << "," << std::setprecision(17) << t;
+  for (const auto &v : values)
+  {
+    for (double x : v) { out_ << "," << x; }
+  }
+  out_ << "\n" << std::flush;
 }
 
 void ParaViewWriter::Save(int cycle, double time)

@@ -1,9 +1,11 @@
 // Total Lagrangian solid mechanics, quasi-static or (with a `dynamics` block
 // in the input) dynamic: YAML in, ParaView out.
 // This executable only parses input and wires library objects together.
+#include <array>
 #include <cstdio>
 #include <iostream>
 #include <memory>
+#include <vector>
 
 #include "base/config.hpp"
 #include "base/fields.hpp"
@@ -124,12 +126,17 @@ int main(int argc, char *argv[])
 
     // Resultant force and moment of every Dirichlet entry (output.reactions);
     // in a dynamic analysis of the balance with inertia at the accepted state.
-    auto print_reactions = [&](const std::string &prefix, const mfem::Vector &x)
+    // Printed after every step and at the end, and, with ParaView output, also
+    // written to <collection>/reactions.csv per step (step < 0: no row).
+    std::unique_ptr<cmf::ReactionWriter> reaction_csv;
+    auto print_reactions = [&](const std::string &prefix, const mfem::Vector &x, int step, double t)
     {
       if (!cfg.output.reactions) { return; }
-      for (const cmf::Reaction &rx : dynamic ? dynamic->Reactions() : physics.Reactions(x))
+      const std::vector<cmf::Reaction> reactions = dynamic ? dynamic->Reactions() : physics.Reactions(x);
+      std::vector<std::array<double, 6>> rows;
+      for (const cmf::Reaction &rx : reactions)
       {
-        if (root)
+        if (root && !(prefix.empty() && step == 0))   // the initial state goes to the CSV only
         {
           std::printf("%sreaction %s: force =", prefix.c_str(), rx.name.c_str());
           for (int d = 0; d < pmesh->Dimension(); d++) { std::printf(" %.12e", rx.force[d]); }
@@ -137,8 +144,21 @@ int main(int argc, char *argv[])
           for (int d = 0; d < 3; d++) { std::printf(" %.12e", rx.moment[d]); }
           std::printf("\n");
         }
+        rows.push_back({rx.force[0], rx.force[1], rx.force[2], rx.moment[0], rx.moment[1], rx.moment[2]});
+      }
+      if (writer && step >= 0)
+      {
+        if (!reaction_csv)
+        {
+          std::vector<std::string> names;
+          for (const cmf::Reaction &rx : reactions) { names.push_back(rx.name); }
+          reaction_csv = std::make_unique<cmf::ReactionWriter>(cfg.output.paraview, names, root);
+        }
+        reaction_csv->Append(step, t, rows);
       }
     };
+    // The initial state, for the row of cycle 0 of the .pvd (not printed).
+    if (writer) { print_reactions("", u, 0, 0.0); }
 
     // Kinetic and internal energy, external work and their balance
     // (output.energy, dynamic analysis).
@@ -170,7 +190,7 @@ int main(int argc, char *argv[])
       std::snprintf(prefix, sizeof(prefix), dynamic ? "step %d t = %.9e " : "step %d t = %.6f ",
                     step.step, step.load_factor);
       if (cfg.output.probe_every_step) { print_probes(prefix); }
-      print_reactions(prefix, x);
+      print_reactions(prefix, x, step.step, step.load_factor);
       print_energy(prefix, x);
     };
     const cmf::QuasiStaticReport report =
@@ -198,7 +218,7 @@ int main(int argc, char *argv[])
                   report.converged ? "yes" : "no", report.steps.size(), u_l2, energy);
     }
     print_probes("");
-    print_reactions("", u);
+    print_reactions("", u, -1, 0.0);
     if (root && writer) { std::cout << "wrote " << cfg.output.paraview << std::endl; }
     return report.converged ? 0 : 2;
   }

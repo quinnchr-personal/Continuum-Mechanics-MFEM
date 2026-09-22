@@ -1474,6 +1474,15 @@ degrees of freedom (internal minus external nodal forces).  This is the
 exact discrete counterpart of the traction integral over the constrained
 face.  The moment is taken about the origin at the current nodal positions
 $\bX + \bu$.  Two entries that share nodes both count the shared forces.
+The reactions are printed after every step and, with ParaView output,
+written to \file{<paraview>/reactions.csv}, one row per accepted step from
+the initial state on (\code{step, t}, then \code{fx, fy, fz, mx, my, mz}
+per entry), which lines up with the cycles of the \file{.pvd} when
+\code{output.every} is 1.  Post-processing should use these rather than a
+stress field integrated over the face: the nodal stress of the output or
+the finite element stress at quadrature points is off by up to $10\%$
+where the face meets free faces or clamped corners (verification manual,
+the finite elasticity examples).
 
 \subsection{Expressions}
 
@@ -1631,7 +1640,7 @@ the increment is halved and retried, at most \code{max\_bisections} times
 and never below \code{min\_dt}; after a converged reduced increment the
 stepper aims at the planned breakpoint again and never grows beyond the
 planned grid.  Each accepted increment triggers the output callback
-(fields, ParaView cycle, probes, reactions).
+(fields, ParaView cycle, probes, reactions and their CSV).
 
 \paragraph{Time stepping.}
 A dynamic analysis is advanced by the same loop (\code{SolveDynamic}) over

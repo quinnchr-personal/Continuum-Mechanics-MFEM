@@ -253,8 +253,9 @@ output:
   high_order: true
   probes: [ { name: top_right_corner, point: [48.0, 60.0] } ]   # every registered field printed at these points
   probe_every_step: false         # also after every load step, on lines prefixed "step k t = ..."
-  reactions: false                # force and moment of every Dirichlet entry (bcs.*.name labels them); in a
-                                  # dynamic analysis with the inertia the support carries
+  reactions: false                # force and moment of every Dirichlet entry (bcs.*.name labels them) after every
+                                  # step, in the log and, with paraview output, in <paraview>/reactions.csv; in a
+                                  # dynamic analysis of the balance with inertia
   every: 1                        # ParaView stride: every n-th step (and always the last); per-step lines stay
   energy: false                   # dynamic analysis: per step, kinetic and internal energy, external work, balance
 ```
@@ -327,7 +328,14 @@ nodal forces, which is the exact discrete counterpart of the traction
 integral over the constrained face: on the uniaxial cube it equals P_11 times
 the area to round-off and on Cook's membrane the clamped edge carries the
 applied resultant to 1e-14. Two entries sharing nodes both count the shared
-nodal forces.
+nodal forces. With ParaView output the same reactions go to
+`<output.paraview>/reactions.csv`, one row per accepted step from the initial
+state on (columns `step, t, <name>_fx, _fy, _fz, _mx, _my, _mz` per entry), which
+lines up with the cycles of the `.pvd` when `output.every` is 1 and is what
+post-processing should read; a stress field integrated over the face, whether the
+nodal `pk1_stress` of the output or the finite element stress at quadrature
+points, is off by up to 10 percent where the face meets free faces or clamped
+corners (see the finite elasticity examples below).
 
 **Predictor.** By default an increment starts from the last converged state
 with the new Dirichlet values written on the boundary, so the interior lags and
@@ -692,9 +700,10 @@ prescribed components only, the moment about the origin with the current
 position, as the app's). That stress is recovered from the quadrature points,
 and where the loaded face meets free faces or clamped corners the recovered force
 is off: +9.7 percent for 04 and -8 percent for 08 at the end of the run, +3.5 for
-02, 0.6 for 03, 0.1 for 09 and 10, round-off for the homogeneous cube. So when the
-app's log sits beside the output (`logs/<case>.log`, as `logs/run_set.sh` writes
-it) the script takes the reactions from the log; `--logs DIR` reads probes and
+02, 0.6 for 03, 0.1 for 09 and 10, round-off for the homogeneous cube. So the
+script takes the reactions from `<paraview>/reactions.csv` when the run wrote it
+(`output.reactions: true`), or else from the app's log beside the output
+(`logs/<case>.log`, as `logs/run_set.sh` writes it); `--logs DIR` reads probes and
 reactions from the logs alone (`DIR/<case>.log`; the inputs print both after every
 step). The reference
 overlays no analytical curves; the script adds one where a reference

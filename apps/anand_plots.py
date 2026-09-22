@@ -87,6 +87,19 @@ def read_log(path):
     return {k: {f: np.array(v) for f, v in d.items()} for k, d in data.items()}
 
 
+def read_reactions_csv(path):
+    """{("reaction", name): {"t", "force", "moment"}} from the app's <collection>/reactions.csv
+    (output.reactions with ParaView output: step, t, then <name>_fx .. _mz per entry)."""
+    with open(path) as f:
+        header = f.readline().strip().split(",")
+    raw = np.atleast_2d(np.genfromtxt(path, delimiter=",", skip_header=1))
+    data = {}
+    for k in range(2, len(header), 6):
+        name = header[k][:-3]
+        data[("reaction", name)] = {"t": raw[:, 1], "force": raw[:, k:k + 3], "moment": raw[:, k + 3:k + 6]}
+    return data
+
+
 def probe(data, name, field):
     d = data[("probe", name)]
     return d["t"], d[field]
@@ -629,13 +642,15 @@ def main():
                     raise FileNotFoundError(os.path.join(args.inputs, case + ".yaml"))
                 data = read_paraview(configs[case])
                 beside = configs[case]["output"]["paraview"]
-                # The reactions of the app's log, when it is beside the output (logs/<case>.log,
-                # as run_set.sh writes them), replace the ones recovered from the nodal stress:
-                # that recovery is off by up to 10 percent where the loaded face meets free faces
-                # or clamped corners (04, 08, 02); see "ParaView output" above.
+                # The app's own reactions, from <collection>/reactions.csv (output.reactions) or
+                # else from its log beside the output (logs/<case>.log, as run_set.sh writes them),
+                # replace the ones recovered from the nodal stress: that recovery is off by up to
+                # 10 percent where the loaded face meets free faces or clamped corners (04, 08,
+                # 02); see "ParaView output" above.
+                csv = os.path.join(beside.rstrip("/"), "reactions.csv")
                 log = os.path.join(os.path.dirname(beside.rstrip("/")), "logs", case + ".log")
-                if os.path.exists(log):
-                    logged = read_log(log)
+                if os.path.exists(csv) or os.path.exists(log):
+                    logged = read_reactions_csv(csv) if os.path.exists(csv) else read_log(log)
                     for key, entry in logged.items():
                         if key[0] != "reaction" or key not in data:
                             continue
@@ -647,7 +662,7 @@ def main():
                                 src = np.asarray(entry[field])
                                 data[key][field] = np.array([src[r[0]] if len(r) == 1 else np.zeros(src.shape[1])
                                                              for r in rows])
-                            data["reactions_from"] = "log"
+                            data["reactions_from"] = "reactions.csv" if os.path.exists(csv) else "log"
             else:
                 data = read_log(os.path.join(args.logs, case + ".log"))
                 beside = args.logs

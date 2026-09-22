@@ -7,6 +7,7 @@
 #include <string>
 
 #include "base/config.hpp"
+#include "base/output.hpp"
 #include "base/expression.hpp"
 #include "base/mesh_input.hpp"
 #include "base/dual.hpp"
@@ -191,6 +192,32 @@ solver: { load_steps: 1, newton: { rtol: 1e-10, atol: 1e-12, max_it: 25 },
           linear: { type: gmres_amg, rtol: 1e-12, max_it: 500 } }
 output: { paraview: out/cook, fields: [displacement, vonmises] }
 )";
+
+// ReactionWriter: header from the entry names, one row per step, read back.
+void TestReactionWriter()
+{
+  const std::string dir = "build/tests/out/reactions_test";
+  std::filesystem::create_directories(dir);
+  std::filesystem::remove(dir + "/reactions.csv");
+  {
+    cmf::ReactionWriter w(dir, {"loaded", "dirichlet[1]"}, true);
+    CHECK(w.Path() == dir + "/reactions.csv");
+    CHECK(!std::filesystem::exists(w.Path()));   // opened at the first row
+    w.Append(0, 0.0, {{{0, 0, 0, 0, 0, 0}}, {{0, 0, 0, 0, 0, 0}}});
+    w.Append(1, 0.25, {{{1.5, -2.0, 0.0, 0.0, 0.0, 3.25}}, {{-1.5, 2.0, 0.0, 0.0, 0.0, -3.25}}});
+  }
+  std::ifstream in(dir + "/reactions.csv");
+  std::string header, row0, row1;
+  std::getline(in, header); std::getline(in, row0); std::getline(in, row1);
+  CHECK(header == "step,t,loaded_fx,loaded_fy,loaded_fz,loaded_mx,loaded_my,loaded_mz,"
+                  "dirichlet[1]_fx,dirichlet[1]_fy,dirichlet[1]_fz,dirichlet[1]_mx,dirichlet[1]_my,dirichlet[1]_mz");
+  CHECK(row0 == "0,0,0,0,0,0,0,0,0,0,0,0,0,0");
+  CHECK(row1 == "1,0.25,1.5,-2,0,0,0,3.25,-1.5,2,0,0,0,-3.25");
+  // A non-root rank writes nothing.
+  cmf::ReactionWriter silent(dir + "/nowhere", {"a"}, false);
+  silent.Append(0, 0.0, {{{1, 2, 3, 4, 5, 6}}});
+  CHECK(!std::filesystem::exists(dir + "/nowhere/reactions.csv"));
+}
 
 void TestYaml()
 {
@@ -815,6 +842,7 @@ int main()
   TestTensor3x3();
   TestDualScalar();
   TestDualTensor();
+  TestReactionWriter();
   TestYaml();
   TestLoading();
   TestDynamicsConfig();
