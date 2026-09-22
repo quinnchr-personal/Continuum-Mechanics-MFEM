@@ -1,0 +1,53 @@
+# Solar sail (solidmechanicscoupledtheories.github.io, 3. Finite Thermoelasticity, TE06): a
+# 100 x 100 x 1 mm membrane at theta0 = 273 K, u_x = 0 on x = 0 and u_y = 0 on y = 0, the edges
+# x = y = 0 and x = y = 100 pinned (the reference fixes every displacement dof on those two
+# edges: here the five nodes of each edge of the Q2 mesh), heated by 50 K over 100 s on the
+# faces z = 0, z = 1, x = 100 and y = 100 (the two faces on the symmetry planes insulated) and
+# loaded by a follower pressure ramped to 10 Pa on the top face (steps of 1 s): the pressure
+# inflates the heated, softening membrane. The reference plots u_z at A = (70, 60, 0) and
+# B = (100, 0, 0) against the pressure. Material as 01_constrained_heating.yaml with
+# theta0 = 273 K. Q2-Q1-Q1 hexahedra of apps/mesh/box.geo, 10 x 10 x 2 (the reference's box is
+# 10 x 10 x 2 of tetrahedra; reference/same_mesh/06_solar_sail.yaml runs on that mesh).
+formulation: mixed
+mesh: { file: apps/mesh/sail.msh, order: 2 }   # bottom (z = 0), front (y = 0), right (x = 100), back (y = 100), left (x = 0), top (z = 1)
+material:
+  model: arruda_boyce
+  mu: 280.0
+  N: 26.2144
+  kappa: 280000.0
+  volumetric: logarithmic
+  inverse_langevin: pade
+  thermal: { theta0: 273.0, alpha: 180.0e-6, c_v: 1839.0, k: 160.0, entropic: true }
+time: { t_final: 100.0, dt: 1.0 }
+bcs:
+  dirichlet:
+    - { attr: [left],  name: left,  expression: ["0", "0", "0"], components: [x] }
+    - { attr: [front], name: front, expression: ["0", "0", "0"], components: [y] }
+    - { point: [0.0, 0.0, 0.0],  name: pin1_0, expression: ["0", "0", "0"] }
+    - { point: [0.0, 0.0, 0.25], name: pin1_1, expression: ["0", "0", "0"] }
+    - { point: [0.0, 0.0, 0.5],  name: pin1_2, expression: ["0", "0", "0"] }
+    - { point: [0.0, 0.0, 0.75], name: pin1_3, expression: ["0", "0", "0"] }
+    - { point: [0.0, 0.0, 1.0],  name: pin1_4, expression: ["0", "0", "0"] }
+    - { point: [100.0, 100.0, 0.0],  name: pin2_0, expression: ["0", "0", "0"] }
+    - { point: [100.0, 100.0, 0.25], name: pin2_1, expression: ["0", "0", "0"] }
+    - { point: [100.0, 100.0, 0.5],  name: pin2_2, expression: ["0", "0", "0"] }
+    - { point: [100.0, 100.0, 0.75], name: pin2_3, expression: ["0", "0", "0"] }
+    - { point: [100.0, 100.0, 1.0],  name: pin2_4, expression: ["0", "0", "0"] }
+  temperature:
+    - { attr: [bottom, top, right, back], name: heated, expression: "273 + 50*t/100" }
+  traction:
+    - { attr: [top], name: pressure, type: follower_pressure, expression: "0.01*t/100" }   # kPa: 10 Pa at t = 100 s
+solver:
+  predictor: tangent
+  substep: { on_failure: true, max_bisections: 4, min_dt: 0.05 }
+  newton: { rtol: 1e-8, atol: 1e-8, max_it: 30 }
+  linear: { type: direct }
+output:
+  paraview: out/anand_coupled_theories/finite_thermoelasticity/06_solar_sail
+  fields: [displacement, pressure, temperature, cauchy_stress, jacobian]
+  every: 5
+  probe_every_step: true
+  reactions: true
+  probes:
+    - { name: A, point: [70.0, 60.0, 0.0] }
+    - { name: B, point: [100.0, 0.0, 0.0] }

@@ -1,0 +1,40 @@
+# Bilayer thermal actuator (solidmechanicscoupledtheories.github.io, 3. Finite Thermoelasticity,
+# TE04): a plane-strain beam of 100 x 1 mm made of two layers of 0.5 mm, the bottom one with
+# alpha = 180e-6 /K and the top one with no thermal expansion (a region of the material), u_x = 0
+# on the left edge and the node (0, 0) pinned; the bottom, right and top edges are heated by
+# 50 K over 3600 s (steps of 60 s), the left edge is insulated: the beam bends up. The reference
+# plots the tip deflection u_y(100, 0.5) / L against the surface temperature. Material as
+# 01_constrained_heating.yaml. Q2-Q1-Q1 quadrilaterals of apps/mesh/bilayer_beam.geo (200 x 2
+# per layer, the reference's subdivisions).
+formulation: mixed
+mesh: { file: apps/mesh/bilayer_beam.msh, order: 2 }   # bottom, right, top, left; bottom_layer, top_layer
+material:
+  model: arruda_boyce
+  mu: 280.0
+  N: 26.2144
+  kappa: 280000.0
+  volumetric: logarithmic
+  inverse_langevin: pade
+  thermal: { theta0: 298.0, alpha: 180.0e-6, c_v: 1839.0, k: 160.0, entropic: true }
+  regions:
+    - { attr: [top_layer], thermal: { alpha: 0.0 } }
+time: { t_final: 3600.0, dt: 60.0 }
+bcs:
+  dirichlet:
+    - { attr: [left], name: left, expression: ["0", "0"], components: [x] }
+    - { point: [0.0, 0.0], name: pin, expression: ["0", "0"] }
+  temperature:
+    - { attr: [bottom, right, top], name: heated, expression: "298 + 50*t/3600" }
+solver:
+  predictor: tangent
+  substep: { on_failure: true, max_bisections: 4, min_dt: 1.0 }
+  newton: { rtol: 1e-8, atol: 1e-8, max_it: 30 }
+  linear: { type: direct }
+output:
+  paraview: out/anand_coupled_theories/finite_thermoelasticity/04_bilayer_actuator
+  fields: [displacement, pressure, temperature, cauchy_stress, jacobian]
+  every: 5
+  probe_every_step: true
+  reactions: true
+  probes:
+    - { name: tip, point: [100.0, 0.5] }

@@ -1,0 +1,42 @@
+# Constrained heating of a block (solidmechanicscoupledtheories.github.io, 3. Finite
+# Thermoelasticity, TE01): a 10 x 10 mm plane-strain square between rollers on x = 0, x = 10 and
+# y = 0, its top face heated by theta = theta0 + 50 (1 - exp(-t / 20)) K for 400 s (steps of
+# 1 s), the other faces insulated. The material of the whole set: Arruda-Boyce with
+# G0 = 280 kPa, lambda_L = 5.12 (N = lambda_L^2), K = 1000 G0 with the logarithmic volumetric
+# law, the entropic shear modulus G0 theta / theta0, alpha = 180e-6 /K, c_v = 1839 kPa/K
+# (per unit reference volume), k = 160 uW/(mm K), theta0 = 298 K; units kPa, mm, s, K. The
+# reference plots the temperature at (5, 10), (5, 5), (5, 0) and the pressure at (5, 0) against
+# time. Q2-Q1-Q1 quadrilaterals of the reference's 6 x 6 subdivisions (apps/mesh/rect.geo).
+formulation: mixed
+mesh: { file: apps/mesh/thermo_block.msh, order: 2 }   # bottom, right, top, left
+material:
+  model: arruda_boyce
+  mu: 280.0
+  N: 26.2144
+  kappa: 280000.0
+  volumetric: logarithmic
+  inverse_langevin: pade
+  thermal: { theta0: 298.0, alpha: 180.0e-6, c_v: 1839.0, k: 160.0, entropic: true }
+time: { t_final: 400.0, dt: 1.0 }
+bcs:
+  dirichlet:
+    - { attr: [left],   name: left,   expression: ["0", "0"], components: [x] }
+    - { attr: [right],  name: right,  expression: ["0", "0"], components: [x] }
+    - { attr: [bottom], name: bottom, expression: ["0", "0"], components: [y] }
+  temperature:
+    - { attr: [top], name: heated, expression: "298 + 50*(1 - exp(-t/20))" }
+solver:
+  predictor: tangent
+  substep: { on_failure: true, max_bisections: 4, min_dt: 0.05 }
+  newton: { rtol: 1e-8, atol: 1e-8, max_it: 30 }
+  linear: { type: direct }
+output:
+  paraview: out/anand_coupled_theories/finite_thermoelasticity/01_constrained_heating
+  fields: [displacement, pressure, temperature, cauchy_stress, jacobian]
+  every: 10
+  probe_every_step: true
+  reactions: true
+  probes:
+    - { name: top,    point: [5.0, 10.0] }
+    - { name: centre, point: [5.0, 5.0] }
+    - { name: bottom, point: [5.0, 0.0] }

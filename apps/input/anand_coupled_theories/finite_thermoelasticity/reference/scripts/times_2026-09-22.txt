@@ -1,0 +1,7 @@
+TE01_pe_constrained_heating exit 0 wall 9 s | Elapsed real time:  0:00:03.375350
+TE02_axi_thermoelas_stretch_adiabatic exit 0 wall 18 s | Elapsed real time:  0:00:13.195116
+TE03_axi_thermoelas_steps exit 0 wall 22 s | Elapsed real time:  0:00:17.738016
+TE04_pe_bilayer exit 0 wall 23 s | Elapsed real time:  0:00:17.736037
+TE05_axi_circular_plate_flux exit 0 wall 5 s | 
+TE06_solar_sail exit 0 wall 74 s | 
+ALL_DONE

@@ -102,7 +102,9 @@ MESHES := $(MESH_DIR)/square.msh $(MESH_DIR)/cook.msh $(MESH_DIR)/cube.msh $(MES
 	$(MESH_DIR)/sphere_octant.msh $(MESH_DIR)/footing.msh $(MESH_DIR)/inclusion.msh \
 	$(MESH_DIR)/cube_tet.msh $(MESH_DIR)/plate_hole_2d.msh $(MESH_DIR)/column_euler.msh $(MESH_DIR)/bar.msh \
 	$(MESH_DIR)/cube5.msh $(MESH_DIR)/beam20.msh $(MESH_DIR)/column_buckling50.msh $(MESH_DIR)/bushing.msh \
-	$(MESH_DIR)/indent_cube.msh $(MESH_DIR)/strip.msh
+	$(MESH_DIR)/indent_cube.msh $(MESH_DIR)/strip.msh \
+	$(MESH_DIR)/thermo_block.msh $(MESH_DIR)/thermo_cylinder.msh $(MESH_DIR)/thermo_plate.msh \
+	$(MESH_DIR)/bilayer_beam.msh $(MESH_DIR)/sail.msh
 meshes: $(MESHES)
 $(MESH_DIR)/square.msh: $(MESH_DIR)/square.geo
 	$(GMSH) -2 -format msh22 -setnumber n 4 -o $@ $< > /dev/null
@@ -120,6 +122,19 @@ $(MESH_DIR)/annulus.msh: $(MESH_DIR)/annulus.geo
 # The meridian strip of the axisymmetric tube (finite_elasticity/verification).
 $(MESH_DIR)/strip.msh: $(MESH_DIR)/strip.geo
 	$(GMSH) -2 -format msh22 -o $@ $< > /dev/null
+# Meshes of apps/input/anand_coupled_theories/finite_thermoelasticity (section 3 of the site):
+# the reference's rectangles as quadrilaterals of the same subdivisions, the bilayer beam, the
+# sail (sail_box_ref.msh of its same_mesh input is dolfinx's box, by export_box.py).
+$(MESH_DIR)/thermo_block.msh: $(MESH_DIR)/rect.geo
+	$(GMSH) -2 -format msh22 -setnumber Lx 10 -setnumber Ly 10 -setnumber nx 6 -setnumber ny 6 -o $@ $< > /dev/null
+$(MESH_DIR)/thermo_cylinder.msh: $(MESH_DIR)/rect.geo
+	$(GMSH) -2 -format msh22 -setnumber Lx 10 -setnumber Ly 10 -setnumber nx 20 -setnumber ny 20 -o $@ $< > /dev/null
+$(MESH_DIR)/thermo_plate.msh: $(MESH_DIR)/rect.geo
+	$(GMSH) -2 -format msh22 -setnumber Lx 50 -setnumber Ly 1 -setnumber nx 20 -setnumber ny 2 -o $@ $< > /dev/null
+$(MESH_DIR)/bilayer_beam.msh: $(MESH_DIR)/bilayer_beam.geo
+	$(GMSH) -2 -format msh22 -o $@ $< > /dev/null
+$(MESH_DIR)/sail.msh: $(MESH_DIR)/box.geo
+	$(GMSH) -3 -format msh22 -setnumber Lx 100 -setnumber Ly 100 -setnumber Lz 1 -setnumber nx 10 -setnumber ny 10 -setnumber nz 2 -o $@ $< > /dev/null
 # Meshes of apps/input/anand_coupled_theories/finite_elasticity (the examples of Anand's book,
 # FEniCSx codes at solidmechanicscoupledtheories.github.io, section 1).
 $(MESH_DIR)/cube10.msh: $(MESH_DIR)/box.geo

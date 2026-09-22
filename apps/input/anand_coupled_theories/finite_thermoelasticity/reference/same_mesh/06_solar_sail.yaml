@@ -1,0 +1,48 @@
+# 06_solar_sail.yaml on the reference's own mesh: dolfinx's create_box of 10 x 10 x 2 tetrahedra
+# (apps/mesh/sail_box_ref.msh, written by
+# ../../../finite_elasticity/reference/scripts/export_box.py 10 10 2 apps/mesh/sail_box_ref.msh 100 100 1),
+# P2-P1-P1 as the reference's element, so that the two codes are compared on the same
+# discretization; everything else as ../../06_solar_sail.yaml.
+formulation: mixed
+mesh: { file: apps/mesh/sail_box_ref.msh, order: 2 }   # the reference's box of tetrahedra (export_box.py): P2-P1-P1, its element
+material:
+  model: arruda_boyce
+  mu: 280.0
+  N: 26.2144
+  kappa: 280000.0
+  volumetric: logarithmic
+  inverse_langevin: pade
+  thermal: { theta0: 273.0, alpha: 180.0e-6, c_v: 1839.0, k: 160.0, entropic: true }
+time: { t_final: 100.0, dt: 1.0 }
+bcs:
+  dirichlet:
+    - { attr: [left],  name: left,  expression: ["0", "0", "0"], components: [x] }
+    - { attr: [front], name: front, expression: ["0", "0", "0"], components: [y] }
+    - { point: [0.0, 0.0, 0.0],  name: pin1_0, expression: ["0", "0", "0"] }
+    - { point: [0.0, 0.0, 0.25], name: pin1_1, expression: ["0", "0", "0"] }
+    - { point: [0.0, 0.0, 0.5],  name: pin1_2, expression: ["0", "0", "0"] }
+    - { point: [0.0, 0.0, 0.75], name: pin1_3, expression: ["0", "0", "0"] }
+    - { point: [0.0, 0.0, 1.0],  name: pin1_4, expression: ["0", "0", "0"] }
+    - { point: [100.0, 100.0, 0.0],  name: pin2_0, expression: ["0", "0", "0"] }
+    - { point: [100.0, 100.0, 0.25], name: pin2_1, expression: ["0", "0", "0"] }
+    - { point: [100.0, 100.0, 0.5],  name: pin2_2, expression: ["0", "0", "0"] }
+    - { point: [100.0, 100.0, 0.75], name: pin2_3, expression: ["0", "0", "0"] }
+    - { point: [100.0, 100.0, 1.0],  name: pin2_4, expression: ["0", "0", "0"] }
+  temperature:
+    - { attr: [bottom, top, right, back], name: heated, expression: "273 + 50*t/100" }
+  traction:
+    - { attr: [top], name: pressure, type: follower_pressure, expression: "0.01*t/100" }   # kPa: 10 Pa at t = 100 s
+solver:
+  predictor: tangent
+  substep: { on_failure: true, max_bisections: 4, min_dt: 0.05 }
+  newton: { rtol: 1e-8, atol: 1e-8, max_it: 30 }
+  linear: { type: direct }
+output:
+  paraview: out/anand_coupled_theories/finite_thermoelasticity/same_mesh/06_solar_sail
+  fields: [displacement, pressure, temperature, cauchy_stress, jacobian]
+  every: 5
+  probe_every_step: true
+  reactions: true
+  probes:
+    - { name: A, point: [70.0, 60.0, 0.0] }
+    - { name: B, point: [100.0, 0.0, 0.0] }

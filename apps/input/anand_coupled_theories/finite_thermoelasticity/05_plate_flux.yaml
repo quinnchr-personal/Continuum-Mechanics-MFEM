@@ -1,0 +1,39 @@
+# Circular plate under a surface heat flux (solidmechanicscoupledtheories.github.io, 3. Finite
+# Thermoelasticity, TE05): an axisymmetric plate of radius 50 mm and thickness 1 mm (x = r,
+# y = z), the node (50, 0) of its rim pinned, an inward heat flux of 1e4 uW/mm^2 per unit
+# current area on the top face, the bottom face held at theta0, the rim insulated, for 20 s
+# (steps of 0.2 s): the heated top expands and the plate bends down at the centre. The reference
+# plots the top-centre temperature and deflection u_z(0, 1) against time. Material as
+# 01_constrained_heating.yaml. Q2-Q1-Q1 quadrilaterals of the reference's 20 x 2 subdivisions.
+formulation: mixed
+plane: axisymmetric
+mesh: { file: apps/mesh/thermo_plate.msh, order: 2 }   # bottom (z = 0), right (rim), top (z = 1), left (axis)
+material:
+  model: arruda_boyce
+  mu: 280.0
+  N: 26.2144
+  kappa: 280000.0
+  volumetric: logarithmic
+  inverse_langevin: pade
+  thermal: { theta0: 298.0, alpha: 180.0e-6, c_v: 1839.0, k: 160.0, entropic: true }
+time: { t_final: 20.0, dt: 0.2 }
+bcs:
+  dirichlet:
+    - { point: [50.0, 0.0], name: pin, expression: ["0", "0"] }
+  temperature:
+    - { attr: [bottom], name: cooled, expression: "298" }
+  heat_flux:
+    - { attr: [top], name: lamp, expression: "1.0e4", per_unit: current_area }
+solver:
+  predictor: tangent
+  substep: { on_failure: true, max_bisections: 4, min_dt: 0.01 }
+  newton: { rtol: 1e-8, atol: 1e-8, max_it: 30 }
+  linear: { type: direct }
+output:
+  paraview: out/anand_coupled_theories/finite_thermoelasticity/05_plate_flux
+  fields: [displacement, pressure, temperature, cauchy_stress, jacobian]
+  every: 5
+  probe_every_step: true
+  reactions: true
+  probes:
+    - { name: centre_top, point: [0.0, 1.0] }

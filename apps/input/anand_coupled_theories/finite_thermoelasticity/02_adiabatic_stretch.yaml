@@ -1,0 +1,39 @@
+# Adiabatic stretching of a cylinder (solidmechanicscoupledtheories.github.io, 3. Finite
+# Thermoelasticity, TE02): an axisymmetric cylinder of radius 10 mm and height 10 mm (the
+# meridian section x = r, y = z), u_z = 0 on z = 0, u_r = 0 on the axis, the top face pulled to
+# u_z = 70 mm (the stretch 8) in 100 s (steps of 1 s), all faces insulated: the entropic
+# elastomer heats as it is stretched (the Gough-Joule effect). The reference plots the nominal
+# stress (the axial force over pi R^2) and the temperature rise at the top of the axis against
+# the stretch. Material as 01_constrained_heating.yaml. Q2-Q1-Q1 quadrilaterals of the
+# reference's 20 x 20 subdivisions; the reaction of the top face is the total axial force
+# (every axisymmetric integral carries 2 pi r).
+formulation: mixed
+plane: axisymmetric
+mesh: { file: apps/mesh/thermo_cylinder.msh, order: 2 }   # bottom (z = 0), right (r = R), top (z = H), left (axis)
+material:
+  model: arruda_boyce
+  mu: 280.0
+  N: 26.2144
+  kappa: 280000.0
+  volumetric: logarithmic
+  inverse_langevin: pade
+  thermal: { theta0: 298.0, alpha: 180.0e-6, c_v: 1839.0, k: 160.0, entropic: true }
+time: { t_final: 100.0, dt: 1.0 }
+bcs:
+  dirichlet:
+    - { attr: [left],   name: axis, expression: ["0", "0"], components: [x] }
+    - { attr: [bottom], name: base, expression: ["0", "0"], components: [y] }
+    - { attr: [top],    name: top,  expression: ["0", "0.7*t"], components: [y] }
+solver:
+  predictor: tangent
+  substep: { on_failure: true, max_bisections: 4, min_dt: 0.05 }
+  newton: { rtol: 1e-8, atol: 1e-8, max_it: 30 }
+  linear: { type: direct }
+output:
+  paraview: out/anand_coupled_theories/finite_thermoelasticity/02_adiabatic_stretch
+  fields: [displacement, pressure, temperature, cauchy_stress, jacobian]
+  every: 5
+  probe_every_step: true
+  reactions: true
+  probes:
+    - { name: top_axis, point: [0.0, 10.0] }

@@ -1,0 +1,41 @@
+# Heating-induced contraction of a stretched cylinder (solidmechanicscoupledtheories.github.io,
+# 3. Finite Thermoelasticity, TE03): the cylinder of 02_adiabatic_stretch.yaml, held at theta0
+# on its outer surface (r = R, z = 0, z = 10), is loaded by a dead traction of 2 MPa on the top
+# face ramped over the first 50 s; from t = 50 s the temperature of those faces is raised by
+# 50 K over 50 s and held to t = 300 s (steps of 2 s): the entropic elastomer contracts as it
+# heats. The reference plots the stretch against the nominal stress and against the surface
+# temperature. The reaction of the base is minus the applied force. Material and mesh as
+# 02_adiabatic_stretch.yaml.
+formulation: mixed
+plane: axisymmetric
+mesh: { file: apps/mesh/thermo_cylinder.msh, order: 2 }   # bottom (z = 0), right (r = R), top (z = H), left (axis)
+material:
+  model: arruda_boyce
+  mu: 280.0
+  N: 26.2144
+  kappa: 280000.0
+  volumetric: logarithmic
+  inverse_langevin: pade
+  thermal: { theta0: 298.0, alpha: 180.0e-6, c_v: 1839.0, k: 160.0, entropic: true }
+time: { t_final: 300.0, dt: 2.0 }
+bcs:
+  dirichlet:
+    - { attr: [left],   name: axis, expression: ["0", "0"], components: [x] }
+    - { attr: [bottom], name: base, expression: ["0", "0"], components: [y] }
+  traction:
+    - { attr: [top], name: pull, expression: ["0", "2000*min(t/50, 1)"] }   # kPa, per unit reference area
+  temperature:
+    - { attr: [right, bottom, top], name: surface, expression: "298 + 50*min(max((t - 50)/50, 0), 1)" }
+solver:
+  predictor: tangent
+  substep: { on_failure: true, max_bisections: 4, min_dt: 0.1 }
+  newton: { rtol: 1e-8, atol: 1e-8, max_it: 30 }
+  linear: { type: direct }
+output:
+  paraview: out/anand_coupled_theories/finite_thermoelasticity/03_heating_contraction
+  fields: [displacement, pressure, temperature, cauchy_stress, jacobian]
+  every: 5
+  probe_every_step: true
+  reactions: true
+  probes:
+    - { name: top_axis, point: [0.0, 10.0] }
