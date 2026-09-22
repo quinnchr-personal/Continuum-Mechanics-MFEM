@@ -67,9 +67,11 @@ inline void CompleteState(const Material &material, QPointState &s)
   s.J = VolumeRatio(material, s.F);
 }
 
-// Sets the integration point on T and fills the state there.
+// Sets the integration point on T and fills the state there; q is the index
+// of the point in the element's rule (the slot of a history-dependent
+// material's HistoryField).
 using QPointEvaluator = std::function<void(mfem::ElementTransformation &,
-                                           const mfem::IntegrationPoint &, QPointState &)>;
+                                           const mfem::IntegrationPoint &, int q, QPointState &)>;
 
 struct QuantityInfo
 {

@@ -16,6 +16,7 @@
 
 #include "base/config.hpp"
 #include "base/fields.hpp"
+#include "kernels/history_field.hpp"
 #include "materials/materials.hpp"
 #include "mfem.hpp"
 #include "physics/solid_problem.hpp"
@@ -41,6 +42,9 @@ public:
                    const BCOptions &opt = BCOptions()) override;
   void AddPressure(const std::vector<int> &attrs, mfem::Coefficient &p, bool follower,
                    const BCOptions &opt = BCOptions()) override;
+  void AddRigidSphereContact(const std::vector<int> &attrs, mfem::VectorCoefficient &center,
+                             double radius, double penalty,
+                             const BCOptions &opt = BCOptions()) override;
   void SetBodyForce(mfem::VectorCoefficient &b, const BCOptions &opt = BCOptions()) override;
   void ClearBoundaryConditions() override;
   void Finalize() override;
@@ -50,6 +54,12 @@ public:
   void SetPhysicalTime(bool on) override { loads_.SetPhysicalTime(on); }
   mfem::Coefficient &ReferenceDensity() override { return density_; }
   OperatorStamp GradientStamp() const override { return gradient_stamp_; }
+  // History of a material with Maxwell branches (SolidProblem, as in SolidMechanicsTL).
+  bool HasHistory() const override { return history_ != nullptr; }
+  void ResetHistory(double t) override;
+  void AcceptStep(const mfem::Vector &x) override;
+  const HistoryField *History() const { return history_.get(); }
+  double AcceptedTime() const { return t_accepted_; }
 
   void Mult(const mfem::Vector &x, mfem::Vector &y) const override;
   mfem::Operator &GetGradient(const mfem::Vector &x) const override;
@@ -104,6 +114,8 @@ private:
   void Build(const AppConfig &cfg);
   void ResetForm();
   void EnsureFields();
+  void InitializeHistory();
+  void UpdateHistory(const mfem::Vector &x);
 
   mfem::ParMesh &mesh_;
   int dim_;
@@ -128,9 +140,13 @@ private:
   std::vector<std::unique_ptr<mfem::Coefficient>> owned_scalars_;
   LoadSet loads_;
   std::deque<mfem::Array<int>> follower_markers_;
+  std::deque<mfem::Array<int>> contact_markers_;
+  std::vector<std::unique_ptr<mfem::ParBlockNonlinearForm>> contact_forms_; // one per entry, its integrator alone
   mfem::Array<int> ess_p_empty_;
 
   bool finalized_ = false;
+  std::unique_ptr<HistoryField> history_;
+  double t_accepted_ = 0.0;
   std::unique_ptr<mfem::HypreParMatrix> pressure_mass_;
 
   // The assembled block Jacobian of a linear problem (owned by nlf_) and the

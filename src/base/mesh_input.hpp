@@ -33,6 +33,9 @@ void PerturbInteriorVertices(mfem::Mesh &mesh, double amplitude,
 // mesh provides. `what` names the YAML entry.
 std::vector<int> ResolveBoundaryAttributes(mfem::Mesh &mesh, const BoundaryCondition &bc,
                                            const std::string &what);
+std::vector<int> ResolveBoundaryAttributes(mfem::Mesh &mesh, const std::vector<int> &attr,
+                                           const std::vector<std::string> &attr_names,
+                                           const std::string &what);
 
 // Element attributes of a material region (numbers checked, physical-volume
 // names resolved through the element attribute sets), like the boundary case.

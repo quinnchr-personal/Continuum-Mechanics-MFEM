@@ -1,8 +1,10 @@
 // Material library entry point: the variant of available models (the
-// hyperelastic ones and small-strain linear elasticity), the YAML factory,
-// and the (E, nu) -> (mu, lambda) conversion.
+// hyperelastic ones, small-strain linear elasticity, and the decoupled
+// hyperelastic ones with Maxwell branches: finite viscoelasticity), the
+// YAML factory, and the (E, nu) -> (mu, lambda) conversion.
 #pragma once
 
+#include <algorithm>
 #include <string>
 #include <type_traits>
 #include <variant>
@@ -11,6 +13,7 @@
 #include <limits>
 
 #include "base/config.hpp"
+#include "kernels/history_bound.hpp"
 #include "materials/arruda_boyce.hpp"
 #include "materials/gent.hpp"
 #include "materials/gent_compressible_summit.hpp"
@@ -23,6 +26,7 @@
 #include "materials/ogden.hpp"
 #include "materials/plane_stress.hpp"
 #include "materials/st_venant_kirchhoff.hpp"
+#include "materials/viscoelastic.hpp"
 #include "materials/volumetric.hpp"
 #include "materials/yeoh.hpp"
 
@@ -30,14 +34,19 @@ namespace cmf
 {
 
 // Every model usable in the displacement formulation (needs PK1<T>(F)),
-// each also wrapped by the plane-stress adapter (2D, plane: stress).
+// each also wrapped by the plane-stress adapter (2D, plane: stress), and
+// the decoupled ones with Maxwell branches (materials/viscoelastic.hpp;
+// history-dependent, PK1<T>(F, h, dt); plane strain only in 2D).
 using Material = std::variant<NeoHookean, StVenantKirchhoff, GentCompressibleSummit, IsoNeoHookean,
                               MooneyRivlin, Yeoh, Gent, ArrudaBoyce, Ogden, LinearElastic,
                               PlaneStress<NeoHookean>, PlaneStress<StVenantKirchhoff>,
                               PlaneStress<GentCompressibleSummit>,
                               PlaneStress<IsoNeoHookean>, PlaneStress<MooneyRivlin>,
                               PlaneStress<Yeoh>, PlaneStress<Gent>, PlaneStress<ArrudaBoyce>,
-                              PlaneStress<Ogden>, PlaneStress<LinearElastic>>;
+                              PlaneStress<Ogden>, PlaneStress<LinearElastic>,
+                              Viscoelastic<IsoNeoHookean>, Viscoelastic<MooneyRivlin>,
+                              Viscoelastic<Yeoh>, Viscoelastic<Gent>, Viscoelastic<ArrudaBoyce>,
+                              Viscoelastic<Ogden>>;
 
 template <typename M> struct is_plane_stress : std::false_type {};
 template <typename B> struct is_plane_stress<PlaneStress<B>> : std::true_type {};
@@ -52,9 +61,38 @@ inline bool IsSmallStrain(const std::variant<Ms...> &m)
 
 // Decoupled models usable in the mixed u-p formulation (PK1Iso<T>(F),
 // VolumetricPressure<T>(J), ShearModulus(), kappa possibly infinite);
-// LinearElastic with the volume measure of its small-strain kinematics.
+// LinearElastic with the volume measure of its small-strain kinematics; and
+// the decoupled models with Maxwell branches.
 using MixedMaterial = std::variant<IsoNeoHookean, MooneyRivlin, Yeoh, Gent, ArrudaBoyce, Ogden,
-                                   LinearElastic>;
+                                   LinearElastic, Viscoelastic<IsoNeoHookean>,
+                                   Viscoelastic<MooneyRivlin>, Viscoelastic<Yeoh>,
+                                   Viscoelastic<Gent>, Viscoelastic<ArrudaBoyce>,
+                                   Viscoelastic<Ogden>>;
+
+// Whether the held model carries a history (Maxwell branches).
+template <typename... Ms>
+inline bool IsHistoryDependent(const std::variant<Ms...> &m)
+{
+  return std::visit([](const auto &mat)
+  { return has_history<std::decay_t<decltype(mat)>>::value; }, m);
+}
+
+// The largest history block (doubles per quadrature point) of a material
+// table; 0 without a history.
+template <typename V>
+inline int HistorySizeOf(const std::vector<V> &table)
+{
+  int size = 0;
+  for (const V &v : table)
+  {
+    size = std::max(size, std::visit([](const auto &mat) -> int
+    {
+      if constexpr (has_history<std::decay_t<decltype(mat)>>::value) { return mat.HistorySize(); }
+      else { return 0; }
+    }, v));
+  }
+  return size;
+}
 
 struct LameParameters
 {
@@ -111,11 +149,13 @@ inline std::vector<M> UnpackMaterials(const std::vector<V> &table)
   return out;
 }
 
-// The YAML name of a material type (the plane-stress adapter reports its base).
+// The YAML name of a material type (the plane-stress and the viscoelastic
+// adapters report their base).
 template <typename M>
 constexpr const char *ModelName()
 {
   if constexpr (is_plane_stress<M>::value) { return ModelName<typename M::Base>(); }
+  else if constexpr (is_viscoelastic<M>::value) { return ModelName<typename M::Equilibrium>(); }
   else if constexpr (std::is_same_v<M, NeoHookean>) { return "neo_hookean"; }
   else if constexpr (std::is_same_v<M, StVenantKirchhoff>) { return "st_venant_kirchhoff"; }
   else if constexpr (std::is_same_v<M, GentCompressibleSummit>) { return "gent_compressible_summit"; }
@@ -136,6 +176,18 @@ inline std::string ModelNameOf(const std::variant<Ms...> &m)
   { return ModelName<std::decay_t<decltype(mat)>>(); }, m);
 }
 
+// " with n Maxwell branches" for a viscoelastic material, "" otherwise.
+template <typename M>
+inline std::string BranchesSuffixOf(const M &mat)
+{
+  if constexpr (is_viscoelastic<M>::value)
+  {
+    return " with " + std::to_string(mat.branches.size()) + " Maxwell branch" +
+           (mat.branches.size() == 1 ? "" : "es");
+  }
+  else { return ""; }
+}
+
 inline std::string MaterialName(const Material &m)
 {
   return std::visit([](const auto &mat) -> std::string
@@ -143,14 +195,14 @@ inline std::string MaterialName(const Material &m)
     using M = std::decay_t<decltype(mat)>;
     std::string name = ModelName<M>();
     if constexpr (is_plane_stress<M>::value) { name += " (plane stress)"; }
-    return name;
+    return name + BranchesSuffixOf(mat);
   }, m);
 }
 
 inline std::string MaterialName(const MixedMaterial &m)
 {
   return std::visit([](const auto &mat) -> std::string
-  { return ModelName<std::decay_t<decltype(mat)>>(); }, m);
+  { return ModelName<std::decay_t<decltype(mat)>>() + BranchesSuffixOf(mat); }, m);
 }
 
 // ", <law> volumetric law" for a decoupled material with a finite bulk modulus

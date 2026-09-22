@@ -69,12 +69,20 @@ QuasiStaticReport SolveQuasiStatic(QuasiStaticProblem &problem,
                                    const LoadStepCallback &on_step = LoadStepCallback());
 
 // The same loop in physical time: from t_start through the targets `times`
-// (increasing), with cfg.newton and cfg.substep (min_dt then in time units);
-// cfg.load_steps, cfg.breakpoints and cfg.predictor are not used. A target
+// (increasing), with cfg.newton, cfg.substep (min_dt then in time units) and
+// cfg.predictor; cfg.load_steps and cfg.breakpoints are not used. A target
 // counts as reached within 1e-9 of the planned increment: the absolute 1e-14
 // of the pseudo-time is below the spacing of doubles once t > 100, and a
 // missed target would leave a degenerate last step. In the reports
-// load_factor is the time at the end of the step.
+// load_factor is the time at the end of the step. This is the loop of a
+// quasi-static analysis in physical time (the `time` block: a rate-dependent
+// material advances its history in AcceptStep) and of a dynamic analysis
+// (SolveDynamic, the same function under its older name; the tangent
+// predictor is not applied there).
+QuasiStaticReport SolveInTime(QuasiStaticProblem &problem, mfem::Solver &linear_solver,
+                              const SolverConfig &cfg, const std::vector<double> &times,
+                              double t_start, mfem::Vector &x,
+                              const LoadStepCallback &on_step = LoadStepCallback());
 QuasiStaticReport SolveDynamic(QuasiStaticProblem &problem, mfem::Solver &linear_solver,
                                const SolverConfig &cfg, const std::vector<double> &times,
                                double t_start, mfem::Vector &x,

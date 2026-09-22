@@ -25,7 +25,9 @@ MixedMaterial MakeDecoupledBase(const MaterialConfig &cfg, const ResolvedModuli 
   return Ogden(cfg.mu_r, cfg.alpha_r, m.kappa);
 }
 
-// The decoupled material with its volumetric law (material.volumetric).
+// The decoupled material with its volumetric law (material.volumetric) and,
+// with material.branches, wrapped as the equilibrium branch of a
+// viscoelastic material.
 MixedMaterial MakeDecoupled(const MaterialConfig &cfg, const ResolvedModuli &m)
 {
   MixedMaterial material = MakeDecoupledBase(cfg, m);
@@ -35,7 +37,18 @@ MixedMaterial MakeDecoupled(const MaterialConfig &cfg, const ResolvedModuli &m)
     // linear_elastic has no law to choose (kappa tr(eps)).
     if constexpr (has_volumetric_law<std::decay_t<decltype(mat)>>::value) { mat.law = law; }
   }, material);
-  return material;
+  if (cfg.branches.empty()) { return material; }
+  std::vector<MaxwellBranch> branches;
+  for (const MaxwellBranchConfig &b : cfg.branches) { branches.push_back({b.G, b.tau}); }
+  return std::visit([&](const auto &mat) -> MixedMaterial
+  {
+    using M = std::decay_t<decltype(mat)>;
+    if constexpr (is_viscoelastic<M>::value || is_small_strain<M>::value)
+    {
+      throw ConfigError("material.branches: model '" + cfg.model + "' cannot carry Maxwell branches");
+    }
+    else { return Viscoelastic<M>(mat, branches); }
+  }, material);
 }
 
 } // namespace
@@ -115,10 +128,15 @@ Material MakeMaterial(const MaterialConfig &cfg, bool plane_stress)
     base = std::visit([](const auto &mat) -> Material { return mat; }, MakeDecoupled(cfg, m));
   }
   if (!plane_stress) { return base; }
+  if (!cfg.branches.empty())
+  {
+    throw ConfigError("material.branches: a viscoelastic material has no plane-stress adapter "
+                      "(2D problems are plane strain)");
+  }
   return std::visit([](const auto &mat) -> Material
   {
     using M = std::decay_t<decltype(mat)>;
-    if constexpr (is_plane_stress<M>::value) { return mat; }
+    if constexpr (is_plane_stress<M>::value || is_viscoelastic<M>::value) { return mat; }
     else { return PlaneStress<M>(mat); }
   }, base);
 }

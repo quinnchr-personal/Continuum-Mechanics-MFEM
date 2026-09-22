@@ -75,7 +75,7 @@ bool TangentPredictor(QuasiStaticProblem &problem, mfem::Solver &linear_solver, 
 // every comparison and printed line is that of the pseudo-time stepper.
 QuasiStaticReport RunSteps(QuasiStaticProblem &problem, mfem::Solver &linear_solver,
                            const SolverConfig &cfg, const std::vector<double> &targets,
-                           double t_start, bool physical_time, mfem::Vector &x,
+                           double t_start, bool physical_time, bool predictor, mfem::Vector &x,
                            const LoadStepCallback &on_step)
 {
   int rank = 0;
@@ -113,7 +113,7 @@ QuasiStaticReport RunSteps(QuasiStaticProblem &problem, mfem::Solver &linear_sol
         }
       }
       problem.SetLoadFactor(t_try);
-      if (!physical_time && cfg.predictor == "tangent")
+      if (predictor && cfg.predictor == "tangent")
       {
         TangentPredictor(problem, linear_solver, x);
       }
@@ -168,14 +168,21 @@ QuasiStaticReport SolveQuasiStatic(QuasiStaticProblem &problem,
                                    const SolverConfig &cfg, mfem::Vector &x,
                                    const LoadStepCallback &on_step)
 {
-  return RunSteps(problem, linear_solver, cfg, LoadStepBreakpoints(cfg), 0.0, false, x, on_step);
+  return RunSteps(problem, linear_solver, cfg, LoadStepBreakpoints(cfg), 0.0, false, true, x, on_step);
+}
+
+QuasiStaticReport SolveInTime(QuasiStaticProblem &problem, mfem::Solver &linear_solver,
+                              const SolverConfig &cfg, const std::vector<double> &times,
+                              double t_start, mfem::Vector &x, const LoadStepCallback &on_step)
+{
+  return RunSteps(problem, linear_solver, cfg, times, t_start, true, true, x, on_step);
 }
 
 QuasiStaticReport SolveDynamic(QuasiStaticProblem &problem, mfem::Solver &linear_solver,
                                const SolverConfig &cfg, const std::vector<double> &times,
                                double t_start, mfem::Vector &x, const LoadStepCallback &on_step)
 {
-  return RunSteps(problem, linear_solver, cfg, times, t_start, true, x, on_step);
+  return RunSteps(problem, linear_solver, cfg, times, t_start, true, false, x, on_step);
 }
 
 } // namespace cmf

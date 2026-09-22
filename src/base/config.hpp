@@ -62,11 +62,24 @@ struct MeshConfig
 //                                          no volumetric law, no follower loads, no tangent predictor)
 // The decoupled models (all but the first three) take the bulk modulus from
 // exactly one of kappa | nu | incompressible, and optionally a volumetric law.
+// `branches: [ { G, tau }, ... ]` puts Maxwell branches (a neo-Hookean spring
+// of modulus G in series with a dashpot of relaxation time tau) in parallel
+// with a decoupled hyperelastic model, which is then the equilibrium branch
+// of a finite viscoelastic material (kernels/materials/viscoelastic.hpp); a
+// history-dependent material needs a physical time (the `time` or the
+// `dynamics` block).
 // `regions` override parameters by element attribute (numbers and/or
 // physical-volume names in attr/attr_names): the same model with other
 // values, every key not given inherited from the base (a region that gives
-// any bulk key drops the base's bulk keys first). The base applies to every
-// attribute no region names.
+// any bulk key drops the base's bulk keys first; a region giving `branches`
+// replaces the base's list). The base applies to every attribute no region
+// names.
+struct MaxwellBranchConfig
+{
+  double G = 0.0;
+  double tau = 0.0;
+};
+
 struct MaterialConfig
 {
   std::string model = "neo_hookean";
@@ -92,6 +105,7 @@ struct MaterialConfig
   // locks at I1bar = 3N) | series (five terms in I1bar / N)
   // (kernels/materials/arruda_boyce.hpp).
   std::string inverse_langevin = "pade";
+  std::vector<MaxwellBranchConfig> branches; // finite viscoelasticity; empty: hyperelastic
   double rho0 = 1.0;
   std::vector<int> attr;                 // regions only
   std::vector<std::string> attr_names;   // regions only
@@ -143,10 +157,31 @@ struct BoundaryCondition
   bool IsPressure() const { return type != "vector"; }
 };
 
+// Penalty contact of a boundary with a rigid body (kernels/rigid_sphere_contact.hpp):
+//   type: rigid_sphere  a sphere of `radius` whose centre is `center`, one
+//   expression f(x, y, z, t) per component (its motion in t); per unit
+//   reference area of the boundary the energy is penalty/2 <r^2 - |x - c|^2>_+^2
+//   with x the current position, so the traction 2 penalty <...>_+ (x - c)
+//   pushes what is inside the sphere out of it. The schedule scales the
+//   penalty (default constant); the resultant force and moment on the body
+//   are reported with the reactions under the entry's name.
+struct ContactCondition
+{
+  std::string name;              // default "contact[i]"
+  std::vector<int> attr;
+  std::vector<std::string> attr_names;
+  std::string type = "rigid_sphere";
+  std::vector<std::string> center; // expressions, one per space dimension
+  double radius = 0.0;
+  double penalty = 0.0;
+  Schedule schedule;
+};
+
 struct BCConfig
 {
   std::vector<BoundaryCondition> dirichlet;
   std::vector<BoundaryCondition> traction;
+  std::vector<ContactCondition> contact;
 };
 
 // In a dynamic analysis (the `dynamics` block) t is the physical time: ramps
@@ -268,6 +303,22 @@ struct DynamicsConfig
 // t_final exactly).
 std::vector<double> UniformTimeSteps(double t_final, int n);
 
+// Quasi-static analysis in physical time (the `time` block; absent, and
+// without `dynamics`, t is the pseudo-time in [0, 1]). The loads follow the
+// physical time exactly as under `dynamics` (schedules on [0, t_final], an
+// entry without a schedule is constant), the increments are time steps
+//   time: { t_final: 300.0, dt: 3.0 }     # or steps: [ { to: 60, n: 24 }, { to: 460, n: 10 } ]
+// and a rate-dependent material (material.branches) advances its history by
+// the step length. No inertia: the balance is static at every step.
+// solver.load_steps and solver.steps are errors with the block;
+// solver.predictor stays available. `time` and `dynamics` exclude each other.
+struct TimeConfig
+{
+  bool enabled = false;
+  double t_final = 0.0;
+  std::vector<double> breakpoints; // t_1 < ... < t_n = t_final
+};
+
 struct ProbeConfig
 {
   std::string name;
@@ -316,6 +367,7 @@ struct AppConfig
   MaterialConfig material;
   BCConfig bcs;
   BodyForceConfig body_force;
+  TimeConfig time;
   DynamicsConfig dynamics;
   SolverConfig solver;
   OutputConfig output;
@@ -337,13 +389,15 @@ void ValidateMaterialConfig(const MaterialConfig &cfg, const std::string &path =
 // solver section errors and admits the dynamic output keys.
 MeshConfig ParseMeshConfig(const YAML::Node &node, const std::string &path);
 MaterialConfig ParseMaterialConfig(const YAML::Node &node, const std::string &path);
+TimeConfig ParseTimeConfig(const YAML::Node &node, const std::string &path);
 DynamicsConfig ParseDynamicsConfig(const YAML::Node &node, const std::string &path);
 BCConfig ParseBCConfig(const YAML::Node &node, const std::string &path, double t_final = 0.0);
 BodyForceConfig ParseBodyForceConfig(const YAML::Node &node, const std::string &path,
                                      double t_final = 0.0);
 Schedule ParseSchedule(const YAML::Node &node, const std::string &path, double t_final = 0.0);
 SolverConfig ParseSolverConfig(const YAML::Node &node, const std::string &path,
-                               const DynamicsConfig &dynamics = DynamicsConfig());
+                               const DynamicsConfig &dynamics = DynamicsConfig(),
+                               const TimeConfig &time = TimeConfig());
 OutputConfig ParseOutputConfig(const YAML::Node &node, const std::string &path,
                                bool dynamic = false);
 

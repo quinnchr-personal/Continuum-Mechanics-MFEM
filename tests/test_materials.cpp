@@ -679,6 +679,155 @@ void TestGentCompressibleSummit()
 // constant isotropic C with minor and major symmetries; W = sigma:eps / 2; the
 // plane-stress adapter gives the plane-stress moduli at a finite strain, not
 // only in the limit; the YAML factory and its key rules.
+// Finite viscoelasticity (materials/viscoelastic.hpp): Maxwell branches over
+// an equilibrium model, evaluated with an explicit history block and step
+// length. At rest with dt = 0 the branches are neo-Hookean springs
+// (instantaneous modulus mu + sum G_i); fully relaxed (dt/tau -> inf) they
+// carry nothing; the updated Cv is symmetric and unimodular; the stress with
+// a history is objective, deviatoric in the Kirchhoff sense, dW/dF at fixed
+// Cv, and its tangent through the update matches finite differences; under a
+// held small deviatoric strain each branch decays as (1 + dt/tau)^-n.
+void TestViscoelastic(double mu, double kappa)
+{
+  using V = cmf::Viscoelastic<cmf::IsoNeoHookean>;
+  const std::vector<cmf::MaxwellBranch> branches = {{0.8 * mu, 0.5}, {0.3 * mu, 4.0}};
+  const cmf::IsoNeoHookean base(mu, kappa);
+  const V m(base, branches);
+  std::cout << "material viscoelastic (iso_neo_hookean + 2 Maxwell branches)" << std::endl;
+  CHECK(m.HistorySize() == 12);
+  CHECK_CLOSE(m.InstantaneousShearModulus(), 2.1 * mu, 1e-12 * mu);
+  CHECK_CLOSE(m.ShearModulus(), mu, 1e-12 * mu);
+  std::vector<double> h0(std::size_t(m.HistorySize()));
+  m.InitialHistory(h0.data());
+  std::mt19937 rng(91u);
+  const cmf::IsoNeoHookean instantaneous(2.1 * mu, kappa);
+  double worst_inst = 0.0, worst_relaxed = 0.0, worst_obj = 0.0, worst_dev = 0.0, worst_energy = 0.0,
+         worst_tangent = 0.0, worst_det = 0.0;
+  for (int trial = 0; trial < 4; trial++)
+  {
+    const Mat3 F = RandomF(rng);
+    // Cv = I, dt = 0: every branch is a spring in its reference state.
+    const Mat3 P_inst = m.PK1(F, h0.data(), 0.0);
+    worst_inst = std::max(worst_inst, MaxAbs(P_inst - instantaneous.PK1(F)) / MaxAbs(P_inst));
+    // dt / tau -> inf: Cv -> Cbar, the branches carry no stress.
+    const Mat3 P_relaxed = m.PK1(F, h0.data(), 1e12);
+    worst_relaxed = std::max(worst_relaxed, MaxAbs(P_relaxed - base.PK1(F)) / MaxAbs(P_relaxed));
+    // A history: the update after a step of length 1 at another F.
+    std::vector<double> h(std::size_t(m.HistorySize()));
+    m.Update(RandomF(rng), h0.data(), 1.0, h.data());
+    for (std::size_t i = 0; i < branches.size(); i++)
+    {
+      const Mat3 Cv = V::Unpack(h.data() + 6 * i);
+      worst_det = std::max(worst_det, std::abs(cmf::det(Cv) - 1.0));
+    }
+    const double dt = 0.7;
+    const Mat3 P = m.PK1(F, h.data(), dt);
+    const Mat3 Piso = m.PK1Iso(F, h.data(), dt);
+    worst_dev = std::max(worst_dev, std::abs(cmf::tr(Piso * cmf::transpose(F))) / MaxAbs(Piso));
+    const Mat3 Q = RandomRotation(rng);
+    worst_obj = std::max(worst_obj, MaxAbs(m.PK1(Q * F, h.data(), dt) - Q * P) / MaxAbs(P));
+    // dW/dF = P at fixed Cv (dt = 0 leaves Cv at its accepted value).
+    {
+      tensor<dual, 3, 3> Fd;
+      for (int i = 0; i < 3; i++)
+        for (int j = 0; j < 3; j++) { Fd(i, j) = dual(F(i, j), 0.0); }
+      const Mat3 P0 = m.PK1(F, h.data(), 0.0);
+      double err = 0.0;
+      for (int k = 0; k < 3; k++)
+        for (int l = 0; l < 3; l++)
+        {
+          Fd(k, l).d = 1.0;
+          const dual W = m.Energy(Fd, h.data(), 0.0);
+          Fd(k, l).d = 0.0;
+          err = std::max(err, std::abs(W.d - P0(k, l)) / (mu + kappa));
+        }
+      worst_energy = std::max(worst_energy, err);
+    }
+    // The tangent through the update (Cv^{n+1} depends on F) vs finite differences.
+    const cmf::HistoryBound<V> bound{m, h.data(), dt};
+    const Tan4 A_ad = cmf::MaterialTangent(bound, F);
+    const Tan4 A_fd = FiniteDifferenceTangent(bound, F, 1e-6);
+    worst_tangent = std::max(worst_tangent, MaxAbs(Subtract(A_ad, A_fd)) / MaxAbs(A_ad));
+  }
+  std::printf("  instantaneous rel %.2e, relaxed rel %.2e, |det Cv - 1| %.2e, tr(P_iso F^T) rel %.2e, "
+              "objectivity rel %.2e, dW/dF rel %.2e, tangent rel %.2e\n",
+              worst_inst, worst_relaxed, worst_det, worst_dev, worst_obj, worst_energy, worst_tangent);
+  CHECK_MSG(worst_inst <= 1e-12, "viscoelastic: instantaneous response");
+  CHECK_MSG(worst_relaxed <= 1e-9, "viscoelastic: relaxed response");
+  CHECK_MSG(worst_det <= 1e-13, "viscoelastic: det Cv = 1 after the update");
+  CHECK_MSG(worst_dev <= 1e-12, "viscoelastic: tr(P_iso F^T) = 0 with a history");
+  CHECK_MSG(worst_obj <= 1e-12, "viscoelastic: objectivity with a history");
+  CHECK_MSG(worst_energy <= 1e-12, "viscoelastic: dW/dF = P at fixed Cv");
+  CHECK_MSG(worst_tangent <= 1e-6, "viscoelastic: tangent AD vs FD through the update");
+
+  // Small-strain Maxwell decay: F = I + eps H with H deviatoric held over n
+  // steps of dt; the branch stress is 2 G_i eps dev(sym H) (1 + dt/tau_i)^-n.
+  {
+    Mat3 H;
+    H(0, 0) = 0.3; H(0, 1) = -0.8; H(0, 2) = 0.2;
+    H(1, 0) = -0.8; H(1, 1) = 0.1; H(1, 2) = 0.7;
+    H(2, 0) = 0.2; H(2, 1) = 0.7; H(2, 2) = -0.4;
+    const double eps = 1e-6, dt = 0.3;
+    const Mat3 F = cmf::I<3>() + eps * H;
+    const Mat3 P_eq = base.PK1(F);
+    std::vector<double> h(h0), hn(h0);
+    double worst = 0.0;
+    for (int n = 1; n <= 6; n++)
+    {
+      const Mat3 P_neq = m.PK1(F, h.data(), dt) - P_eq;
+      Mat3 expected;
+      for (std::size_t i = 0; i < branches.size(); i++)
+      {
+        expected += (2.0 * branches[i].G * eps * std::pow(1.0 + dt / branches[i].tau, -double(n))) *
+                    cmf::dev(cmf::sym(H));
+      }
+      worst = std::max(worst, MaxAbs(P_neq - expected) / MaxAbs(expected));
+      m.Update(F, h.data(), dt, hn.data());
+      h = hn;
+    }
+    std::printf("  Maxwell decay under a held strain, 6 steps: rel %.2e\n", worst);
+    CHECK_MSG(worst <= 1e-5, "viscoelastic: Maxwell decay (1 + dt/tau)^-n");
+  }
+  // Every decoupled base compiles and rests stress-free.
+  {
+    const std::vector<cmf::MaxwellBranch> one = {{0.5 * mu, 1.0}};
+    const cmf::Viscoelastic<cmf::ArrudaBoyce> ab(cmf::ArrudaBoyce(mu, 5.0, kappa), one);
+    const cmf::Viscoelastic<cmf::Gent> ge(cmf::Gent(mu, 20.0, kappa), one);
+    const cmf::Viscoelastic<cmf::MooneyRivlin> mr(cmf::MooneyRivlin(0.3 * mu, 0.2 * mu, kappa), one);
+    const cmf::Viscoelastic<cmf::Yeoh> ye(cmf::Yeoh(0.5 * mu, -0.05 * mu, 0.01 * mu, kappa), one);
+    const cmf::Viscoelastic<cmf::Ogden> og(cmf::Ogden({0.63 * mu, 0.0012 * mu, -0.01 * mu}, {1.3, 5.0, -2.0}, kappa), one);
+    std::vector<double> h(6);
+    auto rest = [&](const auto &mat, const char *name)
+    {
+      mat.InitialHistory(h.data());
+      CHECK_MSG(MaxAbs(mat.PK1(cmf::I<3>(), h.data(), 0.5)) <= 1e-14 * (mu + kappa),
+                std::string("viscoelastic ") + name + ": stress-free at rest");
+    };
+    rest(ab, "arruda_boyce"); rest(ge, "gent"); rest(mr, "mooney_rivlin"); rest(ye, "yeoh"); rest(og, "ogden");
+  }
+  // The factory: branches wrap the decoupled model; the name reports them.
+  {
+    cmf::MaterialConfig cfg;
+    cfg.model = "arruda_boyce";
+    cfg.mu = mu;
+    cfg.N = 5.0;
+    cfg.kappa = kappa;
+    cfg.branches = {{0.5 * mu, 1.0}, {0.2 * mu, 10.0}, {0.1 * mu, 100.0}};
+    const cmf::MixedMaterial mm = cmf::MakeMixedMaterial(cfg);
+    CHECK(std::holds_alternative<cmf::Viscoelastic<cmf::ArrudaBoyce>>(mm));
+    CHECK(cmf::IsHistoryDependent(mm));
+    CHECK(cmf::MaterialName(mm) == "arruda_boyce with 3 Maxwell branches");
+    CHECK(cmf::ModelNameOf(mm) == "arruda_boyce");
+    const cmf::Material dm = cmf::MakeMaterial(cfg);
+    CHECK(std::holds_alternative<cmf::Viscoelastic<cmf::ArrudaBoyce>>(dm));
+    CHECK(cmf::HistorySizeOf(std::vector<cmf::Material>{dm}) == 18);
+    CHECK_THROWS(cmf::MakeMaterial(cfg, true), cmf::ConfigError, "plane-stress");
+    cfg.model = "linear_elastic";
+    cfg.N = std::numeric_limits<double>::quiet_NaN();
+    CHECK_THROWS(cmf::MakeMixedMaterial(cfg), cmf::ConfigError, "branches");
+  }
+}
+
 void TestLinearElastic(double E, double nu)
 {
   const cmf::LameParameters lame = cmf::LameFromYoungPoisson(E, nu);
@@ -922,6 +1071,7 @@ int main()
   TestVolumetricLaws(mu, kappa);
   TestGentCompressibleSummit();
   TestLinearElastic(E, nu);
+  TestViscoelastic(mu, kappa);
   TestPlaneStress(E, nu, mu, kappa);
   // Mooney-Rivlin with c2 = 0 is the isochoric neo-Hookean model.
   {

@@ -218,7 +218,16 @@ void CompressibleUniaxialTest(const std::string &name)
     tensor<double, 3, 3> F = cmf::I<3>();
     F(0, 0) = lam1;
     F(1, 1) = F(2, 2) = lam2;
-    return std::visit([&](const auto &mat) { return mat.PK1(F); }, material);
+    return std::visit([&](const auto &mat) -> tensor<double, 3, 3>
+    {
+      using M = std::decay_t<decltype(mat)>;
+      if constexpr (cmf::has_history<M>::value)
+      {
+        MFEM_ABORT("the compressible uniaxial inputs are hyperelastic");
+        return tensor<double, 3, 3>();
+      }
+      else { return mat.PK1(F); }
+    }, material);
   };
   double lo = 0.3, hi = 1.5; // P_22 increases with lambda_2
   for (int i = 0; i < 200; i++)

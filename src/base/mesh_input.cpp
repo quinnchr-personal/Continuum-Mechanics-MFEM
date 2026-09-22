@@ -169,8 +169,15 @@ std::string DescribeAttributes(mfem::Mesh &mesh, bool boundary)
 std::vector<int> ResolveBoundaryAttributes(mfem::Mesh &mesh, const BoundaryCondition &bc,
                                            const std::string &what)
 {
+  return ResolveBoundaryAttributes(mesh, bc.attr, bc.attr_names, what);
+}
+
+std::vector<int> ResolveBoundaryAttributes(mfem::Mesh &mesh, const std::vector<int> &attr,
+                                           const std::vector<std::string> &attr_names,
+                                           const std::string &what)
+{
   std::vector<int> out;
-  for (int a : bc.attr)
+  for (int a : attr)
   {
     if (mesh.bdr_attributes.Find(a) < 0)
     {
@@ -180,7 +187,7 @@ std::vector<int> ResolveBoundaryAttributes(mfem::Mesh &mesh, const BoundaryCondi
     }
     out.push_back(a);
   }
-  for (const std::string &name : bc.attr_names)
+  for (const std::string &name : attr_names)
   {
     if (!mesh.bdr_attribute_sets.AttributeSetExists(name))
     {

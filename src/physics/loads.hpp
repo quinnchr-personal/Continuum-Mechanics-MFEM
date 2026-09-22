@@ -1,10 +1,11 @@
 // Boundary conditions and external loads of a displacement space, shared by
 // the solid formulations: Dirichlet entries (all or some components, each
 // with a schedule), dead loads (vector tractions, normal pressures, body
-// force; one assembled true vector per entry) and follower pressures (a
-// nonlinear boundary term the owning physics installs in its form; this
-// class only tracks their scale). Everything is a function of the
-// pseudo-time t through the entry schedules and the coefficients' SetTime.
+// force; one assembled true vector per entry), follower pressures and
+// rigid-sphere contacts (nonlinear boundary terms the owning physics installs
+// in its form; this class only tracks their scale and coefficients).
+// Everything is a function of the pseudo-time t through the entry schedules
+// and the coefficients' SetTime.
 #pragma once
 
 #include <memory>
@@ -60,12 +61,20 @@ public:
   // physics gives it to the boundary integrator it installs.
   const double *AddFollowerPressure(const std::vector<int> &attrs, mfem::Coefficient &p,
                                     const BCOptions &opt = BCOptions());
+  // Penalty contact with a rigid sphere (kernels/rigid_sphere_contact.hpp):
+  // the same bookkeeping as a follower pressure; the centre coefficient
+  // follows the time, the returned scale pointer holds schedule(t).
+  const double *AddRigidSphereContact(const std::vector<int> &attrs,
+                                      mfem::VectorCoefficient &center, double radius,
+                                      double penalty, const BCOptions &opt = BCOptions());
   // Body force per unit mass; rho_R b enters the weak form, with rho_R the
   // reference density (by element attribute; not owned).
   void SetBodyForce(mfem::VectorCoefficient &b, mfem::Coefficient &rho,
                     const BCOptions &opt = BCOptions());
   void Clear();
   bool HasFollowerPressure() const { return !follower_.empty(); }
+  std::size_t NumContacts() const { return contact_.size(); }
+  const std::string &ContactName(std::size_t i) const { return contact_[i].opt.name; }
 
   // Essential true dofs and their marker union, dead loads of the entries
   // that do not depend on t, overlap warnings.
@@ -86,6 +95,9 @@ public:
   // Reactions of every Dirichlet entry from the full residual r (essential
   // rows not zeroed) and the displacement x (true dofs); collective.
   std::vector<Reaction> Reactions(const mfem::Vector &r, const mfem::Vector &x) const;
+  // Resultant force and moment (about the origin, at the current positions
+  // X + x) of a nodal force vector f on the true dofs; collective.
+  Reaction Resultant(const mfem::Vector &f, const mfem::Vector &x, const std::string &name) const;
   // The scheduled external load sum_i s_i(t) L_i at the current t (true dofs).
   const mfem::Vector &ExternalLoad() const { return external_; }
 
@@ -123,17 +135,28 @@ private:
     BCOptions opt;
     std::unique_ptr<double> scale;
   };
+  struct ContactEntry
+  {
+    mfem::Array<int> marker;
+    mfem::VectorCoefficient *center;
+    double radius, penalty;
+    BCOptions opt;
+    std::unique_ptr<double> scale;
+  };
 
   void CheckVector(mfem::VectorCoefficient &c, const std::string &what) const;
   void CheckComponents(const std::vector<int> &components, const std::string &what) const;
   void Assemble(LoadEntry &e) const;
   void WarnOverlaps() const;
+  void EnsureCoords() const;
+  void Accumulate(double *local, int i, double f, const mfem::Vector &x) const;
 
   mfem::ParFiniteElementSpace &fes_;
   int dim_;
   std::vector<DirichletEntry> dirichlet_;
   std::vector<LoadEntry> loads_;
   std::vector<FollowerEntry> follower_;
+  std::vector<ContactEntry> contact_;
   bool finalized_ = false;
   bool physical_time_ = false;
   double time_ = 1.0;

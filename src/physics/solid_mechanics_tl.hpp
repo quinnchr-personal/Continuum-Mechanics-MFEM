@@ -13,6 +13,7 @@
 
 #include "base/config.hpp"
 #include "base/fields.hpp"
+#include "kernels/history_field.hpp"
 #include "materials/materials.hpp"
 #include "mfem.hpp"
 #include "physics/solid_problem.hpp"
@@ -45,6 +46,9 @@ public:
                    const BCOptions &opt = BCOptions()) override;
   void AddPressure(const std::vector<int> &attrs, mfem::Coefficient &p, bool follower,
                    const BCOptions &opt = BCOptions()) override;
+  void AddRigidSphereContact(const std::vector<int> &attrs, mfem::VectorCoefficient &center,
+                             double radius, double penalty,
+                             const BCOptions &opt = BCOptions()) override;
   void SetBodyForce(mfem::VectorCoefficient &b,
                     const BCOptions &opt = BCOptions()) override; // per unit mass
   void ClearBoundaryConditions() override;
@@ -57,14 +61,23 @@ public:
   void SetPhysicalTime(bool on) override { loads_.SetPhysicalTime(on); }
   mfem::Coefficient &ReferenceDensity() override { return density_; }
   OperatorStamp GradientStamp() const override { return gradient_stamp_; }
+  // History of a material with Maxwell branches (SolidProblem): the
+  // quadrature-point field, the time of the last accepted step.
+  bool HasHistory() const override { return history_ != nullptr; }
+  void ResetHistory(double t) override;
+  void AcceptStep(const mfem::Vector &x) override;
+  const HistoryField *History() const { return history_.get(); }
+  double AcceptedTime() const { return t_accepted_; }
 
   // mfem::Operator on true dofs.
   void Mult(const mfem::Vector &x, mfem::Vector &y) const override;
   mfem::Operator &GetGradient(const mfem::Vector &x) const override;
 
-  // QuasiStaticProblem. The argument is the pseudo-time t in [0, 1]; every
-  // load and prescribed displacement follows its own schedule s_i(t) (the
-  // default ramp s = t makes t < 1 a proportional path to the t = 1 problem).
+  // QuasiStaticProblem. The argument is the pseudo-time t in [0, 1] (or the
+  // physical time); every load and prescribed displacement follows its own
+  // schedule s_i(t) (the default ramp s = t makes t < 1 a proportional path
+  // to the t = 1 problem), and a history-dependent material takes
+  // t - AcceptedTime() as the length of the step under way.
   void SetLoadFactor(double t) override;
   double LoadFactor() const override { return loads_.Time(); }
   void ApplyDirichlet(mfem::Vector &x) const override;
@@ -110,9 +123,14 @@ public:
 private:
   void Build(const AppConfig &cfg);
   // (Re)creates the nonlinear form with the material integrator; follower
-  // pressures add boundary integrators that can only be removed this way.
+  // pressures and contacts add boundary integrators that can only be
+  // removed this way.
   void ResetForm();
   void EnsureFields();
+  // The quadrature-point history of a material with one (Cv = I everywhere).
+  void InitializeHistory();
+  // Advances the history to the end of the step under way at the state x.
+  void UpdateHistory(const mfem::Vector &x);
 
   mfem::ParMesh &mesh_;
   int dim_;
@@ -132,7 +150,14 @@ private:
   std::vector<std::unique_ptr<mfem::Coefficient>> owned_scalars_;
   LoadSet loads_;
   std::deque<mfem::Array<int>> follower_markers_; // referenced by the form's integrators (stable)
+  std::deque<mfem::Array<int>> contact_markers_;
+  // One form per contact entry holding its integrator alone: Mult gives the
+  // nodal contact forces, whose resultant the reactions report.
+  std::vector<std::unique_ptr<mfem::ParNonlinearForm>> contact_forms_;
   bool finalized_ = false;
+
+  std::unique_ptr<HistoryField> history_;
+  double t_accepted_ = 0.0;
 
   // The assembled Jacobian of a linear problem (owned by nlf_) and the stamp
   // shared with the linear solver, incremented at every assembly.

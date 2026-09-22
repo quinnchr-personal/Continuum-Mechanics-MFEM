@@ -95,6 +95,7 @@ double DynamicSolidProblem::Initialize(mfem::Vector &x, double t0)
   MFEM_VERIFY(x.Size() == Height(), "DynamicSolidProblem: the unknown has the wrong size");
   problem_.SetPhysicalTime(true);
   t_n_ = t_ = t0;
+  problem_.ResetHistory(t0);   // a rate-dependent material starts from its rest state at t0
   problem_.SetLoadFactor(t0); // finalizes the boundary conditions if needed
   AssembleMass(true);
 
@@ -355,6 +356,9 @@ void DynamicSolidProblem::AcceptStep(const mfem::Vector &x)
   t_n_ = t_;
   stepping_ = false;
   steps_++;
+  // The wrapped problem's history (a rate-dependent material) advances last:
+  // everything above evaluated the static residual of the step at its end.
+  problem_.AcceptStep(x);
 }
 
 double DynamicSolidProblem::KineticEnergy() const
@@ -461,30 +465,35 @@ std::unique_ptr<DynamicSolidProblem> MakeDynamicSolidProblem(SolidProblem &probl
   return dynamic;
 }
 
-std::vector<std::string> DescribeDynamics(const AppConfig &cfg)
+namespace
 {
-  const DynamicsConfig &d = cfg.dynamics;
-  const TimeIntegration ti = MakeTimeIntegration(d);
-  double smallest = d.t_final, largest = 0.0, t_prev = 0.0;
-  for (double t : d.breakpoints)
+
+// "<n> time steps of <dt>" or "... from <smallest> to <largest>".
+std::string DescribeSteps(double t_final, const std::vector<double> &breakpoints)
+{
+  double smallest = t_final, largest = 0.0, t_prev = 0.0;
+  for (double t : breakpoints)
   {
     smallest = std::min(smallest, t - t_prev);
     largest = std::max(largest, t - t_prev);
     t_prev = t;
   }
-  std::vector<std::string> lines;
-  char buf[256];
+  char buf[128];
   if (largest - smallest <= 1e-9 * largest)
   {
-    std::snprintf(buf, sizeof(buf), "dynamics: %s, t_final %g, %zu time steps of %g",
-                  ti.Description().c_str(), d.t_final, d.breakpoints.size(), largest);
+    std::snprintf(buf, sizeof(buf), "%zu time steps of %g", breakpoints.size(), largest);
   }
   else
   {
-    std::snprintf(buf, sizeof(buf), "dynamics: %s, t_final %g, %zu time steps from %g to %g",
-                  ti.Description().c_str(), d.t_final, d.breakpoints.size(), smallest, largest);
+    std::snprintf(buf, sizeof(buf), "%zu time steps from %g to %g", breakpoints.size(), smallest,
+                  largest);
   }
-  lines.push_back(buf);
+  return buf;
+}
+
+// The time dependence of every load entry, one line each.
+void DescribeEntries(const AppConfig &cfg, std::vector<std::string> &lines)
+{
   for (const BoundaryCondition &bc : cfg.bcs.dirichlet)
   {
     lines.push_back("  dirichlet " + bc.name + ": " + DescribeTimeDependence(bc.schedule, bc.expression));
@@ -494,11 +503,42 @@ std::vector<std::string> DescribeDynamics(const AppConfig &cfg)
     lines.push_back("  traction " + bc.name + " (" + bc.type + "): " +
                     DescribeTimeDependence(bc.schedule, bc.expression));
   }
+  for (const ContactCondition &c : cfg.bcs.contact)
+  {
+    lines.push_back("  contact " + c.name + " (" + c.type + "): centre " +
+                    DescribeTimeDependence(Schedule::Constant(), c.center) + ", penalty " +
+                    DescribeTimeDependence(c.schedule, {}));
+  }
   if (!cfg.body_force.Empty())
   {
     lines.push_back("  body force: " +
                     DescribeTimeDependence(cfg.body_force.schedule, cfg.body_force.expression));
   }
+}
+
+} // namespace
+
+std::vector<std::string> DescribeTimeStepping(const AppConfig &cfg)
+{
+  std::vector<std::string> lines;
+  char buf[256];
+  std::snprintf(buf, sizeof(buf), "time: quasi-static in physical time, t_final %g, %s",
+                cfg.time.t_final, DescribeSteps(cfg.time.t_final, cfg.time.breakpoints).c_str());
+  lines.push_back(buf);
+  DescribeEntries(cfg, lines);
+  return lines;
+}
+
+std::vector<std::string> DescribeDynamics(const AppConfig &cfg)
+{
+  const DynamicsConfig &d = cfg.dynamics;
+  const TimeIntegration ti = MakeTimeIntegration(d);
+  std::vector<std::string> lines;
+  char buf[256];
+  std::snprintf(buf, sizeof(buf), "dynamics: %s, t_final %g, %s", ti.Description().c_str(),
+                d.t_final, DescribeSteps(d.t_final, d.breakpoints).c_str());
+  lines.push_back(buf);
+  DescribeEntries(cfg, lines);
   if (cfg.formulation == "mixed" && !ti.Dissipative())
   {
     lines.push_back("  warning: the pressure of the mixed formulation carries no inertia, and an error in it "

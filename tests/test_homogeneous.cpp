@@ -81,11 +81,12 @@ std::array<double, 3> Beta(const cmf::MixedMaterial &material, const std::array<
   {
     using M = std::decay_t<decltype(m)>;
     std::array<double, 3> beta{};
-    if constexpr (cmf::is_small_strain<M>::value)
+    if constexpr (cmf::is_small_strain<M>::value || cmf::has_history<M>::value)
     {
-      // linear_elastic shares the variant but is not one of the rubber models
-      // of this test (tests/test_linear_elasticity.cpp, tests/test_mixed.cpp).
-      MFEM_ABORT("Beta: closed forms in the principal stretches need a finite-strain model");
+      // linear_elastic and the viscoelastic models share the variant but are
+      // not among the rubber models of this test (tests/test_linear_elasticity.cpp,
+      // tests/test_mixed.cpp, tests/test_viscoelastic.cpp).
+      MFEM_ABORT("Beta: closed forms in the principal stretches need a hyperelastic model");
     }
     else if constexpr (std::is_same_v<M, cmf::Ogden>)
     {
@@ -151,9 +152,15 @@ Analytic PureShear(const cmf::MixedMaterial &m, double l)
 
 Mat3 CodeCauchyStress(const cmf::MixedMaterial &material, const Mat3 &H, double p)
 {
-  return std::visit([&](const auto &m)
+  return std::visit([&](const auto &m) -> Mat3
   {
-    return cmf::QPointMixedCauchyStress<std::decay_t<decltype(m)>, 3>(m, H, p);
+    using M = std::decay_t<decltype(m)>;
+    if constexpr (cmf::has_history<M>::value)
+    {
+      MFEM_ABORT("CodeCauchyStress: a history-dependent model is not one of this test's models");
+      return Mat3();
+    }
+    else { return cmf::QPointMixedCauchyStress<M, 3>(m, H, p); }
   }, material);
 }
 
@@ -252,7 +259,17 @@ struct Expected
 
 double ExpectedEnergy(const cmf::MixedMaterial &material, const Mat3 &F)
 {
-  return std::visit([&](const auto &m) { return m.EnergyIso(F); }, material);
+  return std::visit([&](const auto &m) -> double
+  {
+    using M = std::decay_t<decltype(m)>;
+    if constexpr (cmf::has_history<M>::value)
+    {
+      // The viscoelastic models share the variant; this test covers the hyperelastic ones.
+      MFEM_ABORT("ExpectedEnergy: a history-dependent model is not one of this test's models");
+      return 0.0;
+    }
+    else { return m.EnergyIso(F); }
+  }, material);
 }
 
 // The largest deviation of the nodal and element presentations at `point`
@@ -463,7 +480,15 @@ struct SheetResult
 SheetResult SolveSheet(const cmf::MixedMaterial &base, const SheetState &s, int load_steps)
 {
   const cmf::Material material = std::visit([](const auto &m) -> cmf::Material
-  { return cmf::PlaneStress<std::decay_t<decltype(m)>>(m); }, base);
+  {
+    using M = std::decay_t<decltype(m)>;
+    if constexpr (cmf::has_history<M>::value)
+    {
+      MFEM_ABORT("SolveSheet: the plane-stress adapter takes a hyperelastic model");
+      return cmf::Material();
+    }
+    else { return cmf::PlaneStress<M>(m); }
+  }, base);
   cmf::AppConfig cfg;
   cfg.plane = "stress";
   cfg.mesh.cartesian = true;

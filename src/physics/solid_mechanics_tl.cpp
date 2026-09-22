@@ -6,6 +6,7 @@
 #include <cmath>
 
 #include "kernels/follower_pressure.hpp"
+#include "kernels/rigid_sphere_contact.hpp"
 #include "kernels/total_lagrangian.hpp"
 #include "solvers/direct_solver.hpp"
 #include "solvers/linear_solver.hpp"
@@ -39,6 +40,7 @@ SolidMechanicsTL::SolidMechanicsTL(mfem::ParMesh &mesh, const AppConfig &cfg,
     throw ConfigError("plane: stress needs a 2D mesh (got dimension " +
                       std::to_string(dim_) + ")");
   }
+  InitializeHistory();
   ResetForm();
   Build(cfg);
 }
@@ -53,12 +55,84 @@ void SolidMechanicsTL::ResetForm()
   {
     using M = std::decay_t<decltype(mat)>;
     const std::vector<M> table = UnpackMaterials<M>(materials_);
-    nlf_->AddDomainIntegrator(new TotalLagrangianIntegrator<M>(table));
-    energy_form_->AddDomainIntegrator(new TotalLagrangianIntegrator<M>(table));
+    auto *integ = new TotalLagrangianIntegrator<M>(table);
+    integ->SetHistory(history_.get());
+    nlf_->AddDomainIntegrator(integ);
+    auto *energy_integ = new TotalLagrangianIntegrator<M>(table);
+    energy_integ->SetHistory(history_.get());
+    energy_form_->AddDomainIntegrator(energy_integ);
   }, materials_[0]);
   follower_markers_.clear();
+  contact_markers_.clear();
+  contact_forms_.clear();
   finalized_ = false;
   gradient_ = nullptr;
+}
+
+void SolidMechanicsTL::InitializeHistory()
+{
+  const int size = HistorySizeOf(materials_);
+  if (size == 0) { history_.reset(); return; }
+  if (!history_) { history_ = std::make_unique<HistoryField>(mesh_, 2 * order_ + 3, size); }
+  std::vector<double> init(std::size_t(size), 0.0);
+  std::visit([&](const auto &first)
+  {
+    using M = std::decay_t<decltype(first)>;
+    if constexpr (has_history<M>::value)
+    {
+      const std::vector<M> table = UnpackMaterials<M>(materials_);
+      for (int e = 0; e < mesh_.GetNE(); e++)
+      {
+        std::fill(init.begin(), init.end(), 0.0);
+        MaterialAt(table, mesh_.GetAttribute(e)).InitialHistory(init.data());
+        history_->Fill(e, init.data());
+      }
+    }
+  }, materials_[0]);
+  history_->SetDt(0.0);
+}
+
+void SolidMechanicsTL::ResetHistory(double t)
+{
+  InitializeHistory();
+  t_accepted_ = t;
+}
+
+void SolidMechanicsTL::UpdateHistory(const mfem::Vector &x)
+{
+  EnsureFields();
+  displacement_->SetFromTrueDofs(x);
+  std::visit([&](const auto &first)
+  {
+    using M = std::decay_t<decltype(first)>;
+    if constexpr (has_history<M>::value)
+    {
+      const std::vector<M> table = UnpackMaterials<M>(materials_);
+      mfem::DenseMatrix grad;
+      for (int e = 0; e < mesh_.GetNE(); e++)
+      {
+        mfem::ElementTransformation &T = *mesh_.GetElementTransformation(e);
+        const M &mat = MaterialAt(table, T.Attribute);
+        const mfem::IntegrationRule &ir = history_->Rule(e);
+        for (int q = 0; q < ir.GetNPoints(); q++)
+        {
+          const mfem::IntegrationPoint &ip = ir.IntPoint(q);
+          T.SetIntPoint(&ip);
+          displacement_->GetVectorGradient(T, grad);
+          const tensor<double, 3, 3> F = DeformationGradientAt(grad, dim_);
+          mat.Update(F, history_->Old(e, q), history_->Dt(), history_->New(e, q));
+        }
+      }
+    }
+  }, materials_[0]);
+  history_->Commit();
+  history_->SetDt(0.0);
+}
+
+void SolidMechanicsTL::AcceptStep(const mfem::Vector &x)
+{
+  if (history_) { UpdateHistory(x); }
+  t_accepted_ = loads_.Time();
 }
 
 void SolidMechanicsTL::Build(const AppConfig &cfg)
@@ -103,6 +177,21 @@ void SolidMechanicsTL::AddPressure(const std::vector<int> &attrs, mfem::Coeffici
   finalized_ = false;
 }
 
+void SolidMechanicsTL::AddRigidSphereContact(const std::vector<int> &attrs,
+                                             mfem::VectorCoefficient &center, double radius,
+                                             double penalty, const BCOptions &opt)
+{
+  const double *scale = loads_.AddRigidSphereContact(attrs, center, radius, penalty, opt);
+  contact_markers_.push_back(loads_.Marker(attrs));
+  nlf_->AddBdrFaceIntegrator(new RigidSphereContactIntegrator(center, radius, penalty, scale),
+                             contact_markers_.back());
+  auto form = std::make_unique<mfem::ParNonlinearForm>(&fes_);
+  form->AddBdrFaceIntegrator(new RigidSphereContactIntegrator(center, radius, penalty, scale),
+                             contact_markers_.back());
+  contact_forms_.push_back(std::move(form));
+  finalized_ = false;
+}
+
 void SolidMechanicsTL::SetBodyForce(mfem::VectorCoefficient &b, const BCOptions &opt)
 {
   loads_.SetBodyForce(b, density_, opt);
@@ -111,9 +200,9 @@ void SolidMechanicsTL::SetBodyForce(mfem::VectorCoefficient &b, const BCOptions 
 
 void SolidMechanicsTL::ClearBoundaryConditions()
 {
-  const bool had_followers = loads_.HasFollowerPressure();
+  const bool had_boundary_terms = loads_.HasFollowerPressure() || loads_.NumContacts() > 0;
   loads_.Clear();
-  if (had_followers) { ResetForm(); }
+  if (had_boundary_terms) { ResetForm(); }
   finalized_ = false;
 }
 
@@ -129,6 +218,7 @@ void SolidMechanicsTL::SetLoadFactor(double t)
 {
   if (!finalized_) { Finalize(); }
   loads_.SetTime(t);
+  if (history_) { history_->SetDt(t - t_accepted_); }
 }
 
 void SolidMechanicsTL::ApplyDirichlet(mfem::Vector &x) const
@@ -162,14 +252,24 @@ void SolidMechanicsTL::FullResidual(const mfem::Vector &x, mfem::Vector &r) cons
 std::vector<Reaction> SolidMechanicsTL::ReactionsFrom(const mfem::Vector &r,
                                                       const mfem::Vector &x) const
 {
+  std::vector<Reaction> out;
   if (IsSmallStrain(materials_[0]))
   {
     // Equilibrium holds on the reference configuration: reference moment arms.
     mfem::Vector zero(x.Size());
     zero = 0.0;
-    return loads_.Reactions(r, zero);
+    out = loads_.Reactions(r, zero);
   }
-  return loads_.Reactions(r, x);
+  else { out = loads_.Reactions(r, x); }
+  // The resultant of every contact entry: its form gives -t on the dofs.
+  mfem::Vector f(x.Size());
+  for (std::size_t i = 0; i < contact_forms_.size(); i++)
+  {
+    contact_forms_[i]->Mult(x, f);
+    f *= -1.0;
+    out.push_back(loads_.Resultant(f, x, loads_.ContactName(i)));
+  }
+  return out;
 }
 
 mfem::Operator &SolidMechanicsTL::GetGradient(const mfem::Vector &x) const
@@ -240,15 +340,16 @@ void SolidMechanicsTL::UpdateFields(const mfem::Vector &x)
     using M = std::decay_t<decltype(first)>;
     const std::vector<M> table = UnpackMaterials<M>(materials_);
     mfem::DenseMatrix grad;
-    qfields_->Update([&](mfem::ElementTransformation &T, const mfem::IntegrationPoint &ip,
+    qfields_->Update([&](mfem::ElementTransformation &T, const mfem::IntegrationPoint &ip, int q,
                          QPointState &s)
     {
       const M &mat = MaterialAt(table, T.Attribute);
+      const auto &bound = AtPoint(mat, history_.get(), T.ElementNo, q);
       T.SetIntPoint(&ip);
       displacement_->GetVectorGradient(T, grad);
       s.F = CompleteF(mat, DeformationGradientAt(grad, T.GetDimension()));
-      s.P = mat.PK1(s.F);
-      if constexpr (has_energy<M>::value) { s.energy = mat.Energy(s.F); }
+      s.P = bound.PK1(s.F);
+      if constexpr (has_energy<bound_t<M>>::value) { s.energy = bound.Energy(s.F); }
       else { s.energy = 0.0; }
       CompleteState(mat, s);
     });

@@ -137,7 +137,7 @@ void QuadratureFields::Fill(const QPointEvaluator &eval)
     for (std::size_t k = 0; k < fields_.size(); k++) { fields_[k].qf->GetValues(e, views[k]); }
     for (int q = 0; q < ir.GetNPoints(); q++)
     {
-      eval(T, ir.IntPoint(q), s);
+      eval(T, ir.IntPoint(q), q, s);
       for (std::size_t k = 0; k < fields_.size(); k++)
       {
         PackQuantity(fields_[k].name, s, packed);

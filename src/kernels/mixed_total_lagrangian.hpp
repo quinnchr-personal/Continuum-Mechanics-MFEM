@@ -115,7 +115,9 @@ inline tensor<double, 3, 3> QPointMixedCauchyStress(const Material &material,
   return CauchyStress(material, F, MixedPK1(material, F, p));
 }
 
-// Block integrator over (displacement, pressure) spaces.
+// Block integrator over (displacement, pressure) spaces. A history-dependent
+// material (kernels/history_bound.hpp) is evaluated through the HistoryField
+// given to SetHistory, whose rule must be this integrator's (order 2p + 3).
 template <typename Material>
 class MixedTotalLagrangianIntegrator : public mfem::BlockNonlinearFormIntegrator
 {
@@ -125,6 +127,9 @@ public:
   // One material per element attribute (size max attribute + 1, entry 0 unused).
   explicit MixedTotalLagrangianIntegrator(const std::vector<Material> &by_attribute)
     : materials_(by_attribute) {}
+
+  void SetHistory(const HistoryField *history) { history_ = history; }
+  const HistoryField *History() const { return history_; }
 
   // Mixed functional int Psi_iso(F) + p (J - 1) - kappa u*(p / kappa) dV with
   // u* the Legendre transform of the volumetric law (p^2 / (2 kappa) for the
@@ -207,6 +212,7 @@ private:
   {
     Prepare<dim>(el, elfun);
     const Material &material = MaterialOf(Tr);
+    CheckHistory();
     const double inv_kappa = InvKappa(material);
     const mfem::IntegrationRule &ir = Rule(*el[0]);
     tensor<double, dim, dim> H;
@@ -218,7 +224,8 @@ private:
       const double w = ip.weight * Tr.Weight();
       const tensor<double, 3, 3> F = DeformationGradient<dim>(H);
       const double J = VolumeRatio(material, F);
-      energy += w * (material.EnergyIso(F) + p * (J - 1.0) -
+      const auto &mat = AtPoint(material, history_, Tr.ElementNo, q);
+      energy += w * (mat.EnergyIso(F) + p * (J - 1.0) -
                      (inv_kappa > 0.0 ? material.ComplementaryVolumetricEnergy(p) : 0.0));
     }
     return energy;
@@ -239,6 +246,7 @@ private:
     *elvec[1] = 0.0;
     mfem::DenseMatrix PMatO(elvec[0]->GetData(), dof_u, dim);
     const Material &material = MaterialOf(Tr);
+    CheckHistory();
     const double inv_kappa = InvKappa(material);
     const mfem::IntegrationRule &ir = Rule(*el[0]);
     tensor<double, dim, dim> H;
@@ -248,7 +256,8 @@ private:
       const mfem::IntegrationPoint &ip = ir.IntPoint(q);
       PointSetup<dim>(el, Tr, ip, *elfun[1], H, p);
       const double w = ip.weight * Tr.Weight();
-      const tensor<double, dim, dim> P = QPointMixedStress<Material, dim>(material, H, p);
+      const auto &mat = AtPoint(material, history_, Tr.ElementNo, q);
+      const tensor<double, dim, dim> P = QPointMixedStress<bound_t<Material>, dim>(mat, H, p);
       for (int a = 0; a < dof_u; a++)
         for (int i = 0; i < dim; i++)
         {
@@ -285,6 +294,7 @@ private:
     Kpu = 0.0;
     Kpp = 0.0;
     const Material &material = MaterialOf(Tr);
+    CheckHistory();
     const double inv_kappa = InvKappa(material);
     const mfem::IntegrationRule &ir = Rule(*el[0]);
     tensor<double, dim, dim> H;
@@ -294,8 +304,9 @@ private:
       const mfem::IntegrationPoint &ip = ir.IntPoint(q);
       PointSetup<dim>(el, Tr, ip, *elfun[1], H, p);
       const double w = ip.weight * Tr.Weight();
+      const auto &mat = AtPoint(material, history_, Tr.ElementNo, q);
       const tensor<double, 3, 3, 3, 3> A =
-        QPointMixedTangent<Material, dim>(material, H, p);
+        QPointMixedTangent<bound_t<Material>, dim>(mat, H, p);
       for (int a = 0; a < dof_u; a++)
         for (int i = 0; i < dim; i++)
           for (int k = 0; k < dim; k++)
@@ -337,7 +348,16 @@ private:
     }
   }
 
+  void CheckHistory() const
+  {
+    if constexpr (has_history<Material>::value)
+    {
+      MFEM_VERIFY(history_, "MixedTotalLagrangianIntegrator: a history-dependent material needs SetHistory");
+    }
+  }
+
   std::vector<Material> materials_;
+  const HistoryField *history_ = nullptr;
   mfem::DenseMatrix DSh_, DS_, Jrt_, Hmat_, PMatI_;
   mfem::Vector Sh_;
 };

@@ -4,6 +4,7 @@
 
 #include "kernels/follower_pressure.hpp"
 #include "kernels/mixed_total_lagrangian.hpp"
+#include "kernels/rigid_sphere_contact.hpp"
 #include "solvers/direct_solver.hpp"
 #include "solvers/saddle_point_solver.hpp"
 
@@ -54,6 +55,7 @@ MixedSolidMechanicsTL::MixedSolidMechanicsTL(mfem::ParMesh &mesh, const AppConfi
   offsets_[2] = offsets_[1] + fes_p_.GetTrueVSize();
   height = width = offsets_[2];
   output_cfg_ = cfg.output;
+  InitializeHistory();
   ResetForm();
   Build(cfg);
 }
@@ -66,12 +68,85 @@ void MixedSolidMechanicsTL::ResetForm()
   {
     using M = std::decay_t<decltype(mat)>;
     const std::vector<M> table = UnpackMaterials<M>(materials_);
-    nlf_->AddDomainIntegrator(new MixedTotalLagrangianIntegrator<M>(table));
-    energy_form_->AddDomainIntegrator(new MixedTotalLagrangianIntegrator<M>(table));
+    auto *integ = new MixedTotalLagrangianIntegrator<M>(table);
+    integ->SetHistory(history_.get());
+    nlf_->AddDomainIntegrator(integ);
+    auto *energy_integ = new MixedTotalLagrangianIntegrator<M>(table);
+    energy_integ->SetHistory(history_.get());
+    energy_form_->AddDomainIntegrator(energy_integ);
   }, materials_[0]);
   follower_markers_.clear();
+  contact_markers_.clear();
+  contact_forms_.clear();
   finalized_ = false;
   gradient_ = nullptr;
+}
+
+void MixedSolidMechanicsTL::InitializeHistory()
+{
+  const int size = HistorySizeOf(materials_);
+  if (size == 0) { history_.reset(); return; }
+  if (!history_) { history_ = std::make_unique<HistoryField>(mesh_, 2 * order_ + 3, size); }
+  std::vector<double> init(std::size_t(size), 0.0);
+  std::visit([&](const auto &first)
+  {
+    using M = std::decay_t<decltype(first)>;
+    if constexpr (has_history<M>::value)
+    {
+      const std::vector<M> table = UnpackMaterials<M>(materials_);
+      for (int e = 0; e < mesh_.GetNE(); e++)
+      {
+        std::fill(init.begin(), init.end(), 0.0);
+        MaterialAt(table, mesh_.GetAttribute(e)).InitialHistory(init.data());
+        history_->Fill(e, init.data());
+      }
+    }
+  }, materials_[0]);
+  history_->SetDt(0.0);
+}
+
+void MixedSolidMechanicsTL::ResetHistory(double t)
+{
+  InitializeHistory();
+  t_accepted_ = t;
+}
+
+void MixedSolidMechanicsTL::UpdateHistory(const mfem::Vector &x)
+{
+  EnsureFields();
+  mfem::Vector xu(const_cast<mfem::Vector &>(x).GetData(), offsets_[1]);
+  displacement_->SetFromTrueDofs(xu);
+  std::visit([&](const auto &first)
+  {
+    using M = std::decay_t<decltype(first)>;
+    if constexpr (has_history<M>::value)
+    {
+      const std::vector<M> table = UnpackMaterials<M>(materials_);
+      mfem::DenseMatrix grad;
+      for (int e = 0; e < mesh_.GetNE(); e++)
+      {
+        mfem::ElementTransformation &T = *mesh_.GetElementTransformation(e);
+        const M &mat = MaterialAt(table, T.Attribute);
+        const mfem::IntegrationRule &ir = history_->Rule(e);
+        for (int q = 0; q < ir.GetNPoints(); q++)
+        {
+          const mfem::IntegrationPoint &ip = ir.IntPoint(q);
+          T.SetIntPoint(&ip);
+          displacement_->GetVectorGradient(T, grad);
+          const tensor<double, 3, 3> F = DeformationGradientAt(grad, dim_);
+          mat.Update(F, history_->Old(e, q), history_->Dt(), history_->New(e, q));
+        }
+      }
+    }
+  }, materials_[0]);
+  history_->Commit();
+  history_->SetDt(0.0);
+}
+
+void MixedSolidMechanicsTL::AcceptStep(const mfem::Vector &x)
+{
+  if (history_) { UpdateHistory(x); }
+  t_accepted_ = loads_.Time();
 }
 
 void MixedSolidMechanicsTL::Build(const AppConfig &cfg)
@@ -116,6 +191,21 @@ void MixedSolidMechanicsTL::AddPressure(const std::vector<int> &attrs, mfem::Coe
   finalized_ = false;
 }
 
+void MixedSolidMechanicsTL::AddRigidSphereContact(const std::vector<int> &attrs,
+                                                  mfem::VectorCoefficient &center, double radius,
+                                                  double penalty, const BCOptions &opt)
+{
+  const double *scale = loads_.AddRigidSphereContact(attrs, center, radius, penalty, opt);
+  contact_markers_.push_back(loads_.Marker(attrs));
+  nlf_->AddBdrFaceIntegrator(new BlockRigidSphereContactIntegrator(center, radius, penalty, scale),
+                             contact_markers_.back());
+  auto form = std::make_unique<mfem::ParBlockNonlinearForm>(spaces_);
+  form->AddBdrFaceIntegrator(new BlockRigidSphereContactIntegrator(center, radius, penalty, scale),
+                             contact_markers_.back());
+  contact_forms_.push_back(std::move(form));
+  finalized_ = false;
+}
+
 void MixedSolidMechanicsTL::SetBodyForce(mfem::VectorCoefficient &b, const BCOptions &opt)
 {
   loads_.SetBodyForce(b, density_, opt);
@@ -124,9 +214,9 @@ void MixedSolidMechanicsTL::SetBodyForce(mfem::VectorCoefficient &b, const BCOpt
 
 void MixedSolidMechanicsTL::ClearBoundaryConditions()
 {
-  const bool had_followers = loads_.HasFollowerPressure();
+  const bool had_boundary_terms = loads_.HasFollowerPressure() || loads_.NumContacts() > 0;
   loads_.Clear();
-  if (had_followers) { ResetForm(); }
+  if (had_boundary_terms) { ResetForm(); }
   finalized_ = false;
 }
 
@@ -153,6 +243,7 @@ void MixedSolidMechanicsTL::SetLoadFactor(double t)
 {
   if (!finalized_) { Finalize(); }
   loads_.SetTime(t);
+  if (history_) { history_->SetDt(t - t_accepted_); }
 }
 
 void MixedSolidMechanicsTL::ApplyDirichlet(mfem::Vector &x) const
@@ -191,14 +282,32 @@ std::vector<Reaction> MixedSolidMechanicsTL::ReactionsFrom(const mfem::Vector &r
   const int n_u = offsets_[1];
   mfem::Vector r_u(const_cast<double *>(r.GetData()), n_u),
                x_u(const_cast<double *>(x.GetData()), n_u);
+  std::vector<Reaction> out;
   if (IsSmallStrain(materials_[0]))
   {
     // Equilibrium holds on the reference configuration: reference moment arms.
     mfem::Vector zero(n_u);
     zero = 0.0;
-    return loads_.Reactions(r_u, zero);
+    out = loads_.Reactions(r_u, zero);
   }
-  return loads_.Reactions(r_u, x_u);
+  else { out = loads_.Reactions(r_u, x_u); }
+  // The resultant of every contact entry (its form gives -t on the
+  // displacement dofs); x may be the displacement block alone.
+  if (!contact_forms_.empty())
+  {
+    mfem::Vector xb(offsets_[2]), f(offsets_[2]);
+    xb = 0.0;
+    for (int i = 0; i < n_u; i++) { xb(i) = x(i); }
+    if (x.Size() == offsets_[2]) { xb = x; }
+    for (std::size_t i = 0; i < contact_forms_.size(); i++)
+    {
+      contact_forms_[i]->Mult(xb, f);
+      mfem::Vector f_u(f.GetData(), n_u);
+      f_u *= -1.0;
+      out.push_back(loads_.Resultant(f_u, x_u, loads_.ContactName(i)));
+    }
+  }
+  return out;
 }
 
 mfem::Operator &MixedSolidMechanicsTL::GetGradient(const mfem::Vector &x) const
@@ -260,19 +369,20 @@ void MixedSolidMechanicsTL::UpdateFields(const mfem::Vector &x)
     using M = std::decay_t<decltype(first)>;
     const std::vector<M> table = UnpackMaterials<M>(materials_);
     mfem::DenseMatrix grad;
-    qfields_->Update([&](mfem::ElementTransformation &T, const mfem::IntegrationPoint &ip,
+    qfields_->Update([&](mfem::ElementTransformation &T, const mfem::IntegrationPoint &ip, int q,
                          QPointState &s)
     {
       const M &mat = MaterialAt(table, T.Attribute);
+      const auto &bound = AtPoint(mat, history_.get(), T.ElementNo, q);
       const double inv_kappa = mat.Incompressible() ? 0.0 : 1.0 / mat.kappa;
       T.SetIntPoint(&ip);
       displacement_->GetVectorGradient(T, grad);
       const double p = pressure_->GetValue(T, ip);
       s.F = DeformationGradientAt(grad, T.GetDimension());
-      s.P = MixedPK1(mat, s.F, p);
+      s.P = MixedPK1(bound, s.F, p);
       // The mixed functional's integrand, consistent with InternalEnergy.
       const double J = VolumeRatio(mat, s.F);
-      s.energy = mat.EnergyIso(s.F) + p * (J - 1.0) -
+      s.energy = bound.EnergyIso(s.F) + p * (J - 1.0) -
                  (inv_kappa > 0.0 ? mat.ComplementaryVolumetricEnergy(p) : 0.0);
       CompleteState(mat, s);
     });

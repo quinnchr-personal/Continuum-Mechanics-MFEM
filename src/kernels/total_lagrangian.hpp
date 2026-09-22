@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "base/tensor.hpp"
+#include "kernels/history_bound.hpp"
 #include "materials/kinematics.hpp"
 #include "materials/material_tangent.hpp"
 #include "mfem.hpp"
@@ -94,7 +95,9 @@ inline double VonMises(const tensor<double, 3, 3> &sigma)
 
 // Consumes any material with the PK1<T>(F) signature (template, not virtual).
 // One material for every element, or a table indexed by element attribute
-// (size max attribute + 1; entry 0 unused).
+// (size max attribute + 1; entry 0 unused). A history-dependent material
+// (kernels/history_bound.hpp) is evaluated through the HistoryField given
+// to SetHistory, whose rule must be this integrator's (order 2p + 3).
 template <typename Material>
 class TotalLagrangianIntegrator : public mfem::NonlinearFormIntegrator
 {
@@ -103,6 +106,9 @@ public:
     : materials_(1, material) {}
   explicit TotalLagrangianIntegrator(const std::vector<Material> &by_attribute)
     : materials_(by_attribute) {}
+
+  void SetHistory(const HistoryField *history) { history_ = history; }
+  const HistoryField *History() const { return history_; }
 
   mfem::real_t GetElementEnergy(const mfem::FiniteElement &el,
                                 mfem::ElementTransformation &Tr,
@@ -174,7 +180,7 @@ private:
   double Energy(const mfem::FiniteElement &el, mfem::ElementTransformation &Tr,
                 const mfem::Vector &elfun)
   {
-    if constexpr (!has_energy<Material>::value)
+    if constexpr (!has_energy<bound_t<Material>>::value)
     {
       MFEM_ABORT("TotalLagrangianIntegrator: this material has no Energy(F)");
       return 0.0;
@@ -183,6 +189,7 @@ private:
     {
       Prepare<dim>(el, elfun);
       const Material &material = MaterialOf(Tr);
+      CheckHistory();
       const mfem::IntegrationRule &ir = Rule(el, Tr);
       double energy = 0.0;
       tensor<double, dim, dim> H;
@@ -190,8 +197,8 @@ private:
       {
         const mfem::IntegrationPoint &ip = ir.IntPoint(q);
         PointSetup<dim>(el, Tr, ip, H);
-        energy += ip.weight * Tr.Weight() *
-                  material.Energy(DeformationGradient<dim>(H));
+        const auto &mat = AtPoint(material, history_, Tr.ElementNo, q);
+        energy += ip.weight * Tr.Weight() * mat.Energy(DeformationGradient<dim>(H));
       }
       return energy;
     }
@@ -207,13 +214,15 @@ private:
     elvect = 0.0;
     mfem::DenseMatrix PMatO(elvect.GetData(), dof, dim);
     const Material &material = MaterialOf(Tr);
+    CheckHistory();
     const mfem::IntegrationRule &ir = Rule(el, Tr);
     tensor<double, dim, dim> H;
     for (int q = 0; q < ir.GetNPoints(); q++)
     {
       const mfem::IntegrationPoint &ip = ir.IntPoint(q);
       PointSetup<dim>(el, Tr, ip, H);
-      const tensor<double, dim, dim> P = QPointStress<Material, dim>(material, H);
+      const auto &mat = AtPoint(material, history_, Tr.ElementNo, q);
+      const tensor<double, dim, dim> P = QPointStress<bound_t<Material>, dim>(mat, H);
       const double w = ip.weight * Tr.Weight();
       // r(a, i) += w P_ij DS(a, j)
       for (int a = 0; a < dof; a++)
@@ -235,13 +244,15 @@ private:
     elmat.SetSize(dof * dim);
     elmat = 0.0;
     const Material &material = MaterialOf(Tr);
+    CheckHistory();
     const mfem::IntegrationRule &ir = Rule(el, Tr);
     tensor<double, dim, dim> H;
     for (int q = 0; q < ir.GetNPoints(); q++)
     {
       const mfem::IntegrationPoint &ip = ir.IntPoint(q);
       PointSetup<dim>(el, Tr, ip, H);
-      const tensor<double, 3, 3, 3, 3> A = QPointTangent<Material, dim>(material, H);
+      const auto &mat = AtPoint(material, history_, Tr.ElementNo, q);
+      const tensor<double, 3, 3, 3, 3> A = QPointTangent<bound_t<Material>, dim>(mat, H);
       const double w = ip.weight * Tr.Weight();
       // K(a i, b k) += w DS(a, j) A_ijkl DS(b, l)
       for (int a = 0; a < dof; a++)
@@ -261,7 +272,16 @@ private:
     }
   }
 
+  void CheckHistory() const
+  {
+    if constexpr (has_history<Material>::value)
+    {
+      MFEM_VERIFY(history_, "TotalLagrangianIntegrator: a history-dependent material needs SetHistory");
+    }
+  }
+
   std::vector<Material> materials_;
+  const HistoryField *history_ = nullptr;
   mfem::DenseMatrix DSh_, DS_, Jrt_, Hmat_, PMatI_;
 };
 

@@ -32,6 +32,12 @@ public:
   // (T = -p J F^{-T} N, per current area).
   virtual void AddPressure(const std::vector<int> &attrs, mfem::Coefficient &p, bool follower,
                            const BCOptions &opt = BCOptions()) = 0;
+  // Penalty contact of the boundary with a rigid sphere of the given radius
+  // and centre (a coefficient of t; kernels/rigid_sphere_contact.hpp). The
+  // resultant on the body is reported by Reactions under the entry's name.
+  virtual void AddRigidSphereContact(const std::vector<int> &attrs, mfem::VectorCoefficient &center,
+                                     double radius, double penalty,
+                                     const BCOptions &opt = BCOptions()) = 0;
   virtual void SetBodyForce(mfem::VectorCoefficient &b, const BCOptions &opt = BCOptions()) = 0;
   virtual void ClearBoundaryConditions() = 0;
   virtual void Finalize() = 0;
@@ -40,8 +46,9 @@ public:
   // internal minus external force on every dof of the unknown.
   virtual void FullResidual(const mfem::Vector &x, mfem::Vector &r) const = 0;
   // Reactions of the Dirichlet entries (see loads.hpp) from a full residual r
-  // of the unknown at the state x; a dynamic analysis adds the inertial force
-  // to r (physics/dynamic_solid_problem.hpp).
+  // of the unknown at the state x, followed by the resultant of every contact
+  // entry at x; a dynamic analysis adds the inertial force to r
+  // (physics/dynamic_solid_problem.hpp).
   virtual std::vector<Reaction> ReactionsFrom(const mfem::Vector &r,
                                               const mfem::Vector &x) const = 0;
   // Reactions of the static balance at x.
@@ -51,8 +58,18 @@ public:
     FullResidual(x, r);
     return ReactionsFrom(r, x);
   }
-  // Dynamic analysis: the loads follow the physical time (LoadSet::SetPhysicalTime).
+  // Dynamic analysis, or a quasi-static one in physical time: the loads
+  // follow the physical time (LoadSet::SetPhysicalTime).
   virtual void SetPhysicalTime(bool on) = 0;
+  // A history-dependent material (materials with Maxwell branches) keeps
+  // its internal variables at the quadrature points: SetLoadFactor(t) makes
+  // t - (time of the last accepted step) the length of the step under way,
+  // AcceptStep(x) advances the variables to the end of the step at x, and
+  // between steps the stress is that of the accepted state. ResetHistory
+  // restores the initial variables and makes t the accepted time (the start
+  // of an analysis at t). Without such a material both are no-ops.
+  virtual bool HasHistory() const = 0;
+  virtual void ResetHistory(double t) = 0;
   // Reference density rho_R by element attribute (material.rho0 and the
   // regions'): the body force and the mass matrix share it.
   virtual mfem::Coefficient &ReferenceDensity() = 0;

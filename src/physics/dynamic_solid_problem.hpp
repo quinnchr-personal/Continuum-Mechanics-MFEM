@@ -193,5 +193,8 @@ std::unique_ptr<DynamicSolidProblem> MakeDynamicSolidProblem(SolidProblem &probl
 // nothing about it is left implicit), and warnings (a conditionally stable
 // Newmark pair).
 std::vector<std::string> DescribeDynamics(const AppConfig &cfg);
+// The header of a quasi-static run in physical time (the time block): the
+// time steps and the time dependence of every entry, as DescribeDynamics.
+std::vector<std::string> DescribeTimeStepping(const AppConfig &cfg);
 
 } // namespace cmf

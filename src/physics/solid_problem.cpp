@@ -134,6 +134,23 @@ void InstallYamlLoads(SolidProblem &problem, mfem::Mesh &mesh, const AppConfig &
       problem.AddTraction(attrs, *owned_vectors.back(), OptionsOf(bc));
     }
   }
+  for (std::size_t i = 0; i < cfg.bcs.contact.size(); i++)
+  {
+    const ContactCondition &c = cfg.bcs.contact[i];
+    const std::string what = "bcs.contact[" + std::to_string(i) + "]";
+    if (int(c.center.size()) != dim)
+    {
+      throw ConfigError(what + ".center has " + std::to_string(c.center.size()) +
+                        " components, mesh dimension is " + std::to_string(dim));
+    }
+    owned_vectors.push_back(std::make_unique<ExpressionVectorCoefficient>(c.center));
+    BCOptions opt;
+    opt.schedule = c.schedule;
+    opt.time_dependent = ExpressionsUseTime(c.center);
+    opt.name = c.name;
+    problem.AddRigidSphereContact(ResolveBoundaryAttributes(mesh, c.attr, c.attr_names, what),
+                                  *owned_vectors.back(), c.radius, c.penalty, opt);
+  }
   if (!cfg.body_force.Empty())
   {
     const BodyForceConfig &bf = cfg.body_force;

@@ -469,7 +469,7 @@ void ValidateMaterialConfig(const MaterialConfig &cfg, const std::string &path)
     {"c30", set(cfg.c30)}, {"Jm", set(cfg.Jm)}, {"N", set(cfg.N)},
     {"mu_r", !cfg.mu_r.empty()}, {"alpha_r", !cfg.alpha_r.empty()},
     {"incompressible", cfg.incompressible}, {"volumetric", cfg.volumetric != "quadratic"},
-    {"inverse_langevin", cfg.inverse_langevin != "pade"}};
+    {"inverse_langevin", cfg.inverse_langevin != "pade"}, {"branches", !cfg.branches.empty()}};
   auto is_set = [&](const std::string &k)
   {
     for (const Key &e : keys) { if (k == e.name) { return e.set; } }
@@ -490,36 +490,36 @@ void ValidateMaterialConfig(const MaterialConfig &cfg, const std::string &path)
   }
   else if (model == "iso_neo_hookean")
   {
-    allowed = {"mu", "E", "nu", "kappa", "incompressible", "volumetric"};
+    allowed = {"mu", "E", "nu", "kappa", "incompressible", "volumetric", "branches"};
     needs = "mu, or E and nu";
   }
   else if (model == "mooney_rivlin")
   {
-    allowed = {"c1", "c2", "nu", "kappa", "incompressible", "volumetric"};
+    allowed = {"c1", "c2", "nu", "kappa", "incompressible", "volumetric", "branches"};
     required = {"c1", "c2"};
     needs = "c1 and c2";
   }
   else if (model == "yeoh")
   {
-    allowed = {"c10", "c20", "c30", "nu", "kappa", "incompressible", "volumetric"};
+    allowed = {"c10", "c20", "c30", "nu", "kappa", "incompressible", "volumetric", "branches"};
     required = {"c10"};
     needs = "c10 (and optionally c20, c30)";
   }
   else if (model == "gent")
   {
-    allowed = {"mu", "Jm", "nu", "kappa", "incompressible", "volumetric"};
+    allowed = {"mu", "Jm", "nu", "kappa", "incompressible", "volumetric", "branches"};
     required = {"mu", "Jm"};
     needs = "mu and Jm";
   }
   else if (model == "arruda_boyce")
   {
-    allowed = {"mu", "N", "inverse_langevin", "nu", "kappa", "incompressible", "volumetric"};
+    allowed = {"mu", "N", "inverse_langevin", "nu", "kappa", "incompressible", "volumetric", "branches"};
     required = {"mu", "N"};
     needs = "mu and N";
   }
   else if (model == "ogden")
   {
-    allowed = {"mu_r", "alpha_r", "nu", "kappa", "incompressible", "volumetric"};
+    allowed = {"mu_r", "alpha_r", "nu", "kappa", "incompressible", "volumetric", "branches"};
     required = {"mu_r", "alpha_r"};
     needs = "mu_r and alpha_r";
   }
@@ -676,6 +676,29 @@ MaterialConfig ReadMaterialKeys(NodeReader &r, const std::string &path, const Ma
   cfg.incompressible = r.Optional<bool>("incompressible", cfg.incompressible);
   cfg.volumetric = r.Optional<std::string>("volumetric", cfg.volumetric);
   cfg.inverse_langevin = r.Optional<std::string>("inverse_langevin", cfg.inverse_langevin);
+  if (r.Has("branches"))
+  {
+    // Maxwell branches: [ { G, tau }, ... ]; a region's list replaces the base's.
+    YAML::Node list = r.Raw("branches");
+    const std::string lpath = r.Path("branches");
+    if (!list.IsSequence() || list.size() == 0)
+    {
+      throw ConfigError("'" + lpath + "' must be a non-empty list of { G, tau } maps");
+    }
+    cfg.branches.clear();
+    for (std::size_t i = 0; i < list.size(); i++)
+    {
+      NodeReader item(list[i], lpath + "[" + std::to_string(i) + "]");
+      MaxwellBranchConfig b;
+      b.G = item.Require<double>("G");
+      b.tau = item.Require<double>("tau");
+      CheckPositive(b.G, item.Path("G"));
+      CheckPositive(b.tau, item.Path("tau"));
+      item.Finish();
+      cfg.branches.push_back(b);
+    }
+  }
+  else { r.Optional<int>("branches", 0); }
   cfg.rho0 = r.Optional<double>("rho0", cfg.rho0);
   static const char *models[] = {"neo_hookean", "st_venant_kirchhoff", "gent_compressible_summit",
                                  "iso_neo_hookean", "mooney_rivlin", "yeoh", "gent", "arruda_boyce",
@@ -755,6 +778,81 @@ MaterialConfig ParseMaterialConfig(const YAML::Node &node,
   return cfg;
 }
 
+namespace
+{
+
+std::vector<ContactCondition> ParseContactList(const YAML::Node &node, const std::string &path,
+                                               double t_final)
+{
+  std::vector<ContactCondition> list;
+  if (!node.IsDefined() || node.IsNull()) { return list; }
+  if (!node.IsSequence())
+  {
+    throw ConfigError("'" + path + "' must be a list of {attr, type, center, radius, penalty} maps");
+  }
+  for (std::size_t i = 0; i < node.size(); i++)
+  {
+    const std::string item_path = path + "[" + std::to_string(i) + "]";
+    NodeReader item(node[i], item_path);
+    ContactCondition c;
+    c.name = item.Optional<std::string>("name", "contact[" + std::to_string(i) + "]");
+    if (!item.Has("attr")) { throw ConfigError("missing key '" + item_path + ".attr'"); }
+    YAML::Node attr = item.Raw("attr");
+    if (!attr.IsSequence() || attr.size() == 0)
+    {
+      throw ConfigError("key '" + item_path + ".attr' must be a non-empty list of "
+                        "boundary attribute numbers or physical-group names");
+    }
+    for (std::size_t k = 0; k < attr.size(); k++)
+    {
+      if (!attr[k].IsScalar())
+      {
+        throw ConfigError("key '" + item_path + ".attr[" + std::to_string(k) +
+                          "]' must be an attribute number or a physical-group name");
+      }
+      try { c.attr.push_back(attr[k].as<int>()); }
+      catch (const YAML::Exception &) { c.attr_names.push_back(attr[k].as<std::string>()); }
+    }
+    c.type = item.Optional<std::string>("type", "rigid_sphere");
+    if (c.type != "rigid_sphere")
+    {
+      throw ConfigError("key '" + item_path + ".type': unknown type '" + c.type +
+                        "' (expected rigid_sphere)");
+    }
+    c.center = item.Require<std::vector<std::string>>("center");
+    if (c.center.empty())
+    {
+      throw ConfigError("key '" + item_path + ".center' must be a list of one expression per component");
+    }
+    for (std::size_t k = 0; k < c.center.size(); k++)
+    {
+      try { Expression::Parse(c.center[k]); }
+      catch (const ConfigError &e)
+      {
+        throw ConfigError("key '" + item_path + ".center[" + std::to_string(k) + "]': " + e.what());
+      }
+    }
+    c.radius = item.Require<double>("radius");
+    CheckPositive(c.radius, item_path + ".radius");
+    c.penalty = item.Require<double>("penalty");
+    CheckPositive(c.penalty, item_path + ".penalty");
+    if (item.Has("schedule"))
+    {
+      c.schedule = ParseSchedule(item.Raw("schedule"), item_path + ".schedule", t_final);
+    }
+    else
+    {
+      item.Optional<int>("schedule", 0);
+      c.schedule = Schedule::Constant();
+    }
+    item.Finish();
+    list.push_back(c);
+  }
+  return list;
+}
+
+} // namespace
+
 BCConfig ParseBCConfig(const YAML::Node &node, const std::string &path, double t_final)
 {
   BCConfig cfg;
@@ -762,6 +860,7 @@ BCConfig ParseBCConfig(const YAML::Node &node, const std::string &path, double t
   NodeReader r(node, path);
   cfg.dirichlet = ParseBCList(r.Raw("dirichlet"), r.Path("dirichlet"), true, t_final);
   cfg.traction = ParseBCList(r.Raw("traction"), r.Path("traction"), false, t_final);
+  cfg.contact = ParseContactList(r.Raw("contact"), r.Path("contact"), t_final);
   r.Finish();
   return cfg;
 }
@@ -797,14 +896,17 @@ BodyForceConfig ParseBodyForceConfig(const YAML::Node &node, const std::string &
 }
 
 SolverConfig ParseSolverConfig(const YAML::Node &node, const std::string &path,
-                               const DynamicsConfig &dynamics)
+                               const DynamicsConfig &dynamics, const TimeConfig &time)
 {
   SolverConfig cfg;
+  const bool physical = dynamics.enabled || time.enabled;
   // A failed time step may be halved down to 1e-3 of the smallest planned one.
-  if (dynamics.enabled)
+  if (physical)
   {
-    double smallest = dynamics.t_final, t_prev = 0.0;
-    for (double t : dynamics.breakpoints) { smallest = std::min(smallest, t - t_prev); t_prev = t; }
+    const double t_final = dynamics.enabled ? dynamics.t_final : time.t_final;
+    const std::vector<double> &bp = dynamics.enabled ? dynamics.breakpoints : time.breakpoints;
+    double smallest = t_final, t_prev = 0.0;
+    for (double t : bp) { smallest = std::min(smallest, t - t_prev); t_prev = t; }
     cfg.substep.min_dt = 1e-3 * smallest;
   }
   if (!node.IsDefined() || node.IsNull()) { return cfg; }
@@ -818,6 +920,17 @@ SolverConfig ParseSolverConfig(const YAML::Node &node, const std::string &path,
         throw ConfigError("key '" + r.Path(key) + "' is not used in a dynamic analysis (the time "
                           "steps are dynamics.dt or dynamics.steps; Newton starts each step from "
                           "the last converged state)");
+      }
+    }
+  }
+  else if (time.enabled)
+  {
+    for (const char *key : {"load_steps", "steps"})
+    {
+      if (r.Has(key))
+      {
+        throw ConfigError("key '" + r.Path(key) + "' is not used with a time block (the "
+                          "increments are the time steps time.dt or time.steps)");
       }
     }
   }
@@ -854,7 +967,7 @@ SolverConfig ParseSolverConfig(const YAML::Node &node, const std::string &path,
     {
       throw ConfigError("key '" + ss.Path("max_bisections") + "' must be >= 1");
     }
-    if (dynamics.enabled)
+    if (physical)
     {
       if (!(sc.min_dt > 0.0)) { throw ConfigError("key '" + ss.Path("min_dt") + "' must be positive"); }
     }
@@ -1060,14 +1173,15 @@ void ValidateDynamicsScheme(const DynamicsConfig &cfg, const std::string &path)
   }
 }
 
-DynamicsConfig ParseDynamicsConfig(const YAML::Node &node, const std::string &path)
+namespace
 {
-  DynamicsConfig cfg;
-  if (!node.IsDefined() || node.IsNull()) { return cfg; }
-  NodeReader r(node, path);
-  cfg.enabled = true;
-  cfg.t_final = r.Require<double>("t_final");
-  CheckPositive(cfg.t_final, r.Path("t_final"));
+
+// t_final and the time steps (dt, or the steps segments) of the time and the
+// dynamics blocks.
+void ParseTimeSteps(NodeReader &r, double &t_final, std::vector<double> &breakpoints)
+{
+  t_final = r.Require<double>("t_final");
+  CheckPositive(t_final, r.Path("t_final"));
   if (r.Has("dt") == r.Has("steps"))
   {
     throw ConfigError("keys '" + r.Path("dt") + "' and '" + r.Path("steps") +
@@ -1077,24 +1191,45 @@ DynamicsConfig ParseDynamicsConfig(const YAML::Node &node, const std::string &pa
   {
     const double dt = r.Require<double>("dt");
     CheckPositive(dt, r.Path("dt"));
-    if (dt > cfg.t_final * (1.0 + 1e-12))
+    if (dt > t_final * (1.0 + 1e-12))
     {
       throw ConfigError("key '" + r.Path("dt") + "' exceeds t_final");
     }
     // The number of steps: t_final / dt when that is an integer (to 1e-9),
     // the next integer otherwise, which shortens dt to t_final / n.
-    const double ratio = cfg.t_final / dt;
+    const double ratio = t_final / dt;
     const double nearest = std::round(ratio);
     const int n = std::abs(ratio - nearest) <= 1e-9 * ratio ? int(nearest) : int(std::ceil(ratio));
-    cfg.breakpoints = UniformTimeSteps(cfg.t_final, n);
+    breakpoints = UniformTimeSteps(t_final, n);
     r.Optional<int>("steps", 0);
   }
   else
   {
-    cfg.breakpoints = ParseStepSegments(r.Raw("steps"), r.Path("steps"), cfg.t_final, "t_final",
-                                        "t_final");
+    breakpoints = ParseStepSegments(r.Raw("steps"), r.Path("steps"), t_final, "t_final", "t_final");
     r.Optional<int>("dt", 0);
   }
+}
+
+} // namespace
+
+TimeConfig ParseTimeConfig(const YAML::Node &node, const std::string &path)
+{
+  TimeConfig cfg;
+  if (!node.IsDefined() || node.IsNull()) { return cfg; }
+  NodeReader r(node, path);
+  cfg.enabled = true;
+  ParseTimeSteps(r, cfg.t_final, cfg.breakpoints);
+  r.Finish();
+  return cfg;
+}
+
+DynamicsConfig ParseDynamicsConfig(const YAML::Node &node, const std::string &path)
+{
+  DynamicsConfig cfg;
+  if (!node.IsDefined() || node.IsNull()) { return cfg; }
+  NodeReader r(node, path);
+  cfg.enabled = true;
+  ParseTimeSteps(r, cfg.t_final, cfg.breakpoints);
   cfg.scheme = r.Optional<std::string>("scheme", cfg.scheme);
   const std::vector<std::pair<std::string, std::string>> owners = {
     {"beta", "newmark"}, {"gamma", "newmark"}, {"alpha", "hht"}, {"rho_inf", "generalized_alpha"}};
@@ -1189,12 +1324,24 @@ AppConfig ParseConfig(const YAML::Node &root)
   }
   cfg.mesh = ParseMeshConfig(r.Raw("mesh"), "mesh");
   cfg.material = ParseMaterialConfig(r.Raw("material"), "material");
-  // First of the sections that mention time: with it t is the physical time.
+  // First the sections that mention time: with either, t is the physical time.
+  cfg.time = ParseTimeConfig(r.Raw("time"), "time");
   cfg.dynamics = ParseDynamicsConfig(r.Raw("dynamics"), "dynamics");
-  const double t_final = cfg.dynamics.enabled ? cfg.dynamics.t_final : 0.0;
+  if (cfg.time.enabled && cfg.dynamics.enabled)
+  {
+    throw ConfigError("sections 'time' and 'dynamics': give one, not both (a dynamic analysis "
+                      "runs in physical time already)");
+  }
+  const double t_final = cfg.dynamics.enabled ? cfg.dynamics.t_final
+                         : cfg.time.enabled ? cfg.time.t_final : 0.0;
+  if (!cfg.material.branches.empty() && t_final <= 0.0)
+  {
+    throw ConfigError("material.branches: a viscoelastic material advances its history by the "
+                      "physical time step; add a time block (t_final, dt or steps) or a dynamics block");
+  }
   cfg.bcs = ParseBCConfig(r.Raw("bcs"), "bcs", t_final);
   cfg.body_force = ParseBodyForceConfig(r.Raw("body_force"), "body_force", t_final);
-  cfg.solver = ParseSolverConfig(r.Raw("solver"), "solver", cfg.dynamics);
+  cfg.solver = ParseSolverConfig(r.Raw("solver"), "solver", cfg.dynamics, cfg.time);
   cfg.output = ParseOutputConfig(r.Raw("output"), "output", cfg.dynamics.enabled);
   r.Finish();
   return cfg;

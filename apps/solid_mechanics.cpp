@@ -1,5 +1,6 @@
-// Total Lagrangian solid mechanics, quasi-static or (with a `dynamics` block
-// in the input) dynamic: YAML in, ParaView out.
+// Total Lagrangian solid mechanics, quasi-static in a pseudo-time, quasi-static
+// in physical time (a `time` block: rate-dependent materials) or dynamic (a
+// `dynamics` block): YAML in, ParaView out.
 // This executable only parses input and wires library objects together.
 #include <array>
 #include <cstdio>
@@ -49,6 +50,9 @@ int main(int argc, char *argv[])
       dynamic = cmf::MakeDynamicSolidProblem(physics, cfg);
       dynamic->TrackExternalWork(cfg.output.energy);
     }
+    // With a time block: the quasi-static problem stepped in physical time.
+    const bool in_time = cfg.time.enabled;
+    if (in_time) { physics.SetPhysicalTime(true); }
 
     const HYPRE_BigInt global_ne = pmesh->GetGlobalNE();
     const HYPRE_BigInt global_tdofs = physics.GlobalTrueVSize();
@@ -62,6 +66,10 @@ int main(int argc, char *argv[])
       if (dynamic)
       {
         for (const std::string &line : cmf::DescribeDynamics(cfg)) { std::cout << line << std::endl; }
+      }
+      else if (in_time)
+      {
+        for (const std::string &line : cmf::DescribeTimeStepping(cfg)) { std::cout << line << std::endl; }
       }
     }
 
@@ -179,7 +187,8 @@ int main(int argc, char *argv[])
     if (dynamic) { print_energy("step 0 t = 0.000000000e+00 ", u); }
 
     // Every output.every-th step is written, and always the last one.
-    const double t_end = dynamic ? cfg.dynamics.t_final : 1.0;
+    const double t_end = dynamic ? cfg.dynamics.t_final : in_time ? cfg.time.t_final : 1.0;
+    const bool physical_time = dynamic || in_time;
     const cmf::LoadStepCallback on_step = [&](const cmf::LoadStepReport &step, const mfem::Vector &x)
     {
       if (!step.newton.converged) { return; }
@@ -187,7 +196,7 @@ int main(int argc, char *argv[])
       if (write || cfg.output.probe_every_step) { update_fields(x); }
       if (write) { writer->Save(step.step, step.load_factor); }
       char prefix[64];
-      std::snprintf(prefix, sizeof(prefix), dynamic ? "step %d t = %.9e " : "step %d t = %.6f ",
+      std::snprintf(prefix, sizeof(prefix), physical_time ? "step %d t = %.9e " : "step %d t = %.6f ",
                     step.step, step.load_factor);
       if (cfg.output.probe_every_step) { print_probes(prefix); }
       print_reactions(prefix, x, step.step, step.load_factor);
@@ -195,7 +204,8 @@ int main(int argc, char *argv[])
     };
     const cmf::QuasiStaticReport report =
       dynamic ? cmf::SolveDynamic(*dynamic, *linear, cfg.solver, cfg.dynamics.breakpoints, 0.0, u, on_step)
-              : cmf::SolveQuasiStatic(physics, *linear, cfg.solver, u, on_step);
+      : in_time ? cmf::SolveInTime(physics, *linear, cfg.solver, cfg.time.breakpoints, 0.0, u, on_step)
+                : cmf::SolveQuasiStatic(physics, *linear, cfg.solver, u, on_step);
 
     update_fields(u);
     mfem::Vector zero(pmesh->Dimension());
@@ -210,6 +220,13 @@ int main(int argc, char *argv[])
                   "internal energy = %.12e, kinetic energy = %.12e\n",
                   report.converged ? "yes" : "no", report.steps.size(), dynamic->Time(), u_l2,
                   energy, kinetic);
+    }
+    else if (root && in_time)
+    {
+      std::printf("result: converged %s, time steps %zu, t = %.9e, |u|_L2 = %.12e, "
+                  "internal energy = %.12e\n",
+                  report.converged ? "yes" : "no", report.steps.size(),
+                  report.steps.empty() ? 0.0 : report.steps.back().load_factor, u_l2, energy);
     }
     else if (root)
     {

@@ -101,6 +101,24 @@ const double *LoadSet::AddFollowerPressure(const std::vector<int> &attrs, mfem::
   return follower_.back().scale.get();
 }
 
+const double *LoadSet::AddRigidSphereContact(const std::vector<int> &attrs,
+                                             mfem::VectorCoefficient &center, double radius,
+                                             double penalty, const BCOptions &opt)
+{
+  CheckVector(center, "AddRigidSphereContact");
+  ContactEntry e;
+  e.marker = Marker(attrs);
+  e.center = &center;
+  e.radius = radius;
+  e.penalty = penalty;
+  e.opt = opt;
+  if (e.opt.name.empty()) { e.opt.name = "contact[" + std::to_string(contact_.size()) + "]"; }
+  e.scale = std::make_unique<double>(0.0);
+  contact_.push_back(std::move(e));
+  finalized_ = false;
+  return contact_.back().scale.get();
+}
+
 void LoadSet::SetBodyForce(mfem::VectorCoefficient &b, mfem::Coefficient &rho, const BCOptions &opt)
 {
   CheckVector(b, "SetBodyForce");
@@ -123,6 +141,7 @@ void LoadSet::Clear()
   dirichlet_.clear();
   loads_.clear();
   follower_.clear();
+  contact_.clear();
   finalized_ = false;
 }
 
@@ -225,6 +244,11 @@ void LoadSet::SetTime(double t)
     e.coef->SetTime(t);
     *e.scale = e.opt.schedule.Eval(t, physical_time_);
   }
+  for (ContactEntry &e : contact_)
+  {
+    e.center->SetTime(t);
+    *e.scale = e.opt.schedule.Eval(t, physical_time_);
+  }
   external_ = 0.0;
   for (LoadEntry &e : loads_)
   {
@@ -254,36 +278,41 @@ void LoadSet::ApplyDirichlet(mfem::Vector &x) const
   }
 }
 
+void LoadSet::EnsureCoords() const
+{
+  if (coords_true_.Size() != 0) { return; }
+  // The reference coordinates as a vector field on the displacement space.
+  mfem::VectorFunctionCoefficient X(dim_, [](const mfem::Vector &p, mfem::Vector &v) { v = p; });
+  mfem::ParGridFunction g(&fes_);
+  g.ProjectCoefficient(X);
+  coords_true_.SetSize(fes_.GetTrueVSize());
+  g.GetTrueDofs(coords_true_);
+}
+
+// Adds the force f on true dof i (component i % dim of node i / dim; true
+// dofs are ordered by vdim) and its moment about the origin at the current
+// position of the node to local[0..5].
+void LoadSet::Accumulate(double *local, int i, double f, const mfem::Vector &x) const
+{
+  const int node = i / dim_, c = i % dim_;
+  double pos[3] = {0.0, 0.0, 0.0}, force[3] = {0.0, 0.0, 0.0};
+  for (int d = 0; d < dim_; d++) { pos[d] = coords_true_(node * dim_ + d) + x(node * dim_ + d); }
+  force[c] = f;
+  local[c] += f;
+  local[3] += pos[1] * force[2] - pos[2] * force[1];
+  local[4] += pos[2] * force[0] - pos[0] * force[2];
+  local[5] += pos[0] * force[1] - pos[1] * force[0];
+}
+
 std::vector<Reaction> LoadSet::Reactions(const mfem::Vector &r, const mfem::Vector &x) const
 {
   MFEM_VERIFY(finalized_, "LoadSet: call Finalize() first");
-  if (coords_true_.Size() == 0)
-  {
-    // The reference coordinates as a vector field on the displacement space.
-    mfem::VectorFunctionCoefficient X(dim_, [](const mfem::Vector &p, mfem::Vector &v) { v = p; });
-    mfem::ParGridFunction g(&fes_);
-    g.ProjectCoefficient(X);
-    coords_true_.SetSize(fes_.GetTrueVSize());
-    g.GetTrueDofs(coords_true_);
-  }
-  // True dofs are ordered by vdim (all components of a node consecutive).
+  EnsureCoords();
   std::vector<Reaction> out;
   for (const DirichletEntry &e : dirichlet_)
   {
     double local[6] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
-    for (int k = 0; k < e.tdofs.Size(); k++)
-    {
-      const int i = e.tdofs[k];
-      const int node = i / dim_, c = i % dim_;
-      const double f = r(i);
-      double pos[3] = {0.0, 0.0, 0.0}, force[3] = {0.0, 0.0, 0.0};
-      for (int d = 0; d < dim_; d++) { pos[d] = coords_true_(node * dim_ + d) + x(node * dim_ + d); }
-      force[c] = f;
-      local[c] += f;
-      local[3] += pos[1] * force[2] - pos[2] * force[1];
-      local[4] += pos[2] * force[0] - pos[0] * force[2];
-      local[5] += pos[0] * force[1] - pos[1] * force[0];
-    }
+    for (int k = 0; k < e.tdofs.Size(); k++) { Accumulate(local, e.tdofs[k], r(e.tdofs[k]), x); }
     double global[6];
     MPI_Allreduce(local, global, 6, MPI_DOUBLE, MPI_SUM, fes_.GetComm());
     Reaction rx;
@@ -292,6 +321,20 @@ std::vector<Reaction> LoadSet::Reactions(const mfem::Vector &r, const mfem::Vect
     out.push_back(rx);
   }
   return out;
+}
+
+Reaction LoadSet::Resultant(const mfem::Vector &f, const mfem::Vector &x,
+                            const std::string &name) const
+{
+  EnsureCoords();
+  double local[6] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+  for (int i = 0; i < f.Size(); i++) { Accumulate(local, i, f(i), x); }
+  double global[6];
+  MPI_Allreduce(local, global, 6, MPI_DOUBLE, MPI_SUM, fes_.GetComm());
+  Reaction rx;
+  rx.name = name;
+  for (int d = 0; d < 3; d++) { rx.force[d] = global[d]; rx.moment[d] = global[3 + d]; }
+  return rx;
 }
 
 } // namespace cmf
