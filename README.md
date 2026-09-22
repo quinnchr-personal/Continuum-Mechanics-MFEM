@@ -648,66 +648,129 @@ coupled theories in solid mechanics* (Oxford University Press, 2025;
 solidmechanicscoupledtheories.github.io, codes by Eric Stewart and Lallit
 Anand), one subdirectory per chapter of the site. `finite_elasticity/` holds
 the ten "1. Finite Elasticity" examples: Arruda-Boyce with
-G0 = 280 kPa, lambda_L = 5.12 and K = 1000 G0 in kPa and mm, the reference's
-logarithmic volumetric law p = K ln(J)/J (`volumetric: logarithmic`, with
-`solver.predictor: tangent`, see "Predictor" above; `02_simple_shear` keeps the
-quadratic law, see below), mixed Q2-Q1 or
-P2-P1, the same geometry, boundary conditions, load histories and step counts.
+G0 = 280 kPa, lambda_L = 5.12 (`N = lambda_L^2`) and K = 1000 G0 in kPa and mm, the
+reference's Pade approximation of the inverse Langevin function
+(`inverse_langevin: pade`, the default, written out in the inputs), the reference's logarithmic volumetric law
+p = K ln(J)/J (`volumetric: logarithmic`, with
+`solver.predictor: tangent`, see "Predictor" above; `02_simple_shear` and
+`08_column_buckling` keep the quadratic law, see below), mixed Q2-Q1 or
+P2-P1, the sparse direct solver (`solver.linear.type: direct`, as the reference, which
+factors with MUMPS; the largest input has 59 000 unknowns), the same geometry, boundary conditions, load histories and step counts.
 Meshes come from `apps/mesh/*.geo` (`make meshes`); the curved ones are
 second-order. Every input probes the points of the reference's plots after
 every step (`probe_every_step`), so the curves (stress or force vs stretch,
 pressure vs displacement) can be read from the log.
 
-| Input | Reference | Notes |
-|-------|-----------|-------|
-| `01_uniaxial_tension` | 3D01 | 10 mm cube, stretch 7.75 in y, rollers on three planes |
-| `02_simple_shear` | 3D02 | 1 mm cube, two sinusoidal cycles of shear strain 1 (`sin(4 pi t)`) |
-| `03_cylinder_torsion` | 3D03 | R = 12.7, L = 25.4, top face rotated by 2.5 rad, `cylinder_torsion.geo` |
-| `04_plate_with_hole` | 3D04 | quarter plate 15 x 10 x 1 with a 3 mm hole, stretch 3, `plate_hole.geo` |
-| `05_cylinder_inflation` | 3D05 | quarter tube 10/11 x 5 mm, follower pressure to 50 kPa, `tube_quarter.geo` |
-| `06_sphere_inflation` | 3D06 | octant shell 10/11 mm, follower pressure to 35 kPa, `sphere_octant.geo` |
-| `07_cube_footing` | 3D07 | 50 mm cube, follower pressure 1500 kPa on a quarter of the top, `footing.geo` |
-| `08_column_buckling` | 3D08 | 1 x 1 x 20 column, imperfection by `perturb_column.py`, shortened by 2.5 mm |
-| `09_spherical_inclusion` | 3D09 | octant of a cube with a ten times stiffer spherical inclusion (`material.regions`), stretch 2, `inclusion.geo` |
-| `10_column_twist` | 3D10 | 1 x 1 x 3 column, top face turned through 2 pi |
+| Input | Reference | Notes | Mesh: this code / reference |
+|-------|-----------|-------|-----------------------------|
+| `01_uniaxial_tension` | 3D01 | 10 mm cube, stretch 7.75 in y, rollers on three planes | 4^3 hexahedra / 2^3 box, 48 tets |
+| `02_simple_shear` | 3D02 | 1 mm cube, two sinusoidal cycles of shear strain 1 (`sin(4 pi t)`) | 8 x 8 x 4 hexahedra / the same box, 1536 tets |
+| `03_cylinder_torsion` | 3D03 | R = 12.7, L = 25.4, top face rotated by 2.5 rad, `cylinder_torsion.geo` | 4045 curved tets / 3653 straight tets |
+| `04_plate_with_hole` | 3D04 | quarter plate 15 x 10 x 1 with a 3 mm hole, stretch 3, `plate_hole.geo` | 1071 curved tets / 2904 straight tets |
+| `05_cylinder_inflation` | 3D05 | quarter tube 10/11 x 5 mm, follower pressure to 50 kPa, `tube_quarter.geo` | 3969 curved tets / 600 straight tets |
+| `06_sphere_inflation` | 3D06 | octant shell 10/11 mm, follower pressure to 35 kPa, `sphere_octant.geo` | 2606 curved tets / 2597 straight tets, both of size 0.75 |
+| `07_cube_footing` | 3D07 | 50 mm cube, follower pressure 1500 kPa on a quarter of the top, `footing.geo` | 4766 tets / 10 x 10 x 6 box, 3600 tets |
+| `08_column_buckling` | 3D08 | 1 x 1 x 20 column, imperfection by `perturb_column.py`, shortened by 2.5 mm | 4 x 4 x 50 hexahedra / the same box, 4800 tets |
+| `09_spherical_inclusion` | 3D09 | octant of a cube with a ten times stiffer spherical inclusion (`material.regions`), stretch 2, `inclusion.geo` | 1358 tets / 2039 tets |
+| `10_column_twist` | 3D10 | 1 x 1 x 3 column, top face turned through 2 pi | 8 x 8 x 32 hexahedra, the same |
+
+Both codes use Taylor-Hood elements (P2-P1 on tetrahedra, Q2-Q1 on hexahedra);
+`create_box` of the reference cuts each cell of a box into six tetrahedra, and its
+Gmsh meshes are first-order, so its curved boundaries are faceted where ours are
+quadratic (`order: 2`). The reference integrates at degree 4, this code at 2p + 3 = 7.
 
 `apps/anand_plots.py` reproduces the result plots of the reference pages
-from the logs of these runs (the inputs print the probes and the reactions
-after every step; save the stdout as `out/anand_coupled_theories/
-finite_elasticity/logs/<case>.log`, or pass `--logs`). The reference
+from the ParaView output of these runs (`python3 apps/anand_plots.py [case
+...]` from the repository root, after the runs; every case with output by
+default; the plots go to `out/anand_coupled_theories/finite_elasticity/plots/`).
+It follows the `.pvd`, so it plots the steps of the last run. The probes are
+the nodal fields interpolated at the probe points of the input. The reactions
+are not in the output; the script integrates the traction `P N` of the nodal
+`pk1_stress` over the faces of each Dirichlet entry (the faces of its physical
+groups in the `.msh`, Gauss quadrature of the Lagrange interpolants, the
+prescribed components only, the moment about the origin with the current
+position, as the app's). That stress is recovered from the quadrature points,
+so the force is the app's reaction up to the error of the recovery: to
+round-off in the homogeneous cube (1e-13 of the logged reaction), within the
+discretization error elsewhere. `--logs DIR` reads the app's own probes and
+reactions instead, from the saved stdout of the runs (`DIR/<case>.log`; the
+inputs print both after every step). The reference
 overlays no analytical curves; the script adds one where a reference
 exists: the homogeneous incompressible Arruda-Boyce response for the
-uniaxial and shear blocks (with both this code's series form and the
-reference's Pade form of the model), Rivlin's universal torsion for torque
+uniaxial and shear blocks, Rivlin's universal torsion for torque
 and axial force, the incompressible thick-walled cylinder and sphere
 inflation by quadrature, the Euler load for the column, and the matrix-only
-curve for the inclusion. `pip`-level dependencies: numpy and matplotlib.
-What the plots show: the uniaxial cube, the torsion and both inflations lie
-on their reference curves (the uniaxial one on the nearly incompressible
-solution at K = 1000 G, with the incompressible limit a few percent above
-at the largest stretch); the sheared block carries about 17 percent less
-nominal shear stress than homogeneous simple shear at a shear strain of 1,
-because its lateral faces are free where simple shear needs tractions, and
-its two cycles retrace one curve (elastic, no hysteresis); the sphere stops
-at its limit pressure of 34 kPa and the cylinder near 38 kPa, where the
-reference also stopped; the buckling column reaches 7.3 mN at 0.2 mm of
-shortening, 5 percent above the Euler load of the clamped column, and then
-rises slowly to 7.5 mN at 2.5 mm, the hardening post-buckling path of the
-elastica (the Euler value uses E = 3 G and neglects the finite section);
-the twisted column needs a compressive axial force of 78 mN to keep its
-length over a full turn (Poynting effect), as does the torsion cylinder.
+curve for the inclusion. `pip`-level dependencies: numpy, scipy and matplotlib,
+and pyvista and PyYAML to read the ParaView output.
+The reference's own results are overlaid too: `finite_elasticity/reference/<case>.csv`
+are the histories the reference's notebooks record while they run (their `timeHist`
+arrays: the probed displacement and the force or pressure of each plot, plus the
+reaction of the loaded face, the residual summed over its dofs, which the notebooks do
+not compute and `reference/scripts/*_rxn_run.py` add), from the notebooks run headless
+with dolfinx 0.8.0 (`reference/README.md`; the patched notebooks, run scripts and
+timings in `reference/scripts/`; 3D10 records none), so the comparison with the
+reference is quantitative and compares reactions with reactions: the notebooks' own
+forces are boundary integrals of their finite element stress, which the clamped
+corners of 02 and 08 spoil by 2 to 9 percent on their tetrahedral meshes.
+`--reference DIR` points elsewhere.
+For 08 the plot also shows the reaction of the log when `logs/08_column_buckling.log`
+sits beside the ParaView directories: the held faces of the bent column carry corner
+singularities, where the nodal stress is 5 to 7 percent low.
+What the plots show, with the reference's values in parentheses: the uniaxial
+cube lies on the nearly incompressible homogeneous solution at K = 1000 G and its
+reaction equals the reference's to 13 digits at every step (6.030 MPa at the
+stretch of 7.75; near locking the stiff Pade response makes the volume change
+count, J = 1.057 there, where the incompressible limit is 15 percent above, 6.92
+MPa); the sheared block carries 241 kPa at a shear strain of 1, 17 percent less than
+homogeneous simple shear (290 kPa), because its lateral faces are free where simple
+shear needs tractions, and its two cycles retrace one curve (elastic, no hysteresis;
+the reference's reaction is 242.3 kPa at +1 and 240.2 at -1, its tetrahedral mesh
+not being mirror-symmetric, while its plotted force, the traction integral of its
+finite element stress, is 247 and 262; run on the reference's own mesh, `create_box`
+8 x 8 x 4 tetrahedra exported by `reference/scripts/export_box.py`, with the
+quadratic law, this code's reaction is +242.33 / -240.59 kPa and the reference's is
+the same to five digits (`reference/scripts/3D02_same_mesh_check_run.py`); with
+refinement this code converges to 240 kPa, 242.3, 240.9, 240.6, 240.4 over 4, 8, 12,
+16 subdivisions); the torsion cylinder lies on Rivlin's curves for torque and
+axial force, 1.167 N m and a compressive force of 57.4 N at 2.5 rad (the reference's
+reactions 1.155 N m and 56.8 N on its faceted first-order cylinder); the plate with a
+hole carries 1.639 MPa at a stretch of 3 (1.633); the tube goes through the plateau of the Pade model, 28.7 to
+31 kPa while the inner wall moves from 3 to 30 mm, on the quadrature curve, and stops
+at 40.0 kPa with the inner radius at six times its value (the reference at 37.5 kPa
+and 5.7 times); the sphere stops at its limit pressure, 34.2 kPa with 4.3 mm of wall
+displacement (the quadrature limit point 34.3 kPa at 4.4 mm; the reference 34.0 kPa
+at 3.6 mm); the footing settles 37.97 mm at 1500 kPa (37.80); the buckling column
+reaches 7.13 mN at 0.2 mm of shortening, 3 percent above the Euler load of the
+clamped column, and rises slowly to 7.49 mN at 2.5 mm along the post-buckling path
+(the reference's reaction is 7.16 and 7.70 mN, while its plotted traction
+integral is 6.83 and 8.00; on the reference's own tetrahedral column this code's
+reaction and the reference's agree to four digits with either volumetric law, 7.696
+against 7.696 mN at 2.5 mm, so the remaining 3 percent is the mesh, Q2 hexahedra
+against P2 tetrahedra at the same subdivision, and this code's 8 x 8 x 50 column
+gives 7.45 mN, so the tetrahedra are the ones further from converged; the Euler
+value uses E = 3 G and neglects the finite section); the cube with the inclusion carries 0.5791
+MPa at a stretch of 2 (0.5792), 13 percent more than the matrix alone from an
+inclusion of 6.5 percent of the volume; the twisted column needs a compressive axial
+force of 78 mN to keep its length over a full turn (Poynting effect), as does the
+torsion cylinder. With the direct solver the runs take 16 s (01) to 12 min (05) on
+4 ranks; the reference's notebooks, serial, 3 s (3D01) to an hour (3D10).
 
-Differences from the reference that change the numbers: the Arruda-Boyce
-model here is the five-term series in I1/N (`N = lambda_L^2`) rather than the
-Pade inverse Langevin, so it is softer near the locking stretch (visible in
-01 above a stretch of about 3); `02_simple_shear` uses p = K (J - 1) because the
-logarithmic law fails there at t = 0.064 for any increment size (its tangent bulk
-modulus K (1 - ln J)/J^2 softens in dilatation, and J grows without bound at the
-clamped corner singularities that this mesh resolves); hexahedra replace tetrahedra
-on the boxes; and a failed
+Differences from the reference that change the numbers: the reference caps the
+relative chain stretch lambda_bar / lambda_L of the Pade form at 0.95 and this code
+does not (the cap is a chain stretch of 4.86; the homogeneous cube of 01, the most
+stretched case, ends at 4.40); `02_simple_shear` and `08_column_buckling` use
+p = K (J - 1) because the logarithmic law fails there, at t = 0.064 of the shear for
+any increment size and at 0.8 mm of shortening of the column on either post-buckling
+branch: both have clamped faces whose corners are stress singularities that this mesh
+and quadrature resolve sharply, the Q1 pressure cannot follow them, J runs away there
+(0.7 to 1.5 in the column with the pressure at 25 kPa, p / K = 1e-4, and without
+bound in the sheared block), and the constraint ln J / J of that law loses its
+definiteness (its tangent K (1 - ln J)/J^2 is zero at J = e), so Newton stalls; with
+the quadratic law both converge in 3 iterations per step (see the header of
+`08_column_buckling.yaml`, also for why the column needs the reference's 100 steps
+with the tangent predictor); hexahedra replace tetrahedra on the boxes; and a failed
 increment is bisected instead of ending the run (05 and 06 stop early in the
-reference). Reaction forces and torques are not computed; the probes give
-displacements, pressure and stresses at the reference's points.
+reference).
 
 ### Meshes: the Gmsh workflow
 
