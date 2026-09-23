@@ -1,0 +1,28 @@
+# Transient diffusion with a manufactured solution (case 5 of myapps/convection_diffusion, diffusion_mms.cpp
+# with Input/input_diffusion_mms.yaml):
+#   du/dt - alpha lap u = f on the unit square, alpha = 0.1,  u = sin t cos q,  q = 2 (x - 1/2)^2 + 2 (y - 1/2)^2,
+#   f = cos t cos q - alpha sin t (-16 r^2 cos q - 8 sin q),  r^2 = (x - 1/2)^2 + (y - 1/2)^2,
+# u prescribed on the whole boundary from the exact solution, u(x, 0) = 0. The myapps triangulation refined
+# once (apps/mesh/square_tri.msh, 3752 triangles), p = 1, implicit Euler with dt = 0.01 to t = 2. The error
+# histories (L2 and nodal Linf) agree with the driver's (reference/myapps_transient_diffusion_mms.csv) to the
+# quadrature of the source (tests/test_scalar_verification.cpp: quadrature_order 2, the driver's rule); the
+# error at t = 2 is first order in dt at fixed mesh and second order in h with dt proportional to h^2.
+physics: scalar_transport
+mesh: { file: apps/mesh/square_tri.msh, serial_refine: 1, order: 1 }
+transport:
+  capacity: 1.0
+  conductivity: 0.1
+  source: "cos(t)*cos((2*(x - 0.5)^2 + 2*(y - 0.5)^2)) - 0.1*sin(t)*(-16*((x - 0.5)^2 + (y - 0.5)^2)*cos((2*(x - 0.5)^2 + 2*(y - 0.5)^2)) - 8*sin((2*(x - 0.5)^2 + 2*(y - 0.5)^2)))"
+time: { t_final: 2.0, dt: 0.01 }
+bcs:
+  dirichlet:
+    - { attr: [bottom, right, top, left], name: rim, expression: "sin(t)*cos((2*(x - 0.5)^2 + 2*(y - 0.5)^2))" }
+solver:
+  newton: { rtol: 1e-10, atol: 1e-14, max_it: 5, print_level: 0 }
+  linear: { type: cg_amg, rtol: 1e-12, max_it: 500 }
+output:
+  paraview: out/scalar_transport/transient_diffusion_mms
+  fields: [u, u_exact, u_error, flux]
+  exact: "sin(t)*cos((2*(x - 0.5)^2 + 2*(y - 0.5)^2))"
+  flows: true
+  every: 10

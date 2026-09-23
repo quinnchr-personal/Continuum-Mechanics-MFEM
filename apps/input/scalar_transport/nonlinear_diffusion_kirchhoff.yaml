@@ -1,0 +1,32 @@
+# Nonlinear diffusion with an affine capacity and conductivity (case 4 of myapps/convection_diffusion,
+# nonlinear_convection_diffusion_1D.cpp with Input/input_nonlinear_1d.yaml; no convection despite its name):
+#   m(u) du/dt - div(a(u) grad u) = 0 on [0, L]^2, L = 0.01,
+#   a = a0 + a1 (u - u_ref), m = m0 + m1 (u - u_ref), a0 = 10, a1 = 0.09, m0 = 4e6, m1 = 3.6e4, u_ref = 300,
+# an inward flux q = 7.5e5 on x = 0, insulated elsewhere, u = 300 at t = 0. With m1/m0 = a1/a0 the Kirchhoff
+# transform phi = a0 (u - u_ref) + a1 (u - u_ref)^2 / 2 satisfies the linear heat equation, whose series
+# solution (nonlinear_heat.m: 1000 terms, alpha = a0/m0, kappa1 = 10, kappa2 = 100, T1 = 300, T2 = 1300) is the
+# exact solution coded in tests/test_scalar_verification.cpp (a series is not an expression of this input;
+# the driver's initial condition is that series at t = 0, which is 300 up to its truncation). The driver's
+# flux datum a(u) du/dn from the exact solution is the constant 7.5e5 on x = 0 and 0 on x = L. The myapps
+# triangulation (apps/mesh/square_0p01_tri.msh, 948 triangles), p = 3, implicit Euler with dt = 0.1 to t = 1,
+# full Newton. The error histories agree with the driver's (reference/myapps_nonlinear_diffusion_kirchhoff.csv)
+# when the test runs this input with the series initial condition and the driver's quadrature rule of
+# order 2p + 2 = 8; the error at t = 1 is first order in dt.
+physics: scalar_transport
+mesh: { file: apps/mesh/square_0p01_tri.msh, order: 3 }
+transport:
+  capacity: { value: 4.0e6, slope: 3.6e4, reference: 300.0 }
+  conductivity: { value: 10.0, slope: 0.09, reference: 300.0 }
+initial: "300"
+time: { t_final: 1.0, dt: 0.1 }
+bcs:
+  flux:
+    - { attr: [left], name: heated, expression: "7.5e5" }
+solver:
+  newton: { rtol: 1e-8, atol: 1e-10, max_it: 20, print_level: 0 }
+  linear: { type: gmres_amg, rtol: 1e-12, max_it: 1000 }
+output:
+  paraview: out/scalar_transport/nonlinear_diffusion_kirchhoff
+  fields: [u, flux]
+  probes: [ { name: heated_face, point: [0.0, 0.005] }, { name: far_face, point: [0.01, 0.005] } ]
+  probe_every_step: true

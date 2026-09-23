@@ -1,0 +1,34 @@
+# Transient convection-diffusion at the Peclet number 10 (case 1 of myapps/convection_diffusion,
+# linear_convection_diffusion_1D.cpp with Input/input.yaml, which runs Pe = 1, 10, 100 in one go):
+#   dc/dt + beta . grad c - (1/Pe) lap c = 0 on the unit square, beta = (1, 0), c(x, 0) = 0,
+# c prescribed on x = 0 and x = 1 from the exact solution of the half-line problem
+# (Homework 4-4, problem 3, part 1; uniform in y), natural on y = 0 and y = 1:
+#   c = 1/2 erfc((x - t)/(2 sqrt(t/Pe))) + sqrt(t Pe/pi) exp(-Pe (x - t)^2/(4t))
+#       - 1/2 (1 + Pe x + Pe t) exp(Pe x) erfc((x + t)/(2 sqrt(t/Pe))),   c = 0 at t <= 0.
+# The myapps triangulation (apps/mesh/square_tri.msh, 938 triangles), p = 3, implicit Euler with
+# dt = 1e-3 to t = 1, non-conservative convection: the discrete problem of the driver, so the error
+# histories agree to its solver tolerance (reference/myapps_convection_diffusion_peclet.csv, checked
+# by tests/test_scalar_verification.cpp and apps/scalar_transport_compare.py). At Pe = 100 the front
+# is under-resolved on this mesh, in both codes.
+physics: scalar_transport
+mesh: { file: apps/mesh/square_tri.msh, order: 3 }
+transport:
+  unknown: c
+  capacity: 1.0
+  conductivity: 0.1          # 1 / Pe
+  velocity: ["1", "0"]
+time: { t_final: 1.0, dt: 1.0e-3 }
+bcs:
+  dirichlet:
+    - attr: [left, right]
+      name: ends
+      expression: "if(t <= 0, 0, 0.5*erfc((x - t)/(2*sqrt(t/10))) + sqrt(t*10/pi)*exp(-10*(x - t)^2/(4*t)) - 0.5*(1 + 10*x + 10*t)*exp(10*x)*erfc((x + t)/(2*sqrt(t/10))))"
+solver:
+  newton: { rtol: 1e-10, atol: 1e-14, max_it: 5, print_level: 0 }
+  linear: { type: gmres_amg, rtol: 1e-12, max_it: 500 }
+output:
+  paraview: out/scalar_transport/convection_diffusion_peclet_10
+  fields: [c, c_exact, c_error, flux]
+  exact: "if(t <= 0, 0, 0.5*erfc((x - t)/(2*sqrt(t/10))) + sqrt(t*10/pi)*exp(-10*(x - t)^2/(4*t)) - 0.5*(1 + 10*x + 10*t)*exp(10*x)*erfc((x + t)/(2*sqrt(t/10))))"
+  flows: true
+  every: 50

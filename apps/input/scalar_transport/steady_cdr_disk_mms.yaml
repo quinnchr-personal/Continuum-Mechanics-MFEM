@@ -1,0 +1,30 @@
+# Steady convection-diffusion-reaction on the unit disk with a manufactured solution (case 3 of
+# myapps/convection_diffusion, linear_convection_diffusion_2D_circle.cpp with Input/input_2d_circle.yaml;
+# course notes 16.930, eq. 7 with table 3 and the exact solution of eq. 13):
+#   -kappa lap u + c . grad u + s u = f,  kappa = 1, s = 1, c = (1, 1),  u = U on the boundary,
+#   U(r) = (r^2 - 1) cos(2 pi r),  f = -kappa (U'' + U'/r) + (c . x) U'/r + s U  (the limit -2 (2 + 4 pi^2) - 1 at r = 0).
+# The myapps triangulation (apps/mesh/disk_tri.msh, 3056 straight triangles: the boundary data is the
+# projection of U on the polygon, nonzero at the edge nodes inside the circle), p = 3, one linear
+# solve. The L2 error agrees with the driver's (reference/myapps_steady_cdr_disk.csv) to the quadrature
+# of the source (tests/test_scalar_verification.cpp: quadrature_order 6). Since the boundary data is U itself
+# on the polygon, the polygon problem has U as its exact solution and no geometric error: the L2 error
+# converges at rate 4 under uniform refinement, as it does on the curved meshes of
+# steady_cdr_disk_mms_curved.yaml, which pose the problem on the exact circle.
+physics: scalar_transport
+mesh: { file: apps/mesh/disk_tri.msh, order: 3 }
+transport:
+  conductivity: 1.0
+  velocity: ["1", "1"]
+  reaction: 1.0
+  source: "if(sqrt(x^2 + y^2) > 1e-12, -((2*cos((2*pi)*sqrt(x^2 + y^2)) - 4*(2*pi)*sqrt(x^2 + y^2)*sin((2*pi)*sqrt(x^2 + y^2)) - (2*pi)^2*(x^2 + y^2 - 1)*cos((2*pi)*sqrt(x^2 + y^2))) + (2*sqrt(x^2 + y^2)*cos((2*pi)*sqrt(x^2 + y^2)) - (2*pi)*(x^2 + y^2 - 1)*sin((2*pi)*sqrt(x^2 + y^2)))/sqrt(x^2 + y^2)) + (x + y)*(2*sqrt(x^2 + y^2)*cos((2*pi)*sqrt(x^2 + y^2)) - (2*pi)*(x^2 + y^2 - 1)*sin((2*pi)*sqrt(x^2 + y^2)))/sqrt(x^2 + y^2) + (x^2 + y^2 - 1)*cos((2*pi)*sqrt(x^2 + y^2)), -2*(2 + (2*pi)^2) - 1)"
+bcs:
+  dirichlet:
+    - { attr: [boundary], name: rim, expression: "(x^2 + y^2 - 1)*cos((2*pi)*sqrt(x^2 + y^2))" }
+solver:
+  newton: { rtol: 1e-10, atol: 1e-14, max_it: 5, print_level: 0 }
+  linear: { type: gmres_amg, rtol: 1e-13, max_it: 2000 }
+output:
+  paraview: out/scalar_transport/steady_cdr_disk_mms
+  fields: [u, u_exact, u_error, flux]
+  exact: "(x^2 + y^2 - 1)*cos((2*pi)*sqrt(x^2 + y^2))"
+  flows: true

@@ -63,9 +63,10 @@ TESTS := $(patsubst %.cpp,$(BUILD_DIR)/%,$(TEST_SRC))
 DEPS := $(LIB_OBJ:.o=.d) $(patsubst %.cpp,$(BUILD_DIR)/%.d,$(APP_SRC) $(TEST_SRC))
 
 APP := $(BUILD_DIR)/apps/solid_mechanics
+SCALAR_APP := $(BUILD_DIR)/apps/scalar_transport
 TEST_OUT := $(BUILD_DIR)/tests/out
 
-.PHONY: all lib apps tests check homogeneous elastic_bar plate_with_hole dynamics meshes test clean
+.PHONY: all lib apps tests check homogeneous elastic_bar plate_with_hole dynamics scalar_transport meshes test clean
 
 all: lib apps tests
 
@@ -104,8 +105,26 @@ MESHES := $(MESH_DIR)/square.msh $(MESH_DIR)/cook.msh $(MESH_DIR)/cube.msh $(MES
 	$(MESH_DIR)/cube5.msh $(MESH_DIR)/beam20.msh $(MESH_DIR)/column_buckling50.msh $(MESH_DIR)/bushing.msh \
 	$(MESH_DIR)/indent_cube.msh $(MESH_DIR)/strip.msh \
 	$(MESH_DIR)/thermo_block.msh $(MESH_DIR)/thermo_cylinder.msh $(MESH_DIR)/thermo_plate.msh \
-	$(MESH_DIR)/bilayer_beam.msh $(MESH_DIR)/sail.msh
+	$(MESH_DIR)/bilayer_beam.msh $(MESH_DIR)/sail.msh \
+	$(MESH_DIR)/square_tri.msh $(MESH_DIR)/square_0p01_tri.msh $(MESH_DIR)/disk_tri.msh \
+	$(MESH_DIR)/disk_p3_1.msh $(MESH_DIR)/disk_p3_2.msh $(MESH_DIR)/disk_p3_3.msh
 meshes: $(MESHES)
+# Meshes of apps/input/scalar_transport: the three triangulations of myapps/convection_diffusion (the
+# tracked .msh files are copies of the myapps meshes, which Gmsh 4.12.1 reproduces from these .geo
+# files exactly; another version may not, and the cross-checks against the myapps drivers run on the
+# copies) and the curved disks of the rate study, generated at three sizes.
+$(MESH_DIR)/square_tri.msh: $(MESH_DIR)/square_tri.geo
+	$(GMSH) -2 -format msh22 -o $@ $< > /dev/null
+$(MESH_DIR)/square_0p01_tri.msh: $(MESH_DIR)/square_0p01_tri.geo
+	$(GMSH) -2 -format msh22 -o $@ $< > /dev/null
+$(MESH_DIR)/disk_tri.msh: $(MESH_DIR)/disk_tri.geo
+	$(GMSH) -2 -format msh22 -o $@ $< > /dev/null
+$(MESH_DIR)/disk_p3_1.msh: $(MESH_DIR)/disk.geo
+	$(GMSH) -2 -order 3 -format msh22 -setnumber lc 0.1 -o $@ $< > /dev/null
+$(MESH_DIR)/disk_p3_2.msh: $(MESH_DIR)/disk.geo
+	$(GMSH) -2 -order 3 -format msh22 -setnumber lc 0.05 -o $@ $< > /dev/null
+$(MESH_DIR)/disk_p3_3.msh: $(MESH_DIR)/disk.geo
+	$(GMSH) -2 -order 3 -format msh22 -setnumber lc 0.025 -o $@ $< > /dev/null
 $(MESH_DIR)/square.msh: $(MESH_DIR)/square.geo
 	$(GMSH) -2 -format msh22 -setnumber n 4 -o $@ $< > /dev/null
 $(MESH_DIR)/cook.msh: $(MESH_DIR)/cook.geo
@@ -209,11 +228,18 @@ plate_with_hole: $(APP)
 dynamics: $(APP)
 	python3 apps/dynamics_compare.py --app $(APP)
 
+# The convection-diffusion cases of apps/input/scalar_transport (the verification drivers of
+# myapps/convection_diffusion as inputs of the scalar transport executable): the error histories
+# over the drivers' own, measures and plots in out/scalar_transport (needs python3 with PyYAML and
+# matplotlib; about five minutes).
+scalar_transport: $(SCALAR_APP)
+	python3 apps/scalar_transport_compare.py --app $(SCALAR_APP)
+
 # Full gates (S4): fast gates, the YAML-driven app runs serial and np=4,
 # np={2,4} consistency vs a serial reference, and the benchmarks with the
 # frozen Cook's membrane regression values, serial and np=4. Run from the
 # repository root: the inputs are referenced as apps/input/<set>/*.yaml.
-test: check $(APP) $(BUILD_DIR)/tests/test_benchmarks $(BUILD_DIR)/tests/test_parallel $(BUILD_DIR)/tests/test_verification $(BUILD_DIR)/tests/test_linear_verification $(BUILD_DIR)/tests/test_dynamic_verification
+test: check $(APP) $(SCALAR_APP) $(BUILD_DIR)/tests/test_benchmarks $(BUILD_DIR)/tests/test_parallel $(BUILD_DIR)/tests/test_verification $(BUILD_DIR)/tests/test_linear_verification $(BUILD_DIR)/tests/test_dynamic_verification $(BUILD_DIR)/tests/test_scalar_verification
 	$(APP) -i apps/input/finite_elasticity/cooks_membrane/cook.yaml
 	$(MFEM_MPIEXEC) -np 4 $(APP) -i apps/input/finite_elasticity/cooks_membrane/cook.yaml
 	$(APP) -i apps/input/finite_elasticity/verification/euler_bernoulli_cantilever3d.yaml
@@ -242,6 +268,9 @@ test: check $(APP) $(BUILD_DIR)/tests/test_benchmarks $(BUILD_DIR)/tests/test_pa
 	$(MFEM_MPIEXEC) -np 4 $(BUILD_DIR)/tests/test_loading
 	$(MFEM_MPIEXEC) -np 2 $(BUILD_DIR)/tests/test_axisymmetric
 	$(MFEM_MPIEXEC) -np 2 $(BUILD_DIR)/tests/test_thermoelastic
+	$(MFEM_MPIEXEC) -np 2 $(BUILD_DIR)/tests/test_scalar_transport
+	$(BUILD_DIR)/tests/test_scalar_verification
+	python3 apps/scalar_transport_compare.py --app $(SCALAR_APP) --out $(TEST_OUT)/scalar_transport --no-plot --check
 	$(BUILD_DIR)/tests/test_verification
 	$(BUILD_DIR)/tests/test_benchmarks --cook-ratio-gate
 

@@ -1,0 +1,27 @@
+# Steady convection-diffusion-reaction on the unit disk with a manufactured solution (case 3 of
+# myapps/convection_diffusion, linear_convection_diffusion_2D_circle.cpp with Input/input_2d_circle.yaml;
+# course notes 16.930, eq. 7 with table 3 and the exact solution of eq. 13):
+#   -kappa lap u + c . grad u + s u = f,  kappa = 1, s = 1, c = (1, 1),  u = U on the boundary,
+#   U(r) = (r^2 - 1) cos(2 pi r),  f = -kappa (U'' + U'/r) + (c . x) U'/r + s U  (the limit -2 (2 + 4 pi^2) - 1 at r = 0).
+# The same problem on a disk meshed with third-order curved triangles (apps/mesh/disk.geo at
+# lc = 0.1; disk_p3_2.msh and disk_p3_3.msh halve lc twice), the problem on the exact circle, where
+# tests/test_scalar_verification.cpp measures the L2 rates k + 1 at k = 2 and 3 over the three generated
+# meshes (the boundary data U vanishes on the circle).
+physics: scalar_transport
+mesh: { file: apps/mesh/disk_p3_1.msh, order: 3 }
+transport:
+  conductivity: 1.0
+  velocity: ["1", "1"]
+  reaction: 1.0
+  source: "if(sqrt(x^2 + y^2) > 1e-12, -((2*cos((2*pi)*sqrt(x^2 + y^2)) - 4*(2*pi)*sqrt(x^2 + y^2)*sin((2*pi)*sqrt(x^2 + y^2)) - (2*pi)^2*(x^2 + y^2 - 1)*cos((2*pi)*sqrt(x^2 + y^2))) + (2*sqrt(x^2 + y^2)*cos((2*pi)*sqrt(x^2 + y^2)) - (2*pi)*(x^2 + y^2 - 1)*sin((2*pi)*sqrt(x^2 + y^2)))/sqrt(x^2 + y^2)) + (x + y)*(2*sqrt(x^2 + y^2)*cos((2*pi)*sqrt(x^2 + y^2)) - (2*pi)*(x^2 + y^2 - 1)*sin((2*pi)*sqrt(x^2 + y^2)))/sqrt(x^2 + y^2) + (x^2 + y^2 - 1)*cos((2*pi)*sqrt(x^2 + y^2)), -2*(2 + (2*pi)^2) - 1)"
+bcs:
+  dirichlet:
+    - { attr: [boundary], name: rim, expression: "(x^2 + y^2 - 1)*cos((2*pi)*sqrt(x^2 + y^2))" }
+solver:
+  newton: { rtol: 1e-10, atol: 1e-14, max_it: 5, print_level: 0 }
+  linear: { type: gmres_amg, rtol: 1e-13, max_it: 2000 }
+output:
+  paraview: out/scalar_transport/steady_cdr_disk_mms_curved
+  fields: [u, u_exact, u_error, flux]
+  exact: "(x^2 + y^2 - 1)*cos((2*pi)*sqrt(x^2 + y^2))"
+  flows: true

@@ -1,0 +1,28 @@
+# Steady convection-diffusion-reaction on the unit square with a manufactured solution (case 2 of
+# myapps/convection_diffusion, linear_convection_diffusion_2D.cpp with Input/input_2d.yaml; course
+# notes 16.930, eq. 7 with table 1 and the exact solution of eq. 9):
+#   -kappa lap u + c . grad u + s u = f,  kappa = 0.1, s = 1, c = (1, -2),  u = 0 on the boundary,
+#   u = sin(3 pi x) sin(3 pi y),  f = kappa 18 pi^2 u + c . grad u + s u (eqs. 10-12).
+# The myapps triangulation (apps/mesh/square_tri.msh), p = 3, non-conservative convection. One
+# linear solve. The L2 error agrees with the driver's (reference/myapps_steady_cdr_square.csv) to the
+# quadrature of the source (the driver's rule of order 2p; tests/test_scalar_verification.cpp runs
+# it with quadrature_order 6 for the round-off comparison) and converges with the rates 4 (L2) and 3
+# (H1) under uniform refinement.
+physics: scalar_transport
+mesh: { file: apps/mesh/square_tri.msh, order: 3 }
+transport:
+  conductivity: 0.1
+  velocity: ["1", "-2"]
+  reaction: 1.0
+  source: "0.1*18*pi^2*sin(3*pi*x)*sin(3*pi*y) + 3*pi*cos(3*pi*x)*sin(3*pi*y) - 2*3*pi*sin(3*pi*x)*cos(3*pi*y) + sin(3*pi*x)*sin(3*pi*y)"
+bcs:
+  dirichlet:
+    - { attr: [bottom, right, top, left], name: rim, expression: "sin(3*pi*x)*sin(3*pi*y)" }
+solver:
+  newton: { rtol: 1e-10, atol: 1e-14, max_it: 5, print_level: 0 }
+  linear: { type: gmres_amg, rtol: 1e-13, max_it: 1000 }
+output:
+  paraview: out/scalar_transport/steady_cdr_square_mms
+  fields: [u, u_exact, u_error, flux]
+  exact: "sin(3*pi*x)*sin(3*pi*y)"
+  flows: true
