@@ -107,9 +107,12 @@ meant to be expressed as fluxes and sources evaluated at quadrature points,
 while the framework owns assembly, the nonlinear solver and the linear
 solvers (the design is laid out in \file{doc/flux\_kernel\_architecture.html}
 and the implementation plan in
-\file{doc/hyperelasticity\_implementation\_plan.md}).  The first, and at
-present only, physics is quasi-static nonlinear solid mechanics.  The
-library is organised in five layers:
+\file{doc/hyperelasticity\_implementation\_plan.md}).  The first physics
+is quasi-static nonlinear solid mechanics; the second, the transport of one
+scalar unknown by diffusion, convection and reaction
+(Section~\ref{sec:scalar}, plan \file{doc/scalar\_transport\_plan.md}),
+is the first-order-in-time physics of the seam.  The library is organised
+in five layers:
 
 \begin{center}
 \small
@@ -121,15 +124,16 @@ Layer & Content \\
   schema and its validation, the expression language for boundary data,
   mesh input, a named field registry, ParaView output and point probes \\
 \file{src/kernels/} & the total Lagrangian element integrators
-  (displacement and mixed $u$--$p$) and the follower-pressure boundary
-  face integrator \\
+  (displacement and mixed $u$--$p$), the follower-pressure boundary
+  face integrator, and the scalar flux kernel of the transport physics \\
 \file{src/kernels/materials/} & the hyperelastic material functors and the
   small-strain linear elastic one, the kinematics trait, the plane-stress
   adapter, the dual-number tangent, the material variant and the YAML
-  factory \\
+  factory; the affine laws of the scalar transport \\
 \file{src/physics/} & the solid mechanics modules (residual, Jacobian,
-  fields), the load set shared by both formulations, and the
-  quadrature-point post-processing \\
+  fields), the load set shared by both formulations, the
+  quadrature-point post-processing, and the scalar transport module with
+  the conditions of a scalar unknown \\
 \file{src/solvers/} & the quasi-static load stepper, damped Newton, the
   Krylov--AMG linear solver, the augmented-Lagrangian saddle-point solver
   and the sparse direct solver \\
@@ -139,8 +143,8 @@ Layer & Content \\
 
 Executables under \file{apps/} only parse the input and wire library
 objects together; they contain no physics, assembly or solver code.  The
-executable \file{apps/solid\_mechanics.cpp} and its inputs are described in
-the verification manual.
+executables \file{apps/solid\_mechanics.cpp} and \file{apps/scalar\_transport.cpp}
+and their inputs are described in the verification manual.
 
 \subsection{What is implemented}
 
@@ -184,6 +188,15 @@ the verification manual.
     heating, solved as a coupled displacement--pressure--temperature problem
     on Taylor--Hood spaces in physical time, with prescribed temperatures
     and heat fluxes per current area as boundary conditions.
+  \item Scalar transport (Section~\ref{sec:scalar}): the
+    convection--diffusion--reaction equation of one unknown on a scalar
+    $H^1$ space, with a capacity and a conductivity affine in the unknown,
+    a velocity and a source as expressions, the convection in
+    non-conservative or conservative form, implicit Euler in physical time
+    or a steady solve, prescribed values and inward fluxes with the flows
+    through the Dirichlet entries, the errors against an exact expression,
+    and one solve for a linear problem; the second physics of the seam,
+    with its own executable.
   \item Two formulations: a pure displacement formulation with the
     assembled tangent, and a mixed displacement--pressure formulation on
     Taylor--Hood pairs for near- and fully incompressible materials; the
@@ -224,9 +237,11 @@ field, convection or radiation boundary conditions, volumetric heat
 sources, temperature-dependent conductivity or heat capacity, torsion in
 the axisymmetric description, contact other than the rigid-sphere penalty,
 point loads, multi-point or periodic constraints, discontinuous Galerkin or
-hybridised discretisations, partial assembly, and device execution.  Section~\ref{sec:seam} lists what of the
-present code is specific to the solid and what a second physics would
-generalise.
+hybridised discretisations, partial assembly, and device execution; for the
+scalar transport, stabilisation (SUPG), anisotropic or tabulated
+coefficients, Robin conditions, higher-order time integration, regions, and
+the ALE description.  Section~\ref{sec:seam} lists what of the present code
+is specific to each physics and what the two share.
 
 \subsection{Conventions and companion notes}
 
@@ -1730,6 +1745,197 @@ plain start.  The energy diagnostic is the mechanical free energy
 $s(\theta)\Psi_{\mathrm{iso}} + \kappa u(J_m)$ of the displacement form.
 
 %============================================================================
+\section{Scalar transport}
+\label{sec:scalar}
+%============================================================================
+
+The second physics of the library is the transport of one scalar unknown
+$u$ (a concentration, a temperature, a potential) by diffusion, convection
+and reaction on a fixed domain: the first-order-in-time physics of the
+flux/source seam, next to the solid.  It is driven by its own thin
+executable, \file{apps/scalar\_transport.cpp}, whose inputs reproduce the
+convection--diffusion verification drivers of \file{myapps/convection\_diffusion}
+(verification manual, Section~``Scalar transport cases'').  This section
+gives the strong and weak forms, the laws, the time integration, the kernel
+and its tangent, the boundary conditions and the flows through them, the
+error measure, and what makes a problem linear.
+
+\subsection{Strong and weak forms}
+
+Per unit volume of the fixed domain $\Omega$,
+\begin{equation}
+  c(u)\,\frac{\partial u}{\partial t} - \dive\bm{\mathcal F}(u, \grad u) + \mathcal S(u, \grad u) = 0,
+  \label{eq:scalarstrong}
+\end{equation}
+with the flux and the source in one of two forms of the convection,
+\begin{align}
+  \bm{\mathcal F} &= \kappa(u)\,\grad u, & \mathcal S &= \bm\beta\cdot\grad u + s\,u - f
+  && \text{(non-conservative, default)}, \notag\\
+  \bm{\mathcal F} &= \kappa(u)\,\grad u - \bm\beta\,u, & \mathcal S &= s\,u - f
+  && \text{(conservative)},
+  \label{eq:scalarforms}
+\end{align}
+where $c$ is the capacity, $\kappa$ the isotropic conductivity, $\bm\beta(\bx, t)$
+the velocity, $s$ the reaction coefficient and $f(\bx, t)$ the source.  The
+vector $\bm{\mathcal F}$ is the negative of the physical flux (the
+convention of the thermo kernel of Section~\ref{sec:thermoelasticity},
+whose density is $-\bQ$), so the natural boundary condition is
+$\bm{\mathcal F}\cdot\bn = 0$; the two forms coincide for a
+divergence-free velocity, the non-conservative one being that of MFEM's
+\code{ConvectionIntegrator} and of the myapps drivers.  The boundary carries
+either the unknown itself or the inward flux $g = \bm{\mathcal F}\cdot\bn$
+(for pure diffusion $\kappa\,\partial u/\partial n$, positive into the
+domain, the convention of the heat-flux entries of Section~\ref{sec:thermalbcs}).
+
+The weak form over a step $t_n \to t_{n+1} = t_n + \Delta t$ with the
+implicit Euler method reads
+\begin{equation}
+  R(u; q) = \int_\Omega q\,c(u)\,\frac{u - u_n}{\Delta t}\ud V
+          + \int_\Omega \grad q\cdot\bm{\mathcal F}(u, \grad u)\ud V
+          + \int_\Omega q\,\mathcal S(u, \grad u)\ud V
+          - \sum_i s_i(t)\oint_{\Gamma_i} g_i\,q\ud A = 0,
+  \label{eq:scalarweak}
+\end{equation}
+the sum over the flux entries with their schedules $s_i$; the prescribed
+values are essential conditions.  Without a \code{time} block the problem
+is steady: the rate term is absent ($\Delta t = 0$) and the data follow
+the schedules of the pseudo-time of Section~\ref{sec:loadstepping}, one
+load step by default.
+
+\subsection{Laws}
+
+The capacity, the conductivity and the reaction are laws of the unknown,
+each affine,
+\begin{equation}
+  a(u) = a_0 + a_1\,(u - u_{\mathrm{ref}}),
+\end{equation}
+given in the input as a number ($a_1 = 0$) or as a map
+\code{\{value, slope, reference\}} (\file{kernels/materials/scalar\_transport\_model.hpp}).
+This covers constant coefficients and the property laws of the nonlinear
+diffusion case of the drivers; the velocity and the source are expressions
+of $(\bx, t)$ evaluated at the quadrature points and never enter the
+tangent.  The residual is affine in the unknown when the slopes of the
+capacity and the conductivity vanish, whatever the velocity, the source and
+the data do with $\bx$ and $t$: the module reports such a problem as linear
+(Section~\ref{sec:scalarlinear}).
+
+\subsection{Time integration and the accepted state}
+
+The rate term is integrated by the implicit Euler method inside the kernel,
+not by a decorator as the inertia of Section~\ref{sec:dynamics}: the
+capacity may depend on the state, which puts the term in the nonlinear
+form (Section~\ref{sec:seam}).  The accepted state $u_n$ is a grid function
+on the space of the unknown, read at the element's dofs by the kernel and
+interpolated at the quadrature points (the same values a quadrature-point
+history would hold); \code{SetLoadFactor}$(t)$ makes $\Delta t = t - t_n$
+the step under way and \code{AcceptStep} copies the converged state into
+$u_n$, the protocol of Section~\ref{sec:viscoelasticity}.  The initial
+state is the projection of the \code{initial} expression (zero without
+one), evaluated at $t = 0$ whatever time the coefficient carries, and it
+becomes the accepted state of $t = 0$.  Equal steps $t_{\text{final}}\,k/n$
+differ in their last bits; a step within $10^{-12}$ of the one the
+Jacobian was assembled for is taken as that one, so that a linear problem
+keeps its operator (Section~\ref{sec:scalarlinear}).  The scheme is first
+order in the step; the tests measure the rate against manufactured
+solutions and against the series solution of the nonlinear diffusion
+case.
+
+\subsection{Kernel and tangent}
+
+\code{ScalarFluxIntegrator} (\file{kernels/scalar\_flux.hpp}) is a
+\code{NonlinearFormIntegrator} on the scalar $H^1$ space of order $k$.  At a
+quadrature point with weight $w_q$, shape functions $N_a$ and physical
+gradients $\mathsf D_{aj}$, one templated function returns the two
+densities of \eqref{eq:scalarweak},
+\begin{equation}
+  r = c(u)\,\frac{u - u_n}{\Delta t} + \mathcal S(u, \grad u),
+  \qquad
+  \bm{\mathcal F}(u, \grad u),
+\end{equation}
+and the element residual is $R_a = \sum_q w_q\,[N_a\,r + \mathsf D_{aj}\,\mathcal F_j]$.
+The tangent comes from $1 + d$ dual seeds of the same function, one on $u$
+and one per component of $\grad u$; the seed $\sigma$ gives the derivative
+$(r', \bm{\mathcal F}')$ of both densities, the row
+$\rho_a = w_q\,[N_a\,r' + \mathsf D_{aj}\,\mathcal F'_j]$ and the
+dependence $\chi_b$ of the seed on the dofs ($N_b$ for $u$, $\mathsf D_{bj}$
+for $\partial u/\partial x_j$), and the element matrix accumulates the
+rank-one update $K_{ab} \mathrel{+}= \rho_a\,\chi_b$: the loop of the thermo
+kernel of Section~\ref{sec:thermoelasticity} for one field.  The rule is
+the Gauss rule of order $2k + 3$ of Section~\ref{sec:fem}, or the order
+\code{transport.quadrature\_order} when given; the source is integrated
+with the same rule, which is what the cross-checks against the drivers use
+to reproduce their rules.  The kernel is written for two and three space
+dimensions and does not touch the solid kernels; with two instances of the
+contract in hand, factoring their element loops into one CG kernel is a
+later refactor.
+
+\subsection{Boundary conditions and flows}
+
+\code{ScalarConditions} (\file{physics/scalar\_conditions.*}) holds the
+Dirichlet entries (faces by attribute, or the node nearest to a point, as
+the pins of Section~\ref{sec:loads}; one expression $\bar u(\bx, t)$, a
+schedule, a name) and the flux entries (the inward flux $g(\bx, t)$ per unit
+area of the faces, assembled by MFEM's \code{BoundaryLFIntegrator} into one
+true vector per entry, reassembled when the expression mentions $t$, and
+summed with the schedules into the external vector the residual subtracts).
+The default schedule is that of the solid: the ramp of the pseudo-time,
+constant when the data mention $t$ or under a \code{time} block.  The flow
+through a Dirichlet entry is the sum of the full residual (essential rows
+kept) over its dofs,
+\begin{equation}
+  \Phi_i = \sum_{j \in \text{entry } i} R_j,
+  \qquad
+  R_j = \oint_{\partial\Omega} N_j\,\bm{\mathcal F}\cdot\bn\ud A
+  \quad\text{for the exact solution},
+\end{equation}
+the flux entering the domain through the entry's faces: the scalar
+analogue of the reactions of Section~\ref{sec:reactions}.  A corner dof
+shared by two entries' faces contributes the integral over both to the entry
+that owns it, as a corner node does for the reactions.
+
+\subsection{Errors against an exact solution}
+
+With \code{output.exact}, an expression $u_{\mathrm{ex}}(\bx, t)$, the module
+computes after every accepted step the $L^2$ error with the rule of order
+$2k + 3$, its ratio to $\|u_{\mathrm{ex}}\|_{L^2}$ (zero when that norm is
+below $10^{-14}$) and the largest nodal error against the interpolant
+$\max_i |u_i - u_{\mathrm{ex}}(\bX_i)|$, the measures of the drivers; the
+executable prints them on the step line, writes them to
+\file{error\_history.csv} next to the ParaView collection, and registers
+the fields \code{<u>\_exact} and \code{<u>\_error}.  $H^1$ errors are
+computed in the tests from coded gradients.
+
+\subsection{Linearity, solvers and the executable}
+\label{sec:scalarlinear}
+
+When both slopes vanish the module's \code{IsLinear} is true: Newton takes
+its one exact step and accepts the state at the round-off floor of the
+residual (Section~\ref{sec:linearsolve}), and the Jacobian is assembled once
+and reused with its stamp until the step length changes, the boundary
+conditions change or the velocity expression mentions $t$ (the mechanism
+of Section~\ref{sec:linearsolve}, extended by the two conditions), so that a
+transient linear run with equal steps assembles one matrix and sets up one
+solver for the whole history.  Nonlinear laws use the damped Newton of
+Section~\ref{sec:solvers}, the tangent predictor allowed.  The linear
+solver is GMRES with BoomerAMG's scalar defaults (\code{amg: scalar}, the
+only mode of a space with one component, chosen automatically), CG when
+there is no velocity (\code{cg\_amg} with one is an input error: the
+operator is not symmetric), or the sparse direct solver of
+Section~\ref{sec:direct}.
+
+The executable \file{apps/scalar\_transport.cpp} parses the schema of
+\file{base/scalar\_config.\{hpp,cpp\}} (the key \code{physics:
+scalar\_transport} marks an input as its own; the solid executable rejects
+that key and this one rejects the solid keys), builds the mesh and the
+problem, and runs the stepper of Section~\ref{sec:loadstepping} in the
+pseudo-time or in physical time with a callback that writes the ParaView
+cycles, the Newton count, the errors, the flows (\code{output.flows},
+\file{flows.csv}) and the probes after every accepted step; the nodal
+unknown is registered under the name \code{transport.unknown} (\code{u} by
+default) and the quadrature quantity \code{flux}, the vector
+$\bm{\mathcal F}$, with the presentations of Section~\ref{sec:post}.
+
+%============================================================================
 \section{Boundary conditions and loading}
 \label{sec:loads}
 %============================================================================
@@ -2375,9 +2581,12 @@ a numerical flux $\hat{\bm{\mathcal F}}(u^-, u^+, \bn)$ per quadrature
 point, and the framework turns one definition into CG volume, DG face or
 HDG trace operators, with partial or full assembly and device execution.
 Solid mechanics fits this shape with $\bm{\mathcal F} = \bP(\bF)$ in total
-Lagrangian form.  The present code implements the seam as the minimum the
-solid needs; the following is still solid-specific and would generalise
-with a second physics:
+Lagrangian form.  The present code implements the seam as the minimum its two physics need:
+the solid (three element integrators) and the scalar transport
+(Section~\ref{sec:scalar}, the first instance of a scalar flux/source
+kernel with a source term, a capacity and a flux condition).  The following
+is still specific to each and would generalise into the framework's
+kernels:
 
 \begin{itemize}[nosep]
   \item The displacement integrator hard-codes the flux $\bP(\bF)$
@@ -2386,20 +2595,26 @@ with a second physics:
     functions on plain tensors and can be lifted into a general
     $\bm{\mathcal F}(u, \nabla u)$, $\mathcal S(u)$ contract; the element
     loops would become the framework's CG volume kernel.
-  \item The mixed kernel is a second block integrator with its own loops;
-    a multi-field CG kernel over a list of unknowns with a block
-    flux/source contract would absorb both.  The saddle-point solver is
-    specific to the $2\times2$ $u$--$p$ structure and the pressure-mass
-    Schur approximation.
-  \item Sources are not part of the integrator: the body force is a dead
-    load on the linear-form side.  A reaction or heat source needs a domain
-    source term inside the nonlinear form with its own tangent.
+  \item The mixed kernel is a second block integrator with its own loops,
+    and the scalar flux kernel a third, single-field one whose contract
+    ($\bm{\mathcal F}(u, \grad u)$, $\mathcal S(u, \grad u)$, a capacity)
+    is the seam's for one unknown; a multi-field CG kernel over a list of
+    unknowns with a block flux/source contract would absorb all three.  The
+    saddle-point solver is specific to the $2\times2$ $u$--$p$ structure and
+    the pressure-mass Schur approximation.
+  \item Sources are not part of the solid integrators: the body force is a
+    dead load on the linear-form side.  The scalar kernel carries its
+    source and its reaction inside the nonlinear form with their tangent,
+    the shape a reaction or heat source of the solid would take.
   \item Boundary terms are stock linear-form integrators plus one
     hand-written face integrator (the follower pressure).  Robin and flux
     conditions and DG/HDG numerical fluxes have no home yet.
-  \item Dirichlet conditions prescribe components of the vector unknown on
-    an attribute; scalar unknowns are not expressible in the input's
-    \code{bcs} block.
+  \item Dirichlet conditions of the solid prescribe components of the
+    vector unknown on an attribute (\code{LoadSet}); those of the scalar
+    unknown live in a second class (\code{ScalarConditions}, with flux
+    entries and flows), and the thermo module keeps a third, private set
+    on its temperature space.  One condition set over the fields of a
+    problem would replace the three.
   \item The physics owns its space, essential dofs and loads.  A coupling
     layer needs these behind the common interface (\code{QuasiStaticProblem}:
     residual, Jacobian, pseudo-time, Dirichlet application) plus field
@@ -2407,13 +2622,12 @@ with a second physics:
   \item Time integration is a decorator over that interface, not a term of
     the kernels: with the unknown of the new time level as the variable,
     a second-order system adds $c_M\bM$ and a history vector to the static
-    residual (Section~\ref{sec:dynamics}).  A first-order physics (heat,
-    species) would add $c\,\bm C$ and its history in the same way, with the
-    first-order generalized-$\alpha$ parameters and the same $\rho_\infty$,
-    which is what a monolithic coupling of the two needs.  The mass matrix
-    is assembled by a stock MFEM integrator here because it is constant; a
-    capacity that depends on the state would have to enter the nonlinear
-    form as a source kernel.
+    residual (Section~\ref{sec:dynamics}).  The scalar transport, whose
+    capacity may depend on the state, integrates its rate term inside the
+    kernel instead, by implicit Euler from an accepted grid function; a
+    first-order decorator with the generalized-$\alpha$ parameters and the
+    same $\rho_\infty$ as the solid's, which is what a monolithic coupling
+    of the two needs, would apply to its constant-capacity case.
   \item Materials are stateless, one model per problem with region-wise
     parameters; internal variables, temperature dependence and hand-coded
     tangents are absent by design.  The kinematics (finite or small strain)
@@ -2463,6 +2677,9 @@ $\beta, \gamma$; $\alpha$; $\rho_\infty$ & time integration parameters & \code{d
 $\bu_0, \bm v_0$ & initial displacement, velocity & \code{dynamics.initial} \\
 $\bar\bu, \bar\bT, p, \bb$ & prescribed data & \code{bcs.dirichlet}, \code{bcs.traction}, \code{body\_force} \\
 $s_i(t)$ & load schedule & \code{schedule} of an entry \\
+$c(u), \kappa(u), s$ & capacity, conductivity (affine laws), reaction coefficient of the scalar transport & \code{transport.capacity}, \code{conductivity}, \code{reaction} \\
+$\bm\beta, f$ & velocity and source of the scalar transport & \code{transport.velocity}, \code{transport.source} \\
+$u_0, \bar u, g, u_{\mathrm{ex}}$ & initial condition, prescribed value, inward flux, exact solution of the scalar transport & \code{initial}, \code{bcs.dirichlet}, \code{bcs.flux}, \code{output.exact} \\
 $t_1, \dots, t_n$ & load-step breakpoints & \code{solver.load\_steps} or \code{solver.steps} \\
 $x^{(0)}$ & initial guess of an increment & \code{solver.predictor} \\
 rtol, atol, $c$ & Newton tolerances, Armijo constant & \code{solver.newton} \\
@@ -2481,7 +2698,8 @@ File & Content \\
 \midrule
 \file{base/tensor.hpp} & \code{tensor<T, n...>} of rank 1, 2, 4; products, contractions, transpose, trace, deviator, determinant and inverse up to $3\times3$ \\
 \file{base/dual.hpp} & forward-mode dual number and elementary functions \\
-\file{base/config.\{hpp,cpp\}} & YAML schema, validation with key paths, schedules \\
+\file{base/config.\{hpp,cpp\}} & YAML schema of the solid, validation with key paths, schedules \\
+\file{base/scalar\_config.\{hpp,cpp\}}, \file{node\_reader.hpp} & YAML schema of the scalar transport; the map reader the two schemas share \\
 \file{base/expression.\{hpp,cpp\}} & parser and evaluator of $f(x, y, z, t)$ \\
 \file{base/coefficients.hpp} & expression and affine MFEM coefficients \\
 \file{base/mesh\_input.\{hpp,cpp\}} & mesh loading, attribute resolution, jitter, refinement \\
@@ -2489,17 +2707,21 @@ File & Content \\
 \file{kernels/total\_lagrangian.hpp} & quadrature-point functions and the displacement integrator \\
 \file{kernels/mixed\_total\_lagrangian.hpp} & $u$--$p$ quadrature-point functions and block integrator \\
 \file{kernels/thermo\_mixed\_total\_lagrangian.hpp} & $u$--$p$--$\theta$ kernel: point densities, dual-seeded tangent blocks, the heat-flux face integrator, the adapter of the two-block face integrators \\
+\file{kernels/scalar\_flux.hpp} & scalar CG kernel: the point densities $r$ and $\bm{\mathcal F}$, the dual-seeded tangent \\
 \file{kernels/follower\_pressure.hpp} & follower-pressure face integrators (both formulations) \\
 \file{kernels/rigid\_sphere\_contact.hpp} & rigid-sphere penalty contact face integrators (both formulations) \\
 \file{kernels/history\_field.\{hpp,cpp\}}, \file{history\_bound.hpp} & quadrature-point history of a material; its per-point binding to the kernels' stateless contract \\
 \file{kernels/materials/*.hpp} & material functors (hyperelastic, \file{linear\_elastic.hpp}, the \file{viscoelastic.hpp} adapter with Maxwell branches, the \file{thermoelastic.hpp} adapter with a temperature), isochoric helpers, volumetric laws, spectral solver, plane-stress adapter, dual tangent \\
 \file{kernels/materials/kinematics.hpp} & finite or small strain as a trait of the material: Cauchy stress, volume ratio, strain \\
+\file{kernels/materials/scalar\_transport\_model.hpp} & the affine laws and the convection form of the scalar transport \\
 \file{kernels/materials/materials.\{hpp,cpp\}} & material variants, factory, moduli resolution, region tables \\
 \file{physics/loads.\{hpp,cpp\}} & load set: Dirichlet entries on faces or single nodes, dead loads, follower and contact scales, the axisymmetric weight, schedules, reactions and resultants \\
 \file{physics/solid\_mechanics\_tl.\{hpp,cpp\}} & displacement formulation module \\
 \file{physics/mixed\_solid\_mechanics\_tl.\{hpp,cpp\}} & mixed formulation module \\
 \file{physics/thermo\_solid\_mechanics\_tl.\{hpp,cpp\}} & coupled $u$--$p$--$\theta$ module: the third space, the accepted $\bC$ and $\theta$, thermal entries, the initial temperature \\
 \file{physics/solid\_problem.\{hpp,cpp\}} & common interface, factory by formulation, YAML load installer \\
+\file{physics/scalar\_transport.\{hpp,cpp\}} & scalar transport module: the accepted state and the step, linearity and the reuse of the operator, errors, flows, fields \\
+\file{physics/scalar\_conditions.\{hpp,cpp\}} & Dirichlet and flux entries of a scalar unknown, the flows \\
 \file{physics/quadrature\_fields.\{hpp,cpp\}} & quadrature quantities and their presentations \\
 \file{physics/dynamic\_solid\_problem.\{hpp,cpp\}} & inertia as a decorator over a solid problem: mass matrix, step equation, initial state, energies, reactions with inertia \\
 \file{solvers/time\_integration.\{hpp,cpp\}} & parameters of the generalized-$\alpha$ family, spectral radius at infinity \\

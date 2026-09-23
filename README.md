@@ -13,7 +13,11 @@ small-strain linear elasticity as a material of the same kernels
 (`model: linear_elastic`, plan and measured results in
 `doc/linear_elasticity_plan.md`), and with inertia when the input carries a
 `dynamics:` block (implicit elastodynamics of either formulation, plan and
-measured results in `doc/solid_dynamics_plan.md`). The models and
+measured results in `doc/solid_dynamics_plan.md`). The second physics is scalar
+transport, the convection-diffusion-reaction equation of one unknown, with its own
+thin executable `apps/scalar_transport` and the convection-diffusion verification
+drivers of `myapps/convection_diffusion` as its inputs ("Scalar transport" below, plan
+and measured results in `doc/scalar_transport_plan.md`). The models and
 methods of `src/` are described in `doc/theory_manual.tex`; every input and
 test under `apps/` and `tests/`, with its reference solution and tolerance, in
 `doc/verification_manual.tex`. The `myapps/` tree is legacy and separate.
@@ -22,14 +26,18 @@ test under `apps/` and `tests/`, with its reference solution and tolerance, in
 
 ```
 src/base/       tensor.hpp (fixed-size tensors), dual.hpp (forward-mode AD),
-                config.{hpp,cpp} (YAML schema -> structs, key-path errors, load schedules),
+                config.{hpp,cpp} (YAML schema of the solid -> structs, key-path errors, load schedules),
+                scalar_config.{hpp,cpp} (the schema of the scalar transport executable),
+                node_reader.hpp (the YAML map reader the two schemas share),
                 expression.{hpp,cpp} (f(x, y, z, t) parser/evaluator for boundary data),
                 coefficients.hpp (constant, affine and expression coefficients of the YAML data),
                 mesh_input (file or Cartesian box, corner map, jitter, refinement),
                 fields.hpp (named field registry), output (ParaView), probes (point values)
 src/kernels/    total_lagrangian.hpp: qpoint free functions + TotalLagrangianIntegrator<Material>;
                 mixed_total_lagrangian.hpp: u-p qpoint functions + MixedTotalLagrangianIntegrator<Material>;
-                follower_pressure.hpp: boundary face integrator T = -p J F^-T N (both forms)
+                follower_pressure.hpp: boundary face integrator T = -p J F^-T N (both forms);
+                scalar_flux.hpp: the scalar CG kernel of the transport physics (point densities r and F,
+                dual-seeded tangent, implicit Euler from an accepted grid function)
 src/kernels/materials/
                 neo_hookean.hpp, st_venant_kirchhoff.hpp, gent_compressible_summit.hpp (coupled,
                 displacement formulation; the last is SUMMIT's compressible Gent model);
@@ -41,7 +49,8 @@ src/kernels/materials/
                 kinematics.hpp (finite or small strain as a trait of the material: Cauchy stress,
                 volume ratio, strain);
                 plane_stress.hpp (adapter: F33 = thickness stretch with P33 = 0, any base model);
-                material_tangent.hpp (dual seeding), materials.{hpp,cpp} (variants, YAML factory, moduli)
+                material_tangent.hpp (dual seeding), materials.{hpp,cpp} (variants, YAML factory, moduli);
+                scalar_transport_model.hpp (the affine laws and the convection form of the scalar transport)
 src/physics/    solid_problem.{hpp,cpp} (common interface, factory by formulation, YAML load installer);
                 loads.{hpp,cpp}: LoadSet, the boundary conditions and external loads of a
                 displacement space (component masks, schedules of the pseudo-time t, per-entry
@@ -53,15 +62,19 @@ src/physics/    solid_problem.{hpp,cpp} (common interface, factory by formulatio
                 mixed_solid_mechanics_tl.{hpp,cpp}: u-p formulation on a Taylor-Hood pair;
                 dynamic_solid_problem.{hpp,cpp}: inertia as a decorator over either of them
                 (constant mass matrix, the step equation S(u) + c_M M (u - u*) + h_n = 0 of the
-                time integrator, initial state, energies, reactions with inertia)
+                time integrator, initial state, energies, reactions with inertia);
+                scalar_transport.{hpp,cpp}: the scalar transport module (accepted state and step,
+                linearity and operator reuse, errors against an exact expression, flows, fields);
+                scalar_conditions.{hpp,cpp}: Dirichlet and inward-flux entries of a scalar unknown
 src/solvers/    newton (damped Newton, Armijo backtracking; a linear problem is accepted at the round-off
                 floor of its residual), linear_solver (GMRES/CG + BoomerAMG),
                 saddle_point_solver (augmented Lagrangian FGMRES for the u-p Jacobian; in a dynamic
                 analysis with the inertial part of the Schur complement approximation),
                 quasi_static (load stepping over the pseudo-time t in (0, 1] with bisection, and the
                 same loop in physical time), time_integration (newmark | hht | generalized_alpha)
-apps/           solid_mechanics.cpp (YAML parsing and wiring only), apps/mesh/*.geo (Gmsh sources of the
-                example meshes, named physical groups) and the generated apps/mesh/*.msh (make meshes);
+apps/           solid_mechanics.cpp and scalar_transport.cpp (YAML parsing and wiring only), apps/mesh/*.geo
+                (Gmsh sources of the example meshes, named physical groups) and the generated
+                apps/mesh/*.msh (make meshes);
                 apps/input/finite_elasticity/:
                   cooks_membrane/ (compressible, incompressible and nearly incompressible Cook's
                     membrane; literature benchmark, frozen regression values),
@@ -85,11 +98,17 @@ apps/           solid_mechanics.cpp (YAML parsing and wiring only), apps/mesh/*.
                 apps/input/dynamics/ (inputs with a dynamics block: bar vibration and d'Alembert's wave,
                   cantilever frequency, manufactured solutions in space and time, a neo-Hookean block,
                   Knowles' incompressible tube) and apps/dynamics_compare.py (time histories from the
-                  per-step lines of the app, over the closed forms)
+                  per-step lines of the app, over the closed forms);
+                apps/input/scalar_transport/ (the five convection-diffusion verification drivers of
+                  myapps/convection_diffusion as inputs of apps/scalar_transport, with the drivers' own
+                  error histories in reference/) and apps/scalar_transport_compare.py (the error
+                  histories over the drivers')
 tests/          test_base, test_materials, test_solid_mms, test_mixed, test_homogeneous, test_loading,
-                test_linear_elasticity, test_dynamics (make check); test_mixed --full, test_benchmarks,
+                test_linear_elasticity, test_dynamics, test_viscoelastic, test_axisymmetric,
+                test_thermoelastic, test_scalar_transport (make check); test_mixed --full, test_benchmarks,
                 test_parallel, homogeneous compare, test_loading np=4, test_verification,
-                test_linear_verification, test_dynamic_verification serial and np = 2, 4 (make test)
+                test_linear_verification, test_dynamic_verification serial and np = 2, 4,
+                test_scalar_transport np=2, test_scalar_verification, scalar_transport_compare --check (make test)
 makefile        out-of-tree build under build/ (BUILD_DIR): build/libcmf.a (LIBNAME) from src/,
                 then build/apps/* and build/tests/* linked against it
 ```
@@ -101,7 +120,7 @@ Requirements: MFEM 4.8 built with MPI, METIS, and HYPRE (the makefile finds
 yaml-cpp via `pkg-config`, and an `mpirun`.
 
 ```
-make            # build/libcmf.a, build/apps/solid_mechanics, build/tests/*
+make            # build/libcmf.a, build/apps/solid_mechanics, build/apps/scalar_transport, build/tests/*
 make meshes     # regenerate apps/mesh/*.msh from apps/mesh/*.geo with Gmsh (the .msh files are kept in the tree)
 make check      # serial, ~60 s: tensor/dual/YAML units, materials, patch tests + MMS (both
                 # formulations), homogeneous deformations vs closed forms (all incompressible models),
@@ -110,11 +129,14 @@ make check      # serial, ~60 s: tensor/dual/YAML units, materials, patch tests 
                 # viscoelasticity (history against the material point, Jacobians, rigid-sphere contact,
                 # the time block and the schema), axisymmetric kinematics (patch test, Rivlin's cylinder
                 # and Green-Zerna's sphere as (r, z) sections, Jacobians, mass), finite thermoelasticity
-                # (the material point, free expansion, the adiabatic stretch, conduction, Jacobians, pins)
+                # (the material point, free expansion, the adiabatic stretch, conduction, Jacobians, pins),
+                # scalar transport (the kernel against the stock integrators and finite differences, patch
+                # tests, manufactured solutions, first order in time, the Kirchhoff case, the schema)
 make homogeneous # the app on apps/input/finite_elasticity/verification/homogeneous_deformations/*.yaml, compared with the closed forms (python3 + yaml)
 make elastic_bar # the elastic bar exercise: linear against Gent, force-displacement table and plot (python3 + yaml + matplotlib)
 make plate_with_hole # the plate-with-a-hole exercise: errors against Kirsch's closed form and plot (python3 + yaml + pyvista + matplotlib)
 make dynamics   # the dynamic cases: time histories over their closed forms, measures and plots in out/dynamics (python3 + yaml + matplotlib + scipy; ~2.5 min)
+make scalar_transport # the convection-diffusion cases of myapps/convection_diffusion on the scalar transport executable: error histories over the drivers' own, measures and plot in out/scalar_transport (python3 + yaml + matplotlib; ~2 min)
 make test       # everything: app runs serial and np=4, np={2,4} consistency, benchmarks, homogeneous
 make clean      # removes build/
 ```
@@ -1239,6 +1261,106 @@ formulations, and the schema. Not supported: inertia with a temperature, the dis
 sources, temperature-dependent conductivity or heat capacity, thermal contact, anisotropic
 conductivity, iterative solvers for the three-block system.
 
+### Scalar transport (`apps/scalar_transport`, `apps/input/scalar_transport/`)
+
+The second physics of the framework: the transport of one scalar unknown u by diffusion,
+convection and reaction on a fixed domain (`doc/theory_manual.tex`, "Scalar transport"),
+
+    c(u) du/dt - div F + S = 0,   F = kappa(u) grad u [- beta u],   S = [beta . grad u +] s u - f,
+
+with the convection either as the source beta . grad u (`convection: nonconservative`, the
+default, MFEM's `ConvectionIntegrator` and the myapps drivers) or inside the flux
+(`conservative`, -div(beta u)); F is the negative of the physical flux, so F . n = 0 is the
+natural condition and a prescribed inward flux g = F . n = kappa du/dn is positive into the
+domain. The capacity and the conductivity are laws affine in the unknown (a number, or
+`{ value, slope, reference }` for value + slope (u - reference)); the velocity and the source
+are expressions of x, y, z, t. The rate term is integrated by the implicit Euler method inside
+the kernel from the accepted state (a `time:` block; without it the problem is steady and the
+data follow the pseudo-time schedules); a problem whose capacity and conductivity are constant
+is linear: one Newton step accepted at its round-off floor, the Jacobian assembled once and
+reused until dt, the conditions or a velocity of t change it. The kernel
+(`src/kernels/scalar_flux.hpp`) evaluates the densities of a point by one templated function
+and forms the tangent by dual seeds on u and grad u. The executable has its own schema
+(`src/base/scalar_config.{hpp,cpp}`); it takes the mesh, time, solver and output sections of
+the solid schema and rejects its other keys, as the solid executable rejects `physics`:
+
+```yaml
+physics: scalar_transport             # required in the inputs of build/apps/scalar_transport
+mesh: { file: apps/mesh/square_tri.msh, serial_refine: 0, order: 3 }   # as for the solid
+transport:
+  unknown: c                          # name of the nodal field (default u)
+  capacity: 1.0                       # c(u): a number, or { value: 4.0e6, slope: 3.6e4, reference: 300.0 }
+  conductivity: 0.01                  # kappa(u): the same forms; positive at the reference
+  velocity: ["1", "0"]                # beta(x, y, z, t), one expression per space dimension; omit for none
+  convection: nonconservative         # nonconservative (beta . grad u, default) | conservative (-div(beta u))
+  reaction: 0.0                       # s: the term s u
+  source: "cos(t)*cos(2*(x-0.5)^2 + 2*(y-0.5)^2)"   # f(x, y, z, t); omit for none
+  quadrature_order: 9                 # rule of the kernel and of the source (default 2 k + 3)
+initial: "300"                        # u(x, y, z) at t = 0 (default 0); needs the time block
+time: { t_final: 1.0, dt: 1.0e-3 }    # implicit Euler in physical time; absent: steady
+bcs:
+  dirichlet:
+    - { attr: [left, right], name: ends, expression: "if(t <= 0, 0, erfc((x - t)/(2*sqrt(t/100))))" }
+    - { point: [0.0, 0.0], expression: "0" }        # the node nearest to a point
+  flux:
+    - { attr: [left], name: heated, expression: "7.5e5" }   # inward flux per unit area, positive into the domain
+  # Every entry may add schedule: as for the solid; under time the default is constant and t enters
+  # through the expression. Expressions also know erf and erfc.
+solver:
+  predictor: none                     # none | tangent (nonlinear laws)
+  newton:  { rtol: 1e-8, atol: 1e-10, max_it: 20, print_level: 1 }
+  linear:  { type: gmres_amg, amg: scalar, rtol: 1e-12, max_it: 500 }   # gmres_amg | cg_amg (no velocity) | direct
+output:
+  paraview: out/peclet_100
+  fields: [c, c_exact, c_error, flux]  # the unknown by its name, its exact and error fields (with exact),
+                                      # flux (the vector F at the quadrature points, presented as for the solid)
+  quadrature_at: [nodes]
+  exact: "..."                        # u_ex(x, y, z, t): L2, relative L2 and nodal Linf errors after every
+                                      # step, <paraview>/error_history.csv, the two fields
+  probes: [ { name: mid, point: [0.5, 0.5] } ]
+  probe_every_step: false
+  flows: true                         # the flow into the domain through every Dirichlet entry per step
+                                      # (the sum of the residual over its dofs), <paraview>/flows.csv
+  every: 50
+```
+
+The per-step lines of a transient run carry the Newton count, the errors, the flows and the
+probes (`step k t = ... newton iterations = n`, `... error: l2 = ... rel_l2 = ... linf_nodal = ...`,
+`... flow <name>: ...`); the final lines the L2 norm of the unknown and the errors at the end.
+Errors: a missing or different `physics`, a solid key (`formulation`, `plane`, `material`,
+`body_force`, `dynamics`, `bcs.traction`, `output.reactions`, ...), a velocity with the wrong
+number of components, a conductivity or capacity that is not positive at the reference,
+`initial` without `time`, `cg_amg` with a velocity, `amg` other than `scalar`, `<u>_exact` or
+`<u>_error` without `exact`, an expression mentioning `u` (the laws are not expressions), `point`
+and `attr` in one entry, a point that is not a node.
+
+The inputs of `apps/input/scalar_transport/` are the five verification drivers of
+`myapps/convection_diffusion` on the identical triangulations (`apps/mesh/square_tri.msh`,
+`square_0p01_tri.msh`, `disk_tri.msh`, copies of the myapps meshes): transient
+convection-diffusion at Pe = 1, 10, 100 with the erfc solution of the half-line problem
+(`convection_diffusion_peclet_{1,10,100}.yaml`), steady convection-diffusion-reaction with a
+manufactured solution on the square and on the disk (`steady_cdr_square_mms.yaml`,
+`steady_cdr_disk_mms.yaml`; `steady_cdr_disk_mms_curved.yaml` on the third-order curved disks
+`disk_p3_{1,2,3}.msh` for the rates), nonlinear diffusion with an affine capacity and
+conductivity against the series solution of its Kirchhoff transform
+(`nonlinear_diffusion_kirchhoff.yaml`), and transient diffusion with a manufactured solution
+(`transient_diffusion_mms.yaml`). The drivers' own error histories are kept in `reference/`
+(`scripts/regenerate.sh` rebuilds and reruns them); on the same order, steps and quadrature
+(`transport.quadrature_order` set to the drivers' source rule) the discrete problems coincide
+and the histories agree to a few 1e-7, which `apps/scalar_transport_compare.py --check` and
+`tests/test_scalar_verification.cpp` assert at 1e-5. Tests: `tests/test_scalar_transport.cpp`
+(`make check`, also on two ranks): the kernel's matrix against the stock integrators and its
+Jacobian against finite differences, patch tests, implicit Euler exact on a constant state, the
+flow balance of a flux, manufactured solutions of the steady operator (L2 rates k + 1, H1 rates
+k at k = 1, 2, 3, one assembly and one solver setup per linear run), first order in dt, the
+Kirchhoff case against its series and against the transformed linear solve, the pin, a
+scheduled flux, the errors and the schema; `tests/test_scalar_verification.cpp` (`make test`):
+the cross-checks and the rates of every input. Not supported: stabilisation (SUPG or other),
+discontinuous Galerkin, anisotropic or tabulated coefficients, laws other than affine in u,
+Robin conditions, regions, higher-order time integration, the ALE description of
+`myapps/convection_diffusion/diffusion_mms_ale.cpp`, coupling with the solid, one-dimensional
+meshes, the two-domain coupled drivers.
+
 ### Adding a material (NeoHookean as the template)
 
 A material is a cheap-to-copy value type with its parameters as public
@@ -1311,8 +1433,10 @@ in the kernels or the stepper is specific to the material.
 
 ### State of the seam (what is still solid-specific)
 
-The plan's section 4.4 seam is implemented as the minimum the solid needs.
-For the next physics the following will have to generalize:
+The plan's section 4.4 seam is implemented as the minimum its two physics need: the
+solid (three element integrators) and the scalar transport (the first scalar flux/source
+kernel, with a source, a capacity and a flux condition). The following is still specific
+to each and will have to generalize into the framework's kernels:
 
 - `TotalLagrangianIntegrator` hard-codes the flux `F = P(F)` contracted with
   `Grad w`, the unknown as a vector H1 field, and the tangent contraction
@@ -1322,20 +1446,26 @@ For the next physics the following will have to generalize:
   contract; the element loops (`Residual`, `Tangent`) would become the
   framework's CG volume kernel taking that contract.
 - The mixed u-p kernel is a second, separate block integrator with its own
-  element loops. A multi-field CG kernel taking a list of unknown fields and
-  a block flux/source contract would absorb both integrators; the block
-  solver (`SaddlePointSolver`) is likewise specific to the 2x2 u-p structure
-  and to the pressure-mass Schur complement approximation.
-- Sources are not part of the integrator: the body force is a dead load on
-  the linear-form side. A reaction or heat source `S(u)` needs a domain
-  source term inside the nonlinear form with its own tangent.
+  element loops, and the scalar flux kernel (`ScalarFluxIntegrator`) a
+  third, single-field one whose contract `F(u, grad u)`, `S(u, grad u)` and
+  a capacity is the seam's for one unknown. A multi-field CG kernel taking a
+  list of unknown fields and a block flux/source contract would absorb all
+  three; the block solver (`SaddlePointSolver`) is likewise specific to the
+  2x2 u-p structure and to the pressure-mass Schur complement approximation.
+- Sources are not part of the solid integrators: the body force is a dead
+  load on the linear-form side. The scalar kernel carries its source and its
+  reaction inside the nonlinear form with their tangent, the shape a reaction
+  or heat source of the solid would take.
 - Boundary terms are stock MFEM linear-form integrators (dead loads) plus
   one hand-written boundary face integrator (the follower pressure).
   Robin/flux conditions and DG/HDG numerical fluxes have no home yet; a
   general boundary-flux contract would absorb the follower kernel.
-- Dirichlet conditions prescribe all or some components of the vector
-  unknown on an attribute; scalar unknowns are not yet expressible in the
-  YAML `bcs` block (the `LoadSet` is written for one vector H1 space).
+- Dirichlet conditions of the solid prescribe all or some components of the
+  vector unknown on an attribute (`LoadSet`, written for one vector H1
+  space); those of the scalar unknown live in `ScalarConditions` (with flux
+  entries and flows), and the thermo module keeps a third, private set on its
+  temperature space. One condition set over the fields of a problem would
+  replace the three.
 - The physics module owns its own space and, through `LoadSet`, its
   essential dofs and loads. A coupling layer will need these behind a common
   interface (`QuasiStaticProblem` is the current minimal one: residual,
@@ -1344,12 +1474,12 @@ For the next physics the following will have to generalize:
 - Time integration is a decorator over that interface, not a term of the
   kernels: with the unknown of the new time level as the variable, the
   second-order system adds `c_M M` and a history vector to the static
-  residual (`DynamicSolidProblem`). A first-order physics (heat, species)
-  would add `c C` and its history the same way, with the first-order
-  generalized-alpha parameters and the same `rho_inf`, which is what a
-  monolithic coupling needs. The mass matrix is a stock MFEM integrator
-  because it is constant here; a state-dependent capacity would have to
-  enter the nonlinear form as a source kernel.
+  residual (`DynamicSolidProblem`). The scalar transport, whose capacity may
+  depend on the state, integrates its rate term inside the kernel instead
+  (implicit Euler from an accepted grid function); a first-order decorator
+  with the generalized-alpha parameters and the same `rho_inf` as the
+  solid's, which is what a monolithic coupling needs, would apply to its
+  constant-capacity case.
 - Materials are stateless and, per element attribute, one model with
   region-wise parameters (`material.regions`; the integrators hold a table
   indexed by attribute). Internal variables (`QuadratureFunction` state),

@@ -8,7 +8,33 @@ trailers). This extends the framework of `doc/hyperelasticity_implementation_pla
 `apps/`, `myapps/` untouched, models are value types templated on the scalar type, tangents by
 dual numbers, no per-exercise drivers, both manuals kept current) still hold.
 
-**Status (2026-09-23):** not started.
+**Status (2026-09-23):** ST1–ST4 done the same day. ST1 commit fc9f8bbad4 (kernel, laws,
+erf/erfc, scalar AMG), ST2 1db66c4fe8 (module, conditions, schema, executable, tests), then
+ST3 (meshes, inputs, references, compare script, verification test) and ST4 (manuals, README).
+Measured: the kernel's matrix equals the stock integrators to 1e-16, Jacobians to 1e-10,
+steady MMS rates L2 2.02 / 2.99 / 3.99 and H1 1.00 / 2.01 / 3.00 at k = 1, 2, 3, first order in
+dt with rates 0.999–1.000, the Kirchhoff case against its series with rates 0.94 / 0.96; the
+cross-check against the myapps drivers on the identical triangulations: Pe = 1 3.8e-7, Pe = 10
+3e-9, Pe = 100 9e-11, square 3e-9, disk 4.7e-7, transient MMS 4e-10 (L2) and 2e-9 (nodal
+Linf), Kirchhoff 8e-9 (with the series initial condition and the rule 2p + 2), identical Newton
+iteration counts; input rates: square L2 4.01 / H1 3.00, curved disk 2.96, 2.93 (k = 2) and
+4.03, 3.94 (k = 3), transient MMS h-rate 2.00 with dt ∝ h².
+Deviations from the plan as written: (1) the two transient linear drivers were rerun with
+their Krylov tolerances tightened (rtol 1e-13, atol 1e-18) for the reference histories, since
+with their own atol 1e-12 the Pe = 1 history drifted by 4e-4 (`reference/README.md`); (2) the
+flow of a Dirichlet entry is +Σ r_j over its dofs (the sign that makes an inward flow positive;
+item 6 wrote −Σ), asserted by the patch test; (3) the straight-polygon disk does not plateau
+under refinement: the driver's boundary data is U projected on the polygon, so the polygon
+problem has U as its exact solution and converges at rate 4; the curved meshes (lc = 0.1,
+0.05, 0.025, not 0.05–0.0125: the finest would have been 14 MB) pose the problem on the exact
+circle; (4) the first-order-in-dt check of case 5 runs at k = 2 on the input's mesh, since at
+p = 1 the spatial error (2e-4) contaminates the finest step; (5) `ScalarFluxIntegrator` reads
+the accepted state from a grid function and the kernel is not templated on the space
+dimension (a runtime loop); the initial coefficient's time is reset to 0 in `InitialState`,
+since a coefficient shared with the boundary data carries the conditions' time; (6) the
+executable prints the Newton count on the step line rather than a Newton history CSV; (7)
+`ScalarTransport` has a programmatic constructor (order, model, transient, quadrature order)
+next to the YAML one, used by the tests.
 
 ## 0. What the cases need
 

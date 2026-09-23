@@ -90,22 +90,25 @@ The checks form three tiers, each relying on the previous one.
     \file{test\_mixed}, \file{test\_homogeneous}, \file{test\_loading},
     \file{test\_linear\_elasticity}, \file{test\_dynamics},
     \file{test\_viscoelastic}, \file{test\_axisymmetric},
-    \file{test\_thermoelastic}):
+    \file{test\_thermoelastic}, \file{test\_scalar\_transport}):
     patch tests, assembled Jacobians against finite differences, manufactured
     solutions with measured convergence rates, homogeneous states against
     closed forms, the boundary-condition and load-scheduling features, the
     time integration, the quadrature-point history of a rate-dependent
     material with the rigid-sphere contact, the axisymmetric kinematics
-    against the plane-strain and three-dimensional closed forms, and the
+    against the plane-strain and three-dimensional closed forms, the
     coupled thermo-mechanical problem against the material point, the
-    series solution of conduction and finite differences.
+    series solution of conduction and finite differences, and the scalar
+    transport kernel and module against the stock integrators, finite
+    differences, manufactured solutions and a series solution.
   \item \textbf{Application cases} (\file{apps/input/}, driven by
     \file{tests/test\_verification}, \file{test\_linear\_verification},
-    \file{test\_benchmarks}, \file{test\_loading}, \file{test\_parallel} and
-    \file{apps/homogeneous\_compare.py}): complete inputs run through the
-    same library wiring as the executable and compared with analytical
-    solutions, literature benchmarks, frozen regression values, or a
-    reference code.
+    \file{test\_benchmarks}, \file{test\_loading}, \file{test\_parallel},
+    \file{test\_scalar\_verification} and the comparison scripts of
+    \file{apps/}): complete inputs run through the same library wiring as
+    the executables and compared with analytical solutions, literature
+    benchmarks, frozen regression values, a reference code, or the drivers
+    of \file{myapps/}.
 \end{enumerate}
 
 \subsection{Running the suite}
@@ -116,14 +119,15 @@ The checks form three tiers, each relying on the previous one.
 \toprule
 Target & Content \\
 \midrule
-\code{make} & \file{build/libcmf.a}, \file{build/apps/solid\_mechanics}, \file{build/tests/*} \\
+\code{make} & \file{build/libcmf.a}, \file{build/apps/solid\_mechanics}, \file{build/apps/scalar\_transport}, \file{build/tests/*} \\
 \code{make meshes} & regenerates \file{apps/mesh/*.msh} from the \file{.geo} sources with Gmsh (the \file{.msh} files are kept in the tree) \\
-\code{make check} & serial, about 90 s: \file{test\_base}, \file{test\_materials}, \file{test\_solid\_mms}, \file{test\_mixed}, \file{test\_homogeneous}, \file{test\_loading}, \file{test\_linear\_elasticity}, \file{test\_dynamics}, \file{test\_viscoelastic}, \file{test\_axisymmetric}, \file{test\_thermoelastic} \\
+\code{make check} & serial, about two minutes: \file{test\_base}, \file{test\_materials}, \file{test\_solid\_mms}, \file{test\_mixed}, \file{test\_homogeneous}, \file{test\_loading}, \file{test\_linear\_elasticity}, \file{test\_dynamics}, \file{test\_viscoelastic}, \file{test\_axisymmetric}, \file{test\_thermoelastic}, \file{test\_scalar\_transport} \\
 \code{make homogeneous} & the executable on the homogeneous-deformation inputs, compared with the closed forms by \file{apps/homogeneous\_compare.py} \\
 \code{make elastic\_bar} & the elastic bar exercise (Section~\ref{sec:elasticbar}): table and plot of force against displacement by \file{apps/elastic\_bar\_compare.py} \\
 \code{make plate\_with\_hole} & the plate-with-a-hole exercise (Section~\ref{sec:platewithhole}): errors against Kirsch's closed form and plot by \file{apps/plate\_with\_hole\_compare.py} \\
 \code{make dynamics} & the dynamic cases (Section~\ref{sec:dynamiccases}): time histories over their closed forms, measures and plots by \file{apps/dynamics\_compare.py} (about two and a half minutes) \\
-\code{make test} & everything: \code{check}, the Cook inputs (finite strain and small strain, both formulations) serial and with four ranks, \file{test\_linear\_verification} (about 30 s), \file{test\_dynamic\_verification} (about two minutes, then its parallel consistency part with two and four ranks) and \file{dynamics\_compare.py --check}, parallel consistency with two and four ranks, the homogeneous comparison, \file{test\_mixed --full}, \file{test\_benchmarks} serial and parallel, \file{test\_loading}, \file{test\_axisymmetric} and \file{test\_thermoelastic} with four and two ranks, \file{test\_verification}, and finally the Cook ratio gate \\
+\code{make scalar\_transport} & the scalar transport cases (Section~\ref{sec:scalarcases}): the error histories over the myapps drivers' own, measures and plot by \file{apps/scalar\_transport\_compare.py} (about two minutes) \\
+\code{make test} & everything: \code{check}, the Cook inputs (finite strain and small strain, both formulations) serial and with four ranks, \file{test\_linear\_verification} (about 30 s), \file{test\_dynamic\_verification} (about two minutes, then its parallel consistency part with two and four ranks) and \file{dynamics\_compare.py --check}, parallel consistency with two and four ranks, the homogeneous comparison, \file{test\_mixed --full}, \file{test\_benchmarks} serial and parallel, \file{test\_loading}, \file{test\_axisymmetric}, \file{test\_thermoelastic} and \file{test\_scalar\_transport} with four and two ranks, \file{test\_scalar\_verification} (about five minutes) and \file{scalar\_transport\_compare.py --check}, \file{test\_verification}, and finally the Cook ratio gate \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -132,7 +136,7 @@ Targets are run from the repository root, since inputs are referenced as
 status on the first failed check and prints the measured quantities next
 to their references.
 
-\subsection{The executable}
+\subsection{The executables}
 
 \file{apps/solid\_mechanics.cpp} contains no physics: it parses the input,
 builds the parallel mesh, creates the problem selected by
@@ -152,6 +156,23 @@ not complete, and 1 on an input error.  Run as
 \begin{verbatim}
 ./build/apps/solid_mechanics -i apps/input/finite_elasticity/cooks_membrane/cook.yaml
 mpirun -np 4 ./build/apps/solid_mechanics -i <input.yaml>
+\end{verbatim}
+\endgroup
+\file{apps/scalar\_transport.cpp} is the same wiring for the scalar
+transport physics (theory manual, Section~``Scalar transport''): it parses
+that physics' schema (a top-level \code{physics: scalar\_transport} key
+marks an input as its own; either executable rejects the other's input
+with a message naming the right one), builds the problem with its laws,
+conditions and exact solution, and runs the stepper in the pseudo-time or
+in physical time with a callback that writes the ParaView cycles, the
+Newton count, the errors against \code{output.exact} (also to
+\file{error\_history.csv} next to the collection), the flows through the
+Dirichlet entries (\code{output.flows}, \file{flows.csv}) and the probes
+after every accepted step; at the end the $L^2$ norm of the unknown, the
+errors, the probes and the flows.  Run as
+\begingroup\small
+\begin{verbatim}
+./build/apps/scalar_transport -i apps/input/scalar_transport/transient_diffusion_mms.yaml
 \end{verbatim}
 \endgroup
 
@@ -186,6 +207,8 @@ Source & Meshes & Geometry and groups \\
 \file{rect.geo} & \file{thermo\_block}, \file{thermo\_cylinder}, \file{thermo\_plate} & $L_x\times L_y$ rectangle, $n_x\times n_y$ quadrilaterals; bottom, right, top, left (the reference's rectangles of the thermoelasticity examples) \\
 \file{bilayer\_beam.geo} & \file{bilayer\_beam.msh} & $100\times1$ beam of two layers of $200\times2$ quadrilaterals; bottom, right, top, left; surfaces bottom\_layer, top\_layer \\
 \file{box.geo} & \file{sail.msh} & the $100\times100\times1$ sail, $10\times10\times2$ hexahedra (\file{sail\_box\_ref.msh}: the reference's tetrahedra, by \file{export\_box.py}) \\
+\file{square\_tri.geo}, \file{square\_0p01\_tri.geo}, \file{disk\_tri.geo} & \file{square\_tri}, \file{square\_0p01\_tri}, \file{disk\_tri} & the unstructured triangulations of \file{myapps/convection\_diffusion} (unit square, 938 triangles; $[0, 0.01]^2$, 948; unit disk, 3056 straight triangles): the tracked \file{.msh} files are copies of the myapps meshes, which Gmsh 4.12.1 reproduces from the \file{.geo} files; bottom, right, top, left (the disk: boundary) \\
+\file{disk.geo} & \file{disk\_p3\_1}, \file{disk\_p3\_2}, \file{disk\_p3\_3} & the unit disk in third-order curved triangles at $l_c = 0.1$, $0.05$, $0.025$ (844, 3184, 12036 elements), generated at each size for the rate study of the disk case on the exact circle; boundary \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -684,6 +707,93 @@ elements with the direct solver, quasi-static in physical time.
     viscoelastic one, a missing $c_v$, thermal entries without the material,
     an unknown \code{per\_unit}, \code{point} with \code{attr} or on a
     traction, a region's own $\theta_0$, and inertia with a temperature.
+\end{itemize}
+
+\subsection{Scalar transport (\texttt{test\_scalar\_transport})}
+\label{sec:testscalar}
+The scalar flux kernel and the scalar transport module (theory manual,
+Section~``Scalar transport''), on programmatic boxes of quadrilaterals,
+triangles and hexahedra, jittered where noted; the module tests through the
+YAML schema where the input matters.  Serially in \code{make check} and
+with two ranks in \code{make test}, with the same assertions.
+\begin{itemize}[nosep]
+  \item \textbf{Kernel against the stock integrators}: with constant laws
+    $c = 2.5$, $\kappa = 0.7$, $s = 1.3$, $\bm\beta = (1, -2[, 0.5])$ and
+    $\Delta t = 0.1$, the assembled Jacobian equals
+    \code{MassIntegrator}$(c/\Delta t)$ + \code{DiffusionIntegrator}$(\kappa)$
+    + \code{ConvectionIntegrator}$(\bm\beta)$ (or
+    \code{ConservativeConvectionIntegrator} in the conservative form) +
+    \code{MassIntegrator}$(s)$ on the same rule to $10^{-13}$ (measured
+    $10^{-16}$), the residual is affine with that matrix ($10^{-12}$), and
+    its value at $u = 0$ is $-(c/\Delta t)\bM u_n$ ($10^{-12}$); quadrilaterals,
+    triangles and hexahedra at $k = 1, 2$, both convection forms.
+  \item \textbf{Jacobian of nonlinear laws}: affine capacity and
+    conductivity, a velocity and a source of $\bx$, a reaction, essential
+    dofs on one face, a random state and accepted state, $\Delta t = 0.2$:
+    $\bm J\bm v$ against central differences of the residual to $10^{-6}$
+    (measured $10^{-10}$), in 2D and 3D, both forms.
+  \item \textbf{Patch test}: the linear field $0.3 + \bm b\cdot\bx$ with the
+    source $\bm\beta\cdot\bm b + s\,u$ that makes it a solution of the steady
+    operator, prescribed on every face of a jittered mesh: the residual of
+    the exact nodal state vanishes to $10^{-12}$ (measured $10^{-16}$),
+    $k = 1, 2$, both forms.
+  \item \textbf{Newton contraction}: $\kappa = 1 + 3u$, $u = 0$ on the
+    left and $1$ on the right of a $4\times4$ jittered Q2 mesh, from
+    $u = 0$: contraction order $1.93$ over the last three residuals above
+    the floor (the check asks for $1.8$), and the solution against the
+    one-dimensional closed form $u + \tfrac32 u^2$ linear in $x$
+    ($1.9\times10^{-3}$, the discretisation error of that mesh).
+  \item \textbf{Convection forms}: for a constant velocity with Dirichlet
+    data all around, the two forms give the same solution ($1.5\times10^{-15}$).
+  \item \textbf{Expressions}: \code{erf} and \code{erfc}, and the select
+    of \code{if} discarding a NaN of the untaken branch.
+  \item \textbf{Module, patch test from a YAML input}: the linear field
+    $0.3 + 1.5x$ with $\kappa = 0.8$, $\bm\beta = (1, -2)$, $s = 0.9$ and its
+    source, prescribed on named entries: one Newton iteration, the interior
+    exact ($10^{-14}$), the flows of the left and right entries
+    $\mp\kappa\,1.5$ ($10^{-12}$), the flow of the sides zero.
+  \item \textbf{Implicit Euler on a constant state}: $c = 2$, $f = 3$,
+    $u_0 = 0.5$, natural boundary: $u = u_0 + f t/c$ to $10^{-15}$ after
+    three unequal steps.  \textbf{Flux balance}: an inward flux $g = 3$ on
+    the left face of a bar with $u = 0$ on the right and $\kappa = 2$: the
+    flow through the Dirichlet face $-3$ and $u(0) = gL/\kappa = 1.5$
+    ($10^{-12}$).
+  \item \textbf{Manufactured solutions of the steady operator}: the field
+    $\sin 3\pi x\,\sin 3\pi y$ with $\kappa = 0.1$, $\bm\beta = (1, -2)$,
+    $s = 1$ on $8$, $16$, $32$ squared quadrilaterals: $L^2$ rates $2.02$,
+    $2.99$, $3.99$ and $H^1$ rates $1.00$, $2.01$, $3.00$ at $k = 1, 2, 3$
+    (the checks ask for $k + 0.9$ and $k - 0.1$), one Newton iteration, one
+    Jacobian assembly and one solver setup per run.
+  \item \textbf{Temporal order and the reuse of the Jacobian}: the transient
+    manufactured solution $\sin t\,\cos q$ of the myapps case on a $16\times16$
+    Q3 mesh to $t = 0.4$ with $\Delta t = 0.02$, $0.01$, $0.005$, $0.0025$:
+    rates $0.999$, $0.999$, $1.000$ in $\Delta t$, one assembly per run; two
+    assemblies over two segments of different $\Delta t$; one per step with
+    a velocity expression of $t$.
+  \item \textbf{The Kirchhoff case}: the laws of the nonlinear diffusion
+    driver on a $4\times4$ Q3 mesh of $[0, 0.01]^2$ with the flux $7.5\times10^5$
+    on the left, against the 1000-term series: $L^2$ errors at $t = 1$ of
+    $7.8\times10^{-3}$, $4.1\times10^{-3}$, $2.1\times10^{-3}$ with $\Delta t = 0.1$,
+    $0.05$, $0.025$ (rates $0.94$, $0.96$; the check asks for $0.9$), at most
+    four Newton iterations per step; and the inverse Kirchhoff transform of
+    the linear solve of $\phi$ (capacity $m_0/a_0$, conductivity $1$, the
+    same flux) differs from the nonlinear solution by $2.6\times10^{-3}$, below
+    the error of either against the series.
+  \item \textbf{Features}: a pure Neumann steady problem made well-posed by
+    a pin (\code{point}) takes the pinned constant ($5\times10^{-14}$) with a
+    vanishing flow; a ramped flux over two load steps gives the flows
+    $-1.5$, $-3$; the initial condition is projected and the errors of the
+    interpolant of the exact field are the interpolation error in $L^2$ and
+    zero at the nodes; the fields \code{c}, \code{c\_exact}, \code{c\_error},
+    \code{flux} are registered under the input's name of the unknown.
+  \item \textbf{Schema}: a missing or wrong \code{physics}, the solid keys,
+    a negative conductivity, \code{initial} without \code{time}, \code{cg\_amg}
+    with a velocity, \code{amg} other than \code{scalar}, exact fields without
+    \code{exact}, an unknown field, \code{reactions}, an expression of
+    \code{u}, \code{point} with \code{attr}, \code{bcs.traction}, a velocity
+    that is not a list, an unknown key; with a mesh, a velocity with the
+    wrong number of components and a point that is not a node; and the solid
+    executable refusing a \code{physics} key.
 \end{itemize}
 
 \subsection{Parallel consistency (\texttt{test\_parallel})}
@@ -1811,6 +1921,122 @@ reference to 0.035\% and 0.018\% at every step.  The runs take 3 to 38\,s
 the reference's notebooks, serial, 3 to 74\,s.
 
 %============================================================================
+\section{Scalar transport cases (\texttt{apps/input/scalar\_transport/})}
+\label{sec:scalarcases}
+%============================================================================
+
+The five convection--diffusion verification drivers of
+\file{myapps/convection\_diffusion} as inputs of the scalar transport
+executable (theory manual, Section~``Scalar transport''), on copies of
+their triangulations (Section~``Meshes''): each driver is plain Galerkin on
+a scalar $H^1$ space, implicit Euler in time and prints the $L^2$ error
+against its exact solution after every step, so its error history is the
+reference of the input, kept in \file{reference/} with the script that
+rebuilds the drivers and reruns them (\file{reference/README.md}).  On the
+same triangulation, order and steps the drivers' stock integrators
+integrate their polynomial integrands exactly, as the kernel's rule of
+order $2p + 3$ does, so the discrete problems coincide once the source is
+integrated with the driver's rule (\code{DomainLFIntegrator}'s order $2p$;
+the nonlinear driver's hand-written integrators use $2p + 2$), which the
+comparisons set through \code{transport.quadrature\_order}; the inputs
+themselves use the framework's rule.  The error histories then agree to the
+drivers' Krylov tolerance: the two transient linear drivers were run with
+their tolerances tightened (rtol $10^{-13}$, atol $10^{-18}$), since with
+their own atol of $10^{-12}$ the Pe = 1 history, whose error is
+$1.6\times10^{-5}$ at $t = 1$, drifted by $4\times10^{-4}$.
+\file{apps/scalar\_transport\_compare.py} (\code{make scalar\_transport})
+runs the inputs with the drivers' rules, lays the histories over the
+drivers' rows (\file{out/scalar\_transport/error\_histories.png}: the
+transient histories, the steady errors as bars, the Newton iterations per
+step of the nonlinear case), and with \code{--check} asserts every
+compared error at $10^{-5}$ (measured: Pe = 1 $3.8\times10^{-7}$, Pe = 10
+$3\times10^{-9}$, Pe = 100 $9\times10^{-11}$, square $3\times10^{-9}$,
+disk $4.7\times10^{-7}$, the transient manufactured solution $4\times10^{-10}$).
+\file{tests/test\_scalar\_verification.cpp} (\code{make test}, about
+four and a half minutes) repeats the cross-checks through the library
+wiring, adds the nonlinear case (whose series is coded there), and
+measures the rates below.
+
+\subsection{Transient convection--diffusion at three P\'eclet numbers}
+\file{convection\_diffusion\_peclet\_\{1,10,100\}.yaml}, the driver
+\file{linear\_convection\_diffusion\_1D.cpp}: $\partial_t c + \bm\beta\cdot\grad c - \mathrm{Pe}^{-1}\Delta c = 0$
+on the unit square with $\bm\beta = (1, 0)$, $c = 0$ at $t = 0$, the exact
+solution of the half-line problem prescribed on $x = 0$ and $x = 1$
+(uniform in $y$; erfc and exp terms, Homework 4-4, problem 3), natural on
+the other sides; $p = 3$ on the 938-triangle mesh, $\Delta t = 10^{-3}$ to
+$t = 1$, one input per P\'eclet number (the driver runs the three in one
+go).  Check: the $L^2$ error histories against the driver's to $10^{-5}$
+(measured above); the framework's own: at Pe = 1 the error at $t = 1$ is
+first order in $\Delta t$ (1000, 500, 250 steps: rates $1.001$, $1.002$; at
+$p = 3$ the temporal error dominates, so no spatial rate is observable
+there); at Pe = 10 and 100 the relative errors $3.2\times10^{-4}$ and
+$2.2\times10^{-3}$ are reported (the front of the Pe = 100 case is
+under-resolved on this mesh, in both codes; no stabilisation in either).
+
+\subsection{Steady convection--diffusion--reaction on the square and on the disk}
+\file{steady\_cdr\_square\_mms.yaml} (\file{linear\_convection\_diffusion\_2D.cpp}):
+$-\kappa\Delta u + \bm c\cdot\grad u + s u = f$ with $\kappa = 0.1$, $s = 1$,
+$\bm c = (1, -2)$ and the manufactured solution $\sin 3\pi x\,\sin 3\pi y$
+(course notes 16.930, eqs.\ 7--12), $p = 3$, one linear solve.  Check: the
+$L^2$ error $1.7117\times10^{-5}$ against the driver's to $10^{-5}$
+(measured $3\times10^{-9}$ with the driver's rule; with the framework's
+rule the error differs by $6\times10^{-6}$, the quadrature of the source);
+rates under uniform refinement of the triangulation: $L^2$ $4.01$, $4.01$
+and $H^1$ $3.00$, $3.00$ (checks $3.9$ and $2.9$).
+\file{steady\_cdr\_disk\_mms.yaml} (\file{linear\_convection\_diffusion\_2D\_circle.cpp}):
+the same operator with $\kappa = 1$, $s = 1$, $\bm c = (1, 1)$ on the unit
+disk with $U(r) = (r^2 - 1)\cos 2\pi r$ (eq.\ 13), $p = 3$ on the 3056
+straight triangles of the driver, whose boundary data is $U$ projected on
+the polygon (nonzero at the edge nodes inside the circle).  Check: the
+error $2.769\times10^{-6}$ against the driver's to $10^{-5}$ (measured
+$4.7\times10^{-7}$; $4\times10^{-6}$ with the framework's rule).  Since the
+data is $U$ on the polygon, the polygon problem has $U$ as its exact
+solution and no geometric error: the error converges at rate $4.00$ under
+uniform refinement (check $3.9$).  \file{steady\_cdr\_disk\_mms\_curved.yaml}
+poses the problem on the exact circle with third-order curved triangles
+generated at $l_c = 0.1$, $0.05$, $0.025$ (Section~``Meshes''): $L^2$ rates
+$2.96$, $2.93$ at $k = 2$ and $4.03$, $3.94$ at $k = 3$ (checks $k + 0.9$).
+
+\subsection{Nonlinear diffusion: the Kirchhoff case}
+\file{nonlinear\_diffusion\_kirchhoff.yaml} (\file{nonlinear\_convection\_diffusion\_1D.cpp},
+which has no convection despite its name): $m(u)\,\partial_t u - \dive(a(u)\grad u) = 0$
+on $[0, 0.01]^2$ with $a = 10 + 0.09(u - 300)$, $m = 4\times10^6 + 3.6\times10^4(u - 300)$,
+an inward flux $7.5\times10^5$ on $x = 0$ (the driver's datum $a(u)\,\partial u/\partial n$
+of the exact solution, which is that constant, and $0$ on $x = L$),
+insulated elsewhere, $u = 300$ at $t = 0$, $p = 3$ on the 948-triangle mesh,
+$\Delta t = 0.1$ to $t = 1$, full Newton to $10^{-8}$ relative.  With
+$m_1/m_0 = a_1/a_0$ the Kirchhoff transform $\phi = a_0(u - u_{\mathrm{ref}}) + \tfrac12 a_1(u - u_{\mathrm{ref}})^2$
+satisfies the linear heat equation, whose 1000-term series
+(\file{nonlinear\_heat.m}: $\alpha = a_0/m_0$, $\kappa_1 = 10$, $\kappa_2 = 100$,
+$T_1 = 300$, $T_2 = 1300$) is the exact solution, coded in the test (a
+series is not an expression of the input).  Check: with the series as the
+initial condition (the driver's, $300$ up to its truncation) and the rule
+of order $2p + 2$, the error history against the driver's to $10^{-5}$
+(measured $7.9\times10^{-9}$; Newton run to $10^{-12}$ there, with the
+driver's tolerance the iteration counts are identical: 4, 4, then 3); with
+the input's own initial condition $300$ and rule the error at $t = 1$
+differs by $9.5\times10^{-4}$ (the truncation of the series at $t = 0$);
+the framework's own: the error at $t = 1$ is first order in $\Delta t$
+($7.8\times10^{-3}$, $4.1\times10^{-3}$, $2.1\times10^{-3}$ with $\Delta t = 0.1$,
+$0.05$, $0.025$: rates $0.94$, $0.96$; check $0.9$) with at most four Newton
+iterations per step.
+
+\subsection{Transient diffusion with a manufactured solution}
+\file{transient\_diffusion\_mms.yaml} (\file{diffusion\_mms.cpp}):
+$\partial_t u - 0.1\,\Delta u = f$ on the unit square with
+$u = \sin t\,\cos q$, $q = 2(x - \tfrac12)^2 + 2(y - \tfrac12)^2$, prescribed
+on the whole boundary, $u = 0$ at $t = 0$, $p = 1$ on the mesh refined once
+(3752 triangles), $\Delta t = 0.01$ to $t = 2$.  Check: the $L^2$ and nodal
+$L^\infty$ histories against the driver's to $10^{-5}$ (measured
+$4\times10^{-10}$ and $2\times10^{-9}$; the errors at $t = 2$ are
+$1.900\times10^{-3}$ and $3.204\times10^{-3}$); the framework's own: at
+$k = 2$ on the same mesh (where the spatial error is negligible; at $p = 1$
+it is $2\times10^{-4}$ and would contaminate the finest step) the error at
+$t = 2$ is first order in $\Delta t$ over 200, 400, 800 steps (check
+$0.95$), and with $\Delta t \propto h^2$ (refine 0, 1, 2 with 50, 200, 800
+steps) second order in $h$ (rates $1.99$, $2.00$; check $1.9$).
+
+%============================================================================
 \section{Summary}
 %============================================================================
 
@@ -1859,6 +2085,12 @@ viscoelastic material & instantaneous and relaxed limits, Maxwell decay, tangent
 viscoelastic history, contact & material point along the solution; closed-form contact resultant; support reaction & $10^{-13}$; $10^{-12}$; $10^{-9}$ & \file{test\_viscoelastic} \\
 axisymmetric kinematics & patch test, Rivlin's cylinder and Green--Zerna's sphere as $(r, z)$ sections, Jacobians, mass & $10^{-15}$; $10^{-8}$, $3\times10^{-7}$; $10^{-9}$; $10^{-16}$ & \file{test\_axisymmetric} \\
 thermoelastic material, coupled problem & derivatives, objectivity; free expansion; adiabatic stretch against the material point; series solution of conduction; block Jacobians; pins & $10^{-8}$; $10^{-10}$; $10^{-9}$; $10^{-3}$ (halving); $10^{-8}$; $10^{-10}$ & \file{test\_thermoelastic} \\
+\midrule
+scalar kernel, module & stock integrators, finite differences, patch tests, manufactured solutions, constant state, flux balance, Kirchhoff series & $10^{-16}$; $10^{-10}$; $10^{-16}$; $L^2$ rates $k + 1$, $H^1$ rates $k$ ($k \le 3$), $\Delta t$ rate $1.00$; $10^{-15}$; $10^{-12}$; rates $0.94$--$0.96$ & \file{test\_scalar\_transport} \\
+convection--diffusion, Pe = 1, 10, 100 & the myapps driver's error history; first order in $\Delta t$ & $10^{-5}$ (measured $4\times10^{-7}$, $3\times10^{-9}$, $10^{-10}$); rates $1.00$ & \file{test\_scalar\_verification}, \file{scalar\_transport\_compare.py} \\
+steady CDR, square and disk & the drivers' errors; manufactured solution & $10^{-5}$ ($3\times10^{-9}$, $5\times10^{-7}$); $L^2$ rate $4.0$, $H^1$ $3.0$; curved disk $2.9$--$4.0$ & same \\
+nonlinear diffusion (Kirchhoff) & the driver's error history; the series solution & $10^{-5}$ ($8\times10^{-9}$); first order in $\Delta t$, $\le 4$ Newton iterations & \file{test\_scalar\_verification} \\
+transient diffusion, manufactured & the driver's $L^2$ and $L^\infty$ histories; exact field & $10^{-5}$ ($4\times10^{-10}$, $2\times10^{-9}$); $\Delta t$ rate $\ge 0.95$, $h$ rate $2.0$ & same \\
 \bottomrule
 \end{tabular}
 \end{center}
