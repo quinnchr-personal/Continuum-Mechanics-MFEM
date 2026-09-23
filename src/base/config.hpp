@@ -438,6 +438,10 @@ BCConfig ParseBCConfig(const YAML::Node &node, const std::string &path, double t
 BodyForceConfig ParseBodyForceConfig(const YAML::Node &node, const std::string &path,
                                      double t_final = 0.0);
 Schedule ParseSchedule(const YAML::Node &node, const std::string &path, double t_final = 0.0);
+// The schedule of an entry that gives none: the ramp s = t of the pseudo-time,
+// unless the data mentions t or the analysis runs in physical time (t_final >
+// 0), where it is constant (the data is the expression).
+Schedule DefaultSchedule(const std::vector<std::string> &expression, double t_final);
 SolverConfig ParseSolverConfig(const YAML::Node &node, const std::string &path,
                                const DynamicsConfig &dynamics = DynamicsConfig(),
                                const TimeConfig &time = TimeConfig());

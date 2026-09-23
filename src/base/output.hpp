@@ -57,4 +57,25 @@ private:
   std::ofstream out_;
 };
 
+// A CSV of named columns next to a ParaView collection (<collection dir>/<file>):
+// the row of every accepted step, flushed as written; only the root rank
+// writes. The file is opened at the first row, after the collection
+// directory exists. The error histories and the flows of the scalar
+// transport executable use it.
+class CsvWriter
+{
+public:
+  CsvWriter(const std::string &collection_path, const std::string &file, std::vector<std::string> columns,
+            bool root);
+  // One row: step, t, then one value per named column.
+  void Append(int step, double t, const std::vector<double> &values);
+  const std::string &Path() const { return path_; }
+
+private:
+  std::string path_;
+  std::vector<std::string> columns_;
+  bool root_;
+  std::ofstream out_;
+};
+
 } // namespace cmf

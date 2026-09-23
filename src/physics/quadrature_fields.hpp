@@ -88,6 +88,11 @@ void PackQuantity(const std::string &name, const QPointState &s, double *out);
 // the plane-stress adapter completes F33 through CompleteF).
 tensor<double, 3, 3> DeformationGradientAt(const mfem::DenseMatrix &grad, int dim);
 
+// Fills the packed components of the named quantity at the current point
+// (another physics' quantities: the flux of the scalar transport).
+using QValueEvaluator = std::function<void(mfem::ElementTransformation &, const mfem::IntegrationPoint &,
+                                           int q, const std::string &name, double *out)>;
+
 class QuadratureFields
 {
 public:
@@ -95,9 +100,14 @@ public:
   // `available`, with the presentations listed in out.quadrature_at.
   QuadratureFields(mfem::ParMesh &mesh, mfem::FiniteElementCollection &h1_fec, int order,
                    const OutputConfig &out, const std::vector<std::string> &available);
+  // The same for a list of quantities of another physics (all available).
+  QuadratureFields(mfem::ParMesh &mesh, mfem::FiniteElementCollection &h1_fec, int order,
+                   const OutputConfig &out, const std::vector<QuantityInfo> &quantities);
   bool Empty() const { return fields_.empty(); }
   // Evaluates the state at every quadrature point and refreshes all presentations.
   void Update(const QPointEvaluator &eval);
+  // The same with the values of every quantity given by name (the second constructor).
+  void UpdateValues(const QValueEvaluator &eval);
   void Register(FieldRegistry &registry);
 
 private:
@@ -112,7 +122,10 @@ private:
     std::unique_ptr<mfem::ParGridFunction> elem;
   };
 
+  void Build(int order, const OutputConfig &out, const std::vector<QuantityInfo> &quantities);
   void Fill(const QPointEvaluator &eval);
+  void FillValues(const QValueEvaluator &eval);
+  void Present();
   void ElementAverage(Field &f);
   void ProjectAveraged(Field &f);
   void ProjectConsistent(Field &f);

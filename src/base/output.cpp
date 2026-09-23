@@ -101,6 +101,29 @@ void ReactionWriter::Append(int step, double t, const std::vector<std::array<dou
   out_ << "\n" << std::flush;
 }
 
+CsvWriter::CsvWriter(const std::string &collection_path, const std::string &file,
+                     std::vector<std::string> columns, bool root)
+  : path_(collection_path + "/" + file), columns_(std::move(columns)), root_(root)
+{
+}
+
+void CsvWriter::Append(int step, double t, const std::vector<double> &values)
+{
+  if (!root_) { return; }
+  MFEM_VERIFY(values.size() == columns_.size(), "CsvWriter: one value per column");
+  if (!out_.is_open())
+  {
+    out_.open(path_);
+    if (!out_) { throw ConfigError("output: cannot write '" + path_ + "'"); }
+    out_ << "step,t";
+    for (const std::string &c : columns_) { out_ << "," << c; }
+    out_ << "\n";
+  }
+  out_ << step << "," << std::setprecision(17) << t;
+  for (double v : values) { out_ << "," << v; }
+  out_ << "\n" << std::flush;
+}
+
 void ParaViewWriter::Save(int cycle, double time)
 {
   dc_.SetCycle(cycle);

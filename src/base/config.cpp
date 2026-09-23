@@ -1,6 +1,7 @@
 #include "base/config.hpp"
 
 #include "base/expression.hpp"
+#include "base/node_reader.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -13,104 +14,6 @@
 namespace cmf
 {
 
-namespace
-{
-
-template <typename T> const char *TypeName();
-template <> const char *TypeName<int>() { return "an integer"; }
-template <> const char *TypeName<double>() { return "a number"; }
-template <> const char *TypeName<bool>() { return "a boolean"; }
-template <> const char *TypeName<std::string>() { return "a string"; }
-template <> const char *TypeName<std::vector<double>>() { return "a list of numbers"; }
-template <> const char *TypeName<std::vector<std::string>>() { return "a list of strings"; }
-
-std::string Describe(const YAML::Node &node)
-{
-  if (node.IsScalar()) { return "'" + node.Scalar() + "'"; }
-  if (node.IsSequence()) { return "a list"; }
-  if (node.IsMap()) { return "a map"; }
-  return "null";
-}
-
-// Reads one YAML map while tracking the key path for error messages and the
-// keys consumed, so unknown keys are reported instead of silently ignored.
-class NodeReader
-{
-public:
-  NodeReader(const YAML::Node &node, const std::string &path)
-    : node_(node), path_(path)
-  {
-    if (!node_.IsDefined() || node_.IsNull())
-    {
-      throw ConfigError("missing section '" + path_ + "'");
-    }
-    if (!node_.IsMap())
-    {
-      throw ConfigError("'" + path_ + "' must be a map, got " +
-                        Describe(node_));
-    }
-  }
-
-  std::string Path(const std::string &key) const
-  {
-    return path_.empty() ? key : path_ + "." + key;
-  }
-
-  bool Has(const std::string &key) const
-  {
-    return node_[key].IsDefined() && !node_[key].IsNull();
-  }
-
-  YAML::Node Raw(const std::string &key)
-  {
-    used_.insert(key);
-    return node_[key];
-  }
-
-  template <typename T> T Require(const std::string &key)
-  {
-    if (!Has(key)) { throw ConfigError("missing key '" + Path(key) + "'"); }
-    return Convert<T>(key);
-  }
-
-  template <typename T> T Optional(const std::string &key, const T &fallback)
-  {
-    if (!Has(key)) { used_.insert(key); return fallback; }
-    return Convert<T>(key);
-  }
-
-  void Finish() const
-  {
-    for (const auto &kv : node_)
-    {
-      const std::string key = kv.first.as<std::string>();
-      if (!used_.count(key))
-      {
-        throw ConfigError("unknown key '" + Path(key) + "'");
-      }
-    }
-  }
-
-private:
-  template <typename T> T Convert(const std::string &key)
-  {
-    used_.insert(key);
-    try
-    {
-      return node_[key].as<T>();
-    }
-    catch (const YAML::Exception &)
-    {
-      throw ConfigError("key '" + Path(key) + "' expected " + TypeName<T>() +
-                        ", got " + Describe(node_[key]));
-    }
-  }
-
-  YAML::Node node_;
-  std::string path_;
-  std::set<std::string> used_;
-};
-
 // Ramp s = t, unless the data already depends on t (then constant). In a
 // dynamic analysis (t_final > 0) always constant: the data is the expression.
 Schedule DefaultSchedule(const std::vector<std::string> &expression, double t_final)
@@ -122,6 +25,9 @@ Schedule DefaultSchedule(const std::vector<std::string> &expression, double t_fi
   }
   return Schedule::Ramp();
 }
+
+namespace
+{
 
 // steps: [ { to: t_1, n: n_1 }, ... ], t_k increasing, the last one `end`
 // (1 for the pseudo-time, named "1" / "1.0" in the messages; t_final otherwise).
@@ -284,7 +190,7 @@ std::vector<BoundaryCondition> ParseBCList(const YAML::Node &node,
         if (c < 0)
         {
           throw ConfigError("key '" + cpath + "[" + std::to_string(k) +
-                            "]' must be x, y, z or 0, 1, 2, got " + Describe(comps[k]));
+                            "]' must be x, y, z or 0, 1, 2, got " + DescribeNode(comps[k]));
         }
         if (std::find(bc.components.begin(), bc.components.end(), c) != bc.components.end())
         {
@@ -1422,6 +1328,12 @@ AppConfig ParseConfig(const YAML::Node &root)
   if (!root.IsDefined() || root.IsNull() || !root.IsMap())
   {
     throw ConfigError("input must be a YAML map with a 'mesh' section");
+  }
+  if (root["physics"].IsDefined())
+  {
+    throw ConfigError("key 'physics': this input belongs to the executable of that physics "
+                      "(build/apps/scalar_transport for scalar_transport); the solid mechanics "
+                      "executable takes no physics key");
   }
   NodeReader r(root, "");
   AppConfig cfg;

@@ -75,13 +75,31 @@ QuadratureFields::QuadratureFields(mfem::ParMesh &mesh, mfem::FiniteElementColle
                                    const std::vector<std::string> &available)
   : mesh_(mesh), h1_fec_(h1_fec)
 {
+  std::vector<QuantityInfo> quantities;
+  for (const QuantityInfo &q : Quantities())
+  {
+    if (Contains(available, q.name)) { quantities.push_back(q); }
+  }
+  Build(order, out, quantities);
+}
+
+QuadratureFields::QuadratureFields(mfem::ParMesh &mesh, mfem::FiniteElementCollection &h1_fec,
+                                   int order, const OutputConfig &out,
+                                   const std::vector<QuantityInfo> &quantities)
+  : mesh_(mesh), h1_fec_(h1_fec)
+{
+  Build(order, out, quantities);
+}
+
+void QuadratureFields::Build(int order, const OutputConfig &out, const std::vector<QuantityInfo> &quantities)
+{
   nodes_ = Contains(out.quadrature_at, "nodes");
   elements_ = Contains(out.quadrature_at, "elements");
   qpoints_ = Contains(out.quadrature_at, "quadrature_points");
   consistent_ = out.nodal_projection == "projected";
-  for (const QuantityInfo &q : Quantities())
+  for (const QuantityInfo &q : quantities)
   {
-    if (!Contains(out.fields, q.name) || !Contains(available, q.name)) { continue; }
+    if (!Contains(out.fields, q.name)) { continue; }
     // The kernels integrate with IntRules.Get(geom, 2p + 3); the same rule here.
     if (!qspace_) { qspace_ = std::make_unique<mfem::QuadratureSpace>(&mesh_, 2 * order + 3); }
     Field f;
@@ -273,10 +291,40 @@ void QuadratureFields::ProjectConsistent(Field &f)
   }
 }
 
+void QuadratureFields::FillValues(const QValueEvaluator &eval)
+{
+  std::vector<mfem::DenseMatrix> views(fields_.size());
+  double packed[9];
+  for (int e = 0; e < mesh_.GetNE(); e++)
+  {
+    mfem::ElementTransformation &T = *mesh_.GetElementTransformation(e);
+    const mfem::IntegrationRule &ir = qspace_->GetElementIntRule(e);
+    for (std::size_t k = 0; k < fields_.size(); k++) { fields_[k].qf->GetValues(e, views[k]); }
+    for (int q = 0; q < ir.GetNPoints(); q++)
+      for (std::size_t k = 0; k < fields_.size(); k++)
+      {
+        eval(T, ir.IntPoint(q), q, fields_[k].name, packed);
+        for (int c = 0; c < fields_[k].nc; c++) { views[k](c, q) = packed[c]; }
+      }
+  }
+}
+
 void QuadratureFields::Update(const QPointEvaluator &eval)
 {
   if (fields_.empty()) { return; }
   Fill(eval);
+  Present();
+}
+
+void QuadratureFields::UpdateValues(const QValueEvaluator &eval)
+{
+  if (fields_.empty()) { return; }
+  FillValues(eval);
+  Present();
+}
+
+void QuadratureFields::Present()
+{
   for (Field &f : fields_)
   {
     if (f.elem) { ElementAverage(f); }
