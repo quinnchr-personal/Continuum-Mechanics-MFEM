@@ -32,6 +32,20 @@ LinearSolver::LinearSolver(const LinearSolverConfig &cfg,
   krylov_->SetPrintLevel(cfg_.print_level);
   krylov_->iterative_mode = false;
   amg_mode_ = cfg_.amg;
+  if (fes_.GetVDim() == 1)
+  {
+    // A scalar unknown: the vector options (rigid-body modes, unknown-based
+    // coarsening) do not apply.
+    if (amg_mode_ == "elasticity") { amg_mode_ = "scalar"; }
+    if (amg_mode_ != "scalar")
+    {
+      throw ConfigError("solver.linear.amg: '" + amg_mode_ + "' needs a vector unknown; use scalar");
+    }
+  }
+  else if (amg_mode_ == "scalar")
+  {
+    throw ConfigError("solver.linear.amg: scalar needs a scalar unknown; use elasticity or systems");
+  }
 }
 
 void LinearSolver::BuildPreconditioner(const std::string &mode) const
@@ -42,10 +56,11 @@ void LinearSolver::BuildPreconditioner(const std::string &mode) const
   {
     amg_->SetElasticityOptions(&fes_);
   }
-  else
+  else if (mode == "systems")
   {
     amg_->SetSystemsOptions(dim, fes_.GetOrdering() == mfem::Ordering::byNODES);
   }
+  // scalar: BoomerAMG's defaults.
   amg_->SetPrintLevel(0);
   amg_mode_ = mode;
   setups_++;

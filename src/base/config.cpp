@@ -1152,10 +1152,10 @@ SolverConfig ParseSolverConfig(const YAML::Node &node, const std::string &path,
       throw ConfigError("key '" + l.Path("type") + "': unknown type '" +
                         lc.type + "' (expected gmres_amg, cg_amg, or direct)");
     }
-    if (lc.amg != "elasticity" && lc.amg != "systems")
+    if (lc.amg != "elasticity" && lc.amg != "systems" && lc.amg != "scalar")
     {
       throw ConfigError("key '" + l.Path("amg") + "': unknown option '" +
-                        lc.amg + "' (expected elasticity or systems)");
+                        lc.amg + "' (expected elasticity, systems, or scalar)");
     }
     if (!(lc.rtol >= 0.0) || !(lc.atol >= 0.0))
     {

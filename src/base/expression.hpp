@@ -4,8 +4,10 @@
 // Grammar: numbers, the variables x y z t (z is 0 in 2D) and pi, the binary
 // operators + - * / ^ (^ binds tightest and associates to the right, unary
 // minus binds looser than ^ so -x^2 = -(x^2)), parentheses, the functions
-// sin cos tan exp log sqrt abs pow(a, b) min(a, b) max(a, b), and
-// if(cond, a, b) where the comparisons < <= > >= == != evaluate to 1 or 0.
+// sin cos tan exp log sqrt abs erf erfc pow(a, b) min(a, b) max(a, b), and
+// if(cond, a, b) where the comparisons < <= > >= == != evaluate to 1 or 0
+// (a select: the untaken branch is evaluated but its value, finite or not,
+// is discarded).
 #pragma once
 
 #include <string>
@@ -32,7 +34,7 @@ private:
   {
     Const, X, Y, Z, T, Neg, Add, Sub, Mul, Div, Pow,
     Lt, Le, Gt, Ge, Eq, Ne,
-    Sin, Cos, Tan, Exp, Log, Sqrt, Abs, Min, Max, If
+    Sin, Cos, Tan, Exp, Log, Sqrt, Abs, Erf, Erfc, Min, Max, If
   };
   struct Instruction
   {

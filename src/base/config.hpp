@@ -262,7 +262,7 @@ struct LinearSolverConfig
   // gmres_amg | cg_amg | direct (sparse LU by MUMPS through PETSc, solvers/direct_solver.hpp;
   // the Krylov and AMG keys below are then unused)
   std::string type = "gmres_amg";
-  std::string amg = "elasticity"; // elasticity | systems
+  std::string amg = "elasticity"; // elasticity | systems (vector unknown) | scalar (scalar unknown)
   double rtol = 1e-12;
   double atol = 0.0;
   int max_it = 500;

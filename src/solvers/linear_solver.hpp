@@ -1,5 +1,8 @@
 // YAML-selected linear solver: Krylov (GMRES or CG) preconditioned by
-// BoomerAMG with elasticity (rigid-body-mode) or plain systems options.
+// BoomerAMG with elasticity (rigid-body-mode) or plain systems options for a
+// vector unknown, or BoomerAMG's defaults for a scalar one (amg: scalar, the
+// only mode of a space with one component; chosen automatically there when
+// the config carries the vector default).
 // MFEM's Krylov tolerances are relative to the left-preconditioned residual
 // ||M^{-1} r||, which with AMG behaves like an error norm; the true residual
 // reduction is typically 10-100x weaker than rtol (measured in S4).

@@ -159,7 +159,8 @@ private:
       if (name == "pi") { Emit(Op::Const, M_PI); return; }
       struct { const char *n; Op op; int args; } fns[] = {
         {"sin", Op::Sin, 1}, {"cos", Op::Cos, 1}, {"tan", Op::Tan, 1}, {"exp", Op::Exp, 1},
-        {"log", Op::Log, 1}, {"sqrt", Op::Sqrt, 1}, {"abs", Op::Abs, 1}, {"pow", Op::Pow, 2},
+        {"log", Op::Log, 1}, {"sqrt", Op::Sqrt, 1}, {"abs", Op::Abs, 1}, {"erf", Op::Erf, 1},
+        {"erfc", Op::Erfc, 1}, {"pow", Op::Pow, 2},
         {"min", Op::Min, 2}, {"max", Op::Max, 2}, {"if", Op::If, 3}};
       for (const auto &f : fns)
       {
@@ -227,6 +228,8 @@ double Expression::Eval(double x, double y, double z, double t) const
       case Op::Log: stack[n - 1] = std::log(stack[n - 1]); break;
       case Op::Sqrt: stack[n - 1] = std::sqrt(stack[n - 1]); break;
       case Op::Abs: stack[n - 1] = std::abs(stack[n - 1]); break;
+      case Op::Erf: stack[n - 1] = std::erf(stack[n - 1]); break;
+      case Op::Erfc: stack[n - 1] = std::erfc(stack[n - 1]); break;
       case Op::Min: n--; stack[n - 1] = std::min(stack[n - 1], stack[n]); break;
       case Op::Max: n--; stack[n - 1] = std::max(stack[n - 1], stack[n]); break;
       case Op::If: n -= 2; stack[n - 1] = stack[n - 1] != 0.0 ? stack[n] : stack[n + 1]; break;
